@@ -1,0 +1,47 @@
+# ===================================================================
+# Conda Environment for DTI Heterogeneous Graph Research (CUDA 11.7)
+#
+# Lowering the CUDA version to a highly stable alternative (11.7)
+# to resolve dependency conflicts. Optimized for NVIDIA A100.
+#
+# To create: mamba env create -f environment.yml
+# To activate: conda activate nasnet-dti-gpu-cu117-env
+# ===================================================================
+
+name: nasnet
+
+channels:
+  - pyg
+  - pytorch
+  - conda-forge
+  - bioconda
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  # A modern Python version
+  - python=3.9
+  - pip
+
+  # Modern PyTorch stack supporting RTX A6000.
+  # We install a PyTorch 2.x version compatible with CUDA 11.8.
+  - pytorch  # Pinning a specific stable version is good practice
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=11.8
+  - torch-geometric
+
+
+  # --- 生物与化学信息学 ---
+  - rdkit
+  - biopython
+
+  # --- 科学计算与数据处理 ---
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - networkx
+  - nivtop
+  
