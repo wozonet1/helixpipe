@@ -2,6 +2,126 @@
 
 import pandas as pd
 import sys
+from tqdm import tqdm
+import time
+from pathlib import Path
+import requests
+import re
+
+
+def is_valid_uniprot_accession(accession):
+    """
+    使用正则表达式，快速检查一个ID是否符合UniProt Accession的典型格式。
+    这是一个简化版检查，但能过滤掉大部分非Accession的ID。
+    """
+    # 典型的UniProt Accession格式: e.g., P12345, Q9Y261, A0A024R1R8
+    # 规则: 字母开头，后面跟5个或更多数字/字母
+    # [OPQ][0-9][A-Z0-9]{3}[0-9] | [A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2}
+    # 我们用一个简化的版本
+    pattern = re.compile(
+        r"^[A-NR-Z][0-9][A-Z][A-Z0-9]{2}[0-9]$|^[OPQ][0-9][A-Z0-9]{3}[0-9]$",
+        re.IGNORECASE,
+    )
+    return bool(pattern.match(str(accession)))
+
+
+def fetch_sequences_from_uniprot(uniprot_ids):
+    """
+    【最终版】
+    根据UniProt ID列表，使用requests库直接调用UniProt官方API，批量获取蛋白质序列。
+    这是一个更现代、更健壮的实现。
+    """
+    valid_ids = sorted(
+        [uid for uid in set(uniprot_ids) if is_valid_uniprot_accession(uid)]
+    )
+    invalid_ids = set(uniprot_ids) - set(valid_ids)
+    if invalid_ids:
+        print(
+            f"Warning: Skipped {len(invalid_ids)} IDs with non-standard format. Examples: {list(invalid_ids)[:5]}"
+        )
+
+    print(f"Fetching sequences for {len(valid_ids)} valid UniProt IDs...")
+
+    base_url = "https://rest.uniprot.org/uniprotkb/stream"
+    sequences_map = {}
+    chunk_size = 100
+
+    for i in tqdm(range(0, len(valid_ids), chunk_size), desc="Querying UniProt API"):
+        chunk = valid_ids[i : i + chunk_size]
+
+        params = {
+            "query": " OR ".join(f"(accession:{acc})" for acc in chunk),
+            "format": "fasta",
+        }
+
+        try:
+            response = requests.get(base_url, params=params)
+
+            # 检查请求是否成功
+            if response.status_code == 200:
+                fasta_text = response.text
+
+                # 解析返回的FASTA文本 (这部分逻辑和之前一样)
+                for entry in fasta_text.strip().split(">"):
+                    if not entry.strip():
+                        continue
+                    lines = entry.strip().split("\n")
+                    header = lines[0]
+                    seq = "".join(lines[1:])
+
+                    try:
+                        uid = header.split("|")[1]
+                        sequences_map[uid] = seq
+                    except IndexError:
+                        print(
+                            f"\nWarning: Could not parse UniProt ID from header: '{header}'"
+                        )
+            elif response.status_code == 400 and len(chunk) > 1:
+                print(
+                    f"\nWarning: Batch request failed (400 Bad Request). Switching to individual retry for {len(chunk)} IDs..."
+                )
+                for single_id in tqdm(chunk, desc="Retrying individually", leave=False):
+                    single_params = {
+                        "query": f"(accession:{single_id})",
+                        "format": "fasta",
+                    }
+                    try:
+                        single_response = requests.get(
+                            base_url, params=single_params, timeout=10
+                        )
+                        if single_response.status_code == 200:
+                            s_fasta = single_response.text
+                            if s_fasta and s_fasta.startswith(">"):
+                                s_lines = s_fasta.strip().split("\n")
+                                s_header, s_seq = s_lines[0], "".join(s_lines[1:])
+                                s_uid = s_header.split("|")[1]
+                                sequences_map[s_uid] = s_seq
+                        else:
+                            print(
+                                f"-> Failed for single ID: {single_id} (Status: {single_response.status_code})"
+                            )
+                    except Exception as single_e:
+                        print(
+                            f"-> Network/Parse error for single ID {single_id}: {single_e}"
+                        )
+                    time.sleep(0.2)  # 单个查询之间也稍作等待
+
+            else:
+                # 如果请求失败，打印出错误状态码
+                print(
+                    f"\nWarning: UniProt API request failed for chunk starting with {chunk[0]}. Status code: {response.status_code}"
+                )
+
+        except requests.exceptions.RequestException as e:
+            # 捕获网络层面的错误
+            print("\n--- NETWORK ERROR during UniProt fetch ---")
+            print(f"Error: {e}")
+            print("------------------------------------------")
+
+        time.sleep(1)  # 保持API礼仪
+
+    print(f"-> FINAL: Successfully fetched {len(sequences_map)} sequences.")
+    return sequences_map
 
 
 def process_gtopdb_data(input_dir: str, output_dir: str):
@@ -21,10 +141,10 @@ def process_gtopdb_data(input_dir: str, output_dir: str):
     print(f"\n[Step 1/4] Loading raw data files from: {input_dir}")
     try:
         interactions_df = pd.read_csv(
-            input_dir + "/interactions.csv", low_memory=False, comment="#"
+            input_dir / "interactions.csv", low_memory=False, comment="#"
         )
         ligands_df = pd.read_csv(
-            input_dir + "/ligands.csv", low_memory=False, comment="#"
+            input_dir / "ligands.csv", low_memory=False, comment="#"
         )
     except FileNotFoundError as e:
         print(f"Error: Raw CSV file not found! {e}")
@@ -40,8 +160,6 @@ def process_gtopdb_data(input_dir: str, output_dir: str):
     print("\n[Step 2/4] Filtering for high-quality endogenous ligand interactions...")
 
     # 核心筛选条件：'endogenous' 列为 True
-    print(interactions_df.columns)
-    print(interactions_df["Endogenous"].unique())
     endogenous_interactions = interactions_df[interactions_df["Endogenous"]].copy()
     print(
         f"-> Found {len(endogenous_interactions)} interactions involving endogenous ligands."
@@ -76,46 +194,79 @@ def process_gtopdb_data(input_dir: str, output_dir: str):
     print("\n[Step 4/4] Merging data and saving to output files...")
 
     # 将相互作用数据与配体数据通过 'ligand_id' 连接起来
-    final_edges = pd.merge(
+    final_df = pd.merge(
         endogenous_interactions,
         relevant_ligands,
         left_on="Ligand ID",
         right_on="Ligand ID",
     )
+    print("\n[NEW Step] Fetching protein sequences for all relevant targets...")
 
-    # a) 准备并保存新的 P-L 边文件
-    # 文件格式: Target UniProt ID, ligand_pubchem_cid, Affinity Median
-    output_edges = (
-        final_edges[["Target UniProt ID", "PubChem CID", "Affinity Median"]]
-        .drop_duplicates()
-        .reset_index(drop=True)
+    # 1. 从合并后的数据中，收集所有需要查询序列的唯一UniProt ID
+    #    先处理'|'分隔符，然后展开列表，最后取唯一值
+    all_target_uniprot_ids = (
+        final_df["Target UniProt ID"]
+        .str.split("|")
+        .explode()
+        .dropna()
+        .unique()
+        .tolist()
     )
-    # GtoPdb的 'Target UniProt ID' 列可能包含多个以'|'分隔的ID，我们只取第一个
-    output_edges["Target UniProt ID"] = (
-        output_edges["Target UniProt ID"].str.split("|").str[0]
+
+    # 2. 调用我们写的函数，去UniProt“补全”序列信息
+    uniprot_to_sequence_map = fetch_sequences_from_uniprot(all_target_uniprot_ids)
+
+    # 3. 将查询到的序列映射回我们的主DataFrame
+    #    我们只关心主要ID（第一个ID）的序列
+    main_uniprot_id = final_df["Target UniProt ID"].str.split("|").str[0]
+    final_df["target_sequence"] = main_uniprot_id.map(uniprot_to_sequence_map)
+
+    # 4. 清洗：丢弃那些因为某些原因没能查到序列的记录
+    original_count = len(final_df)
+    final_df.dropna(subset=["target_sequence"], inplace=True)
+    print(
+        f"-> Found sequences for {len(final_df)} out of {original_count} interactions. Proceeding with these."
     )
+
+    # --- 5. 保存最终的输出文件 (现在输出的文件信息更完整了) ---
+    print("\n[Final Step] Saving enriched data to output files...")
+
+    # a) 保存新的 P-L 边文件，现在包含【序列】而不是ID
+    # 文件格式: protein_sequence, ligand_smiles, affinity_median
+    output_edges = final_df[["target_sequence", "SMILES", "Affinity Median"]].copy()
     output_edges.rename(
-        columns={"Target UniProt ID": 0, "PubChem CID": 1, "Affinity Median": 2},
-        inplace=True,
+        columns={"target_sequence": 0, "SMILES": 1, "Affinity Median": 2}, inplace=True
     )
 
-    output_edge_path = output_dir + "/gtopdb_p-l_edges.csv"
+    output_edge_path = output_dir / "gtopdb_p-l_edges.csv"
     output_edges.to_csv(output_edge_path, index=False, header=False)
     print(
-        f"-> Successfully saved {len(output_edges)} new Protein-Ligand edges to: {output_edge_path}"
+        f"-> Successfully saved {len(output_edges)} Protein-Ligand edges (with sequences and SMILES) to: {output_edge_path}"
     )
 
-    # b) 准备并保存新的配体信息文件
-    # 文件格式: PubChem CID, SMILES
-    output_ligands = (
-        final_edges[["PubChem CID", "SMILES"]].drop_duplicates().reset_index(drop=True)
-    )
+    # b) 保存新的配体信息文件 (可以保持不变，也可以只保存一次)
+    output_ligands = final_df[["PubChem CID", "SMILES"]].drop_duplicates()
     output_ligands.rename(columns={"PubChem CID": 0, "SMILES": 1}, inplace=True)
-
-    output_ligand_path = output_dir + "/gtopdb_ligands.csv"
+    output_ligand_path = output_dir / "gtopdb_ligands.csv"
     output_ligands.to_csv(output_ligand_path, index=False, header=False)
     print(
-        f"-> Successfully saved info for {len(output_ligands)} new Ligand nodes to: {output_ligand_path}"
+        f"-> Successfully saved info for {len(output_ligands)} Ligand nodes to: {output_ligand_path}"
+    )
+
+    # c) (推荐) 另外保存一份蛋白质的 "ID-序列" 对应表，以备后用
+    output_proteins = final_df[
+        ["Target UniProt ID", "target_sequence"]
+    ].drop_duplicates()
+    output_proteins["Target UniProt ID"] = (
+        output_proteins["Target UniProt ID"].str.split("|").str[0]
+    )
+    output_proteins.rename(
+        columns={"Target UniProt ID": 0, "target_sequence": 1}, inplace=True
+    )
+    output_protein_path = output_dir / "gtopdb_proteins.csv"
+    output_proteins.to_csv(output_protein_path, index=False, header=False)
+    print(
+        f"-> Successfully saved info for {len(output_proteins)} Protein nodes to: {output_protein_path}"
     )
 
     print("\n==========================================================")
@@ -125,8 +276,8 @@ def process_gtopdb_data(input_dir: str, output_dir: str):
 
 if __name__ == "__main__":
     # --- 配置区 ---
-    input_directory = "../data/gtopdb/raw"
-    output_directory = "../data/gtopdb/processed"
+    input_directory = Path("../data/gtopdb/raw")
+    output_directory = Path("../data/gtopdb/processed")
 
     # --- 执行主函数 ---
     process_gtopdb_data(input_directory, output_directory)

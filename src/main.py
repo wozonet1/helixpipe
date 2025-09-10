@@ -50,8 +50,6 @@ AllNode = pd.read_csv(
     f"../data/{cmdargs.dataset}/Allnode_DrPr.csv", names=[0, 1], skiprows=1
 )
 Alledge = pd.read_csv(f"../data/{cmdargs.dataset}/DrPrNum_DrPr.csv", header=None)
-prot_edge = pd.read_csv(f"../data/{cmdargs.dataset}/prot_edge.csv")
-drug_edge = pd.read_csv(f"../data/{cmdargs.dataset}/drug_edge.csv")
 drug_prot_edge = pd.read_csv(f"../data/{cmdargs.dataset}/drug_prot_edge.csv")
 features = pd.read_csv(
     f"../data/{cmdargs.dataset}/AllNodeAttribute_DrPr.csv", header=None

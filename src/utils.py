@@ -5,6 +5,11 @@ import scipy.sparse as sp
 from scipy.sparse import csgraph
 import sys
 import torch
+from pathlib import Path
+
+
+def DPLdata_filepath(datapath: Path, filename: str, foldername: str) -> Path:
+    return datapath / f"{foldername}/{filename}"
 
 
 def aug_random_walk(adj):
@@ -53,7 +58,7 @@ def normalize(mx):
     return mx
 
 
-def laplacian(mx, norm):
+def laplacian(mx, norm, adj):
     """Laplacian-normalize sparse matrix"""
     assert all(len(row) == len(mx) for row in mx), "Input should be a square matrix"
 
@@ -150,7 +155,7 @@ def load_data1(path="../data", dataset="cora"):
     print("| # of clases   : {}".format(ally.shape[1]))
 
     features = torch.FloatTensor(np.array(features.todense()))
-    sparse_mx = adj.tocoo().astype(np.float32)
+    adj.tocoo().astype(np.float32)  # FIXME: no use
 
     labels = np.vstack((ally, ty))
     labels[test_idx_reorder, :] = labels[test_idx_range, :]
