@@ -14,7 +14,7 @@ from Bio.Align import substitution_matrices
 from tqdm import tqdm
 from joblib import Parallel, delayed
 from pathlib import Path
-from utils import get_data_filepath, check_files_exist
+from utils import get_path, check_files_exist
 import yaml
 
 
@@ -288,17 +288,9 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed(runtime_config["seed"])
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-# get paths
-current_path = Path(__file__)
-datapath = current_path.parent.parent / f"data/{data_config['dataset_name']}"
-foldername = "gtopdb" if data_config["use_gtopdb"] else "baseline"
-gtopdb_processed_dir = datapath.parent / "gtopdb/processed"
-# create dirs if not exist
-if not (datapath / foldername).exists():
-    (datapath / foldername).mkdir(parents=True, exist_ok=True)
-    (datapath / foldername / "indexes").mkdir(parents=True, exist_ok=True)
 
-full_df = pd.read_csv(datapath / "full.csv")
+
+full_df = pd.read_csv(get_path(config, "raw.dti_interactions"))
 # endregion
 
 # region list
@@ -309,10 +301,10 @@ full_df = pd.read_csv(datapath / "full.csv")
 # 1a. 加载基础数据集的实体
 print("--- [Stage 1a] Loading base entities from full_df.csv ---")
 required_index_files = [
-    "indexes.drug",
-    "indexes.ligand",
-    "indexes.protein",
-    "nodes_metadata",
+    "processed.indexes.drug",
+    "processed.indexes.ligand",
+    "processed.indexes.protein",
+    "processed.nodes_metadata",
 ]
 if not check_files_exist(config, *required_index_files):
     # 使用 .unique().tolist() 更高效
@@ -331,7 +323,7 @@ if not check_files_exist(config, *required_index_files):
         )
         try:
             gtopdb_ligands_df = pd.read_csv(
-                gtopdb_processed_dir / "gtopdb_ligands.csv",
+                get_path(config, "gtopdb.ligands"),
                 header=None,
                 names=["CID", "SMILES"],
             )
@@ -339,7 +331,7 @@ if not check_files_exist(config, *required_index_files):
             print(f"-> Found {len(extra_ligands_list)} unique ligands from GtoPdb.")
 
             gtopdb_proteins_df = pd.read_csv(
-                gtopdb_processed_dir / "gtopdb_proteins.csv",
+                get_path(config, "gtopdb.proteins"),
                 header=None,
                 names=["UniProt", "Sequence"],
             )
@@ -407,21 +399,21 @@ if not check_files_exist(config, *required_index_files):
     # 5. 保存索引文件
     pkl.dump(
         drug2index,
-        open(get_data_filepath(config, "indexes.drug"), "wb"),
+        open(get_path(config, "processed.indexes.drug"), "wb"),
     )
     pkl.dump(
         ligand2index,
-        open(get_data_filepath(config, "indexes.ligand"), "wb"),
+        open(get_path(config, "processed.indexes.ligand"), "wb"),
     )
     pkl.dump(
         prot2index,
-        open(get_data_filepath(config, "indexes.protein"), "wb"),
+        open(get_path(config, "processed.indexes.protein"), "wb"),
     )
 
     # 6. 保存节点元数据文件
     AllNode_df = pd.DataFrame(node_data)  # node_data已经包含了所有类型
     AllNode_df.to_csv(
-        get_data_filepath(config, "nodes_metadata"),
+        get_path(config, "processed.nodes_metadata"),
         index=False,
         header=True,
     )
@@ -430,13 +422,13 @@ if not check_files_exist(config, *required_index_files):
 else:
     print("\n--- [Stage 2] Loading indices and metadata from cache... ---")
     index_files = {
-        "drug": "indexes.drug",
-        "ligand": "indexes.ligand",
-        "prot": "indexes.protein",
+        "drug": "processed.indexes.drug",
+        "ligand": "processed.indexes.ligand",
+        "prot": "processed.indexes.protein",
     }
     # 使用字典推导式一次性加载
     indices = {
-        key: pkl.load(get_data_filepath(config, path).open("rb"))
+        key: pkl.load(get_path(config, path).open("rb"))
         for key, path in index_files.items()
     }
     drug2index, ligand2index, prot2index = (
@@ -457,9 +449,9 @@ dl2index = {**drug2index, **ligand2index}  # 统一的小分子索引字典
 
 # region features&sim
 checkpoint_files = [
-    "molecule_similarity_matrix",
-    "protein_similarity_matrix",
-    "node_features",
+    "processed.molecule_similarity_matrix",
+    "processed.protein_similarity_matrix",
+    "processed.node_features",
 ]
 if not check_files_exist(config, *checkpoint_files):
     print("\n--- [Stage 3] Generating features and similarity matrices... ---")
@@ -478,29 +470,29 @@ if not check_files_exist(config, *checkpoint_files):
 
     pkl.dump(
         dl_similarity_matrix,
-        open(get_data_filepath(config, "molecule_similarity_matrix"), "wb"),
+        open(get_path(config, "processed.molecule_similarity_matrix"), "wb"),
     )
     pkl.dump(
         prot_similarity_matrix,
-        open(get_data_filepath(config, "protein_similarity_matrix"), "wb"),
+        open(get_path(config, "processed.protein_similarity_matrix"), "wb"),
     )
     features_df = pd.concat(
         [pd.DataFrame(drug_embeddings), pd.DataFrame(protein_embeddings)], axis=0
     )
     features_df.to_csv(
-        get_data_filepath(config, "node_features"),
+        get_path(config, "processed.node_features"),
         index=False,
         header=False,
     )
 else:
     # 如果文件已存在，则加载它们以供后续步骤使用
     print("\n--- [Stage 3] Loading features and similarity matrices from cache... ---")
-    features_df = pd.read_csv(get_data_filepath(config, "node_features"), header=None)
+    features_df = pd.read_csv(get_path(config, "processed.node_features"), header=None)
     dl_similarity_matrix = pkl.load(
-        open(get_data_filepath(config, "molecule_similarity_matrix"), "rb")
+        open(get_path(config, "processed.molecule_similarity_matrix"), "rb")
     )
     prot_similarity_matrix = pkl.load(
-        open(get_data_filepath(config, "protein_similarity_matrix"), "rb")
+        open(get_path(config, "processed.protein_similarity_matrix"), "rb")
     )
 
 
@@ -510,7 +502,7 @@ else:
 
 # region base edges
 # 统一的检查点，检查最终的两个核心产物
-checkpoint_files = ["typed_edge_list", "link_prediction_labels"]
+checkpoint_files = ["processed.typed_edge_list", "processed.link_prediction_labels"]
 if not check_files_exist(config, *checkpoint_files):
     print(
         "\n--- [Stage 4] Generating labeled edges for training and full typed graph... ---"
@@ -530,7 +522,7 @@ if not check_files_exist(config, *checkpoint_files):
     # (可选) 从GtoPdb中提取 L-P 正样本
     if data_config["use_gtopdb"]:
         gtopdb_edges_df = pd.read_csv(
-            gtopdb_processed_dir / "gtopdb_p-l_edges.csv",
+            get_path(config, "gtopdb.interactions"),
             header=None,
             names=["Sequence", "SMILES", "Affinity"],
         )
@@ -565,7 +557,7 @@ if not check_files_exist(config, *checkpoint_files):
     neg_df["label"] = 0
     dl_p_edges_df = pd.concat([pos_df, neg_df], ignore_index=True)
     dl_p_edges_df.to_csv(
-        get_data_filepath(config, "link_prediction_labels"),
+        get_path(config, "processed.link_prediction_labels"),
         index=False,
         header=True,
     )
@@ -672,7 +664,7 @@ if not check_files_exist(config, *checkpoint_files):
         typed_edges_list, columns=["source", "target", "edge_type"]
     )
     typed_edges_df.to_csv(
-        get_data_filepath(config, "typed_edge_list"),
+        get_path(config, "processed.typed_edge_list"),
         index=False,
         header=True,
     )

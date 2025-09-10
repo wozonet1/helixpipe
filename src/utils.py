@@ -8,64 +8,86 @@ import torch
 from pathlib import Path
 
 
-def get_data_filepath(config: dict, filename_key: str) -> Path:
+def get_path(config: dict, file_key: str) -> Path:
     """
-    Constructs the full path for a data file based on the global config.
+    Constructs the full path for any file defined in the config.
+    This is the single source of truth for all file paths in the project.
+
+    It understands the `raw/processed` structure and the `baseline/gtopdb` variant.
 
     Args:
         config (dict): The loaded YAML configuration dictionary.
-        filename_key (str): The key for the desired filename in the config file's
-                            'filenames' section (e.g., "nodes_metadata").
+        file_key (str): A dot-separated key pointing to the filename in the config.
+                        e.g., "raw.dti_interactions", "processed.nodes_metadata",
+                        "processed.indexes.drug", "gtopdb.ligands"
 
     Returns:
-        Path: The complete, absolute path to the data file.
+        Path: The complete Path object for the requested file.
     """
     data_config = config["data"]
+    root_path = Path(data_config["root"])
+    dataset_name = data_config["dataset_name"]
 
-    # 1. Determine the base data path
-    datapath = Path(data_config["root"]) / data_config["dataset_name"]
+    # Split the key to navigate the config dictionary
+    key_parts = file_key.split(".")
+    data_type = key_parts[0]  # Should be 'raw', 'processed', or 'gtopdb'
 
-    # 2. Determine the subfolder ('baseline' or 'gtopdb') from the config
-    foldername = "gtopdb" if data_config["use_gtopdb"] else "baseline"
+    # 1. Determine the base directory
+    base_dir = None
+    if data_type == "raw":
+        raw_folder = data_config["subfolders"]["raw"]
+        base_dir = root_path / dataset_name / raw_folder
+    elif data_type == "processed":
+        processed_folder = data_config["subfolders"]["processed"]
+        variant_folder = "gtopdb" if data_config["use_gtopdb"] else "baseline"
+        base_dir = root_path / dataset_name / processed_folder / variant_folder
+    elif data_type == "gtopdb":
+        gtopdb_folder = data_config["subfolders"]["gtopdb_source"]
+        base_dir = root_path / gtopdb_folder
+    else:
+        raise KeyError(
+            f"Invalid file key prefix '{data_type}'. Must be 'raw', 'processed', or 'gtopdb'."
+        )
 
-    # 3. Get the filename from the config using the provided key
-    # This part handles nested keys like 'indexes.drug'
-    keys = filename_key.split(".")
-    current_level = data_config["filenames"]
-    for key in keys:
-        current_level = current_level[key]
-    filename = current_level
+    # 2. Retrieve the filename from the config
+    filename_dict_level = data_config["filenames"]
+    for part in key_parts:
+        filename_dict_level = filename_dict_level[part]
+    filename = filename_dict_level
 
-    return datapath / foldername / filename
+    return base_dir / filename
 
 
-def check_files_exist(config: dict, *filename_keys: str) -> bool:
+def check_files_exist(config: dict, *file_keys: str) -> bool:
     """
-    Checks if all specified data files exist.
+    Checks if all specified data files (referenced by their config keys) exist.
 
     Args:
         config (dict): The loaded YAML configuration dictionary.
-        *filename_keys (str): A variable number of filename keys from the config
-                              (e.g., "nodes_metadata", "features", "indexes.drug").
+        *file_keys (str): A variable number of dot-separated keys.
+                          e.g., "processed.nodes_metadata", "processed.node_features"
 
     Returns:
         bool: True if all files exist, False otherwise.
     """
-    all_exist = True
-    for key in filename_keys:
-        filepath = get_data_filepath(config, key)
-        if not filepath.exists():
-            print(f"File check FAILED: '{key}' not found at {filepath}")
-            all_exist = False
-            # Return early for efficiency
+    for key in file_keys:
+        try:
+            filepath = get_path(config, key)
+            if not filepath.exists():
+                print(
+                    f"File check FAILED: '{key}' not found at expected path: {filepath}"
+                )
+                return False
+        except (KeyError, TypeError) as e:
+            print(f"File check FAILED: Invalid key '{key}' provided. Error: {e}")
             return False
 
-    if all_exist:
-        # Get foldername just for the print statement
-        foldername = "gtopdb" if config["data"]["use_gtopdb"] else "baseline"
-        print(f"File check PASSED: All requested files exist in folder '{foldername}'.")
-
-    return all_exist
+    # If the loop completes without returning False, all files exist.
+    variant_folder = "gtopdb" if config["data"]["use_gtopdb"] else "baseline"
+    print(
+        f"File check PASSED: All requested files exist for the '{variant_folder}' variant."
+    )
+    return True
 
 
 def aug_random_walk(adj):
