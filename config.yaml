@@ -1,0 +1,93 @@
+# ===================================================================
+#      Configuration for DTI Prediction Project (v2.1)
+# ===================================================================
+# This version supports the raw/processed structure for ALL datasets.
+
+# --- Data Configuration ---
+data:
+  # The root directory for all data.
+  root: "data"
+
+  # The name of the primary dataset currently in use for the main pipeline.
+  primary_dataset: "DrugBank"
+
+  # The key strategic switch for your project.
+  use_gtopdb: true
+
+  # --- Subfolder structure definition ---
+  subfolders:
+    raw: "raw"
+    processed: "processed"
+
+  # --- Filename Registry ---
+  # This section now clearly separates files by their dataset.
+  files:
+    # --- Files related to the primary dataset (e.g., DrugBank) ---
+    DrugBank:
+      raw:
+        dti_interactions: "full.csv"
+      processed:
+        nodes_metadata: "nodes.csv"
+        node_features: "features.csv"
+        typed_edge_list: "typed_edges.csv"
+        link_prediction_labels: "dl_p_edges.csv"
+        molecule_similarity_matrix: "dl_similarity_matrix.pkl"
+        protein_similarity_matrix: "prot_similarity_matrix.pkl"
+        indexes:
+          drug: "indexes/drug2index.pkl"
+          ligand: "indexes/ligand2index.pkl"
+          protein: "indexes/prot2index.pkl"
+
+    # --- Files related to the GtoPdb dataset ---
+    gtopdb:
+      raw:
+        interactions: "interactions.csv"
+        ligands: "ligands.csv"
+        targets: "targets_and_families.csv"
+      processed:
+        ligands: "gtopdb_ligands.csv"
+        proteins: "gtopdb_proteins.csv"
+        interactions: "gtopdb_p-l_edges.csv"
+
+# --- Data Processing Parameters ---
+params:
+    protein_similarity_threshold: 0.8 # Assuming normalization is applied
+    max_pp_edges: 500
+    molecule_similarity_threshold: 0.988
+    gtopdb:
+      max_affinity_nM: 10000
+
+# --- Runtime Configuration ---
+runtime:
+  seed: 514
+  cpus: 80
+  gpu: "cuda:1"
+  force_restart: false
+
+training:
+  # The variant of the processed data to use ('baseline' or 'gtopdb')
+  # This corresponds to the subfolder in `processed/`
+  data_variant: "baseline" #or'gtopdb'
+
+  # Model architecture
+  model:
+    workflow: "ndls_gbdt"
+    rgcn:
+      hidden_channels: 128
+      out_channels: 128
+      num_layers: 2
+  ndls:
+      k1: 200        # Corresponds to old args.k1
+      epsilon1: 0.03 # Corresponds to old args.epsilon1
+      # ... other NDLS-specific parameters
+  gbdt:
+      n_estimators: 500
+      max_depth: 7
+  # Training hyperparameters
+  learning_rate: 0.001
+  weight_decay: 0.0005
+  epochs: 200
+  batch_size: 512 # For sampling edges during training
+
+  # Cross-validation settings
+  k_folds: 5

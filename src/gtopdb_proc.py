@@ -7,6 +7,19 @@ import time
 from pathlib import Path
 import requests
 import re
+import yaml
+from utils import get_path
+
+
+def load_config(config_path="config.yaml"):
+    """Loads the YAML config file from the project root."""
+    project_root = Path(__file__).parent.parent
+    with open(project_root / config_path, "r") as f:
+        return yaml.safe_load(f)
+
+
+# Load config at the start of the script
+config = load_config()
 
 
 def is_valid_uniprot_accession(accession):
@@ -124,7 +137,7 @@ def fetch_sequences_from_uniprot(uniprot_ids):
     return sequences_map
 
 
-def process_gtopdb_data(input_dir: str, output_dir: str):
+def process_gtopdb_data():
     """
     解析Guide to PHARMACOLOGY的原始数据文件,提取内源性配体-靶点相互作用，
     并生成可用于下游异构网络构建的干净文件。
@@ -138,13 +151,14 @@ def process_gtopdb_data(input_dir: str, output_dir: str):
     print("==========================================================")
 
     # --- 1. 加载核心数据文件 ---
-    print(f"\n[Step 1/4] Loading raw data files from: {input_dir}")
+
+    print("\n[Step 1/4] Loading raw data files ")
     try:
         interactions_df = pd.read_csv(
-            input_dir / "interactions.csv", low_memory=False, comment="#"
+            get_path(config, "gtopdb.raw.interactions"), low_memory=False, comment="#"
         )
         ligands_df = pd.read_csv(
-            input_dir / "ligands.csv", low_memory=False, comment="#"
+            get_path(config, "gtopdb.raw.ligands"), low_memory=False, comment="#"
         )
     except FileNotFoundError as e:
         print(f"Error: Raw CSV file not found! {e}")
@@ -165,13 +179,44 @@ def process_gtopdb_data(input_dir: str, output_dir: str):
         f"-> Found {len(endogenous_interactions)} interactions involving endogenous ligands."
     )
 
-    # 数据清洗：只保留有UniProt ID、配体ID和亲和力数值的关键记录
-    required_cols = ["Target UniProt ID", "Ligand ID", "Affinity Median"]
+    # [MODIFIED] 现在我们依赖 'Original Affinity Median nm'，所以它是必需的
+    required_cols = ["Target UniProt ID", "Ligand ID", "Original Affinity Median nm"]
     endogenous_interactions.dropna(subset=required_cols, inplace=True)
     print(
-        f"-> After cleaning (removing entries with missing IDs or affinity), {len(endogenous_interactions)} interactions remain."
+        f"-> After cleaning (removing entries with missing IDs or standardized affinity), {len(endogenous_interactions)} interactions remain."
     )
 
+    # --- [MODIFIED] Affinity-based Filtering ---
+    try:
+        affinity_threshold = config["params"]["gtopdb"]["max_affinity_nM"]
+        print(
+            f"--> Applying affinity threshold: retaining interactions with 'Original Affinity Median nm' <= {affinity_threshold} nM."
+        )
+
+        # 确保亲和力列是数值类型
+        endogenous_interactions["Original Affinity Median nm"] = pd.to_numeric(
+            endogenous_interactions["Original Affinity Median nm"], errors="coerce"
+        )
+        endogenous_interactions.dropna(
+            subset=["Original Affinity Median nm"], inplace=True
+        )
+
+        original_count = len(endogenous_interactions)
+
+        # [MODIFIED] 使用正确的列进行筛选
+        endogenous_interactions = endogenous_interactions[
+            endogenous_interactions["Original Affinity Median nm"] <= affinity_threshold
+        ].copy()
+
+        print(
+            f"--> After affinity filtering, {len(endogenous_interactions)} of {original_count} interactions were retained."
+        )
+
+    except KeyError:
+        print(
+            "--> WARNING: Affinity threshold not found in config.yaml. Skipping affinity-based filtering."
+        )
+    # --- [NEW] End: Affinity-based Filtering ---
     # --- 3. 提取并清洗配体信息 (获取SMILES) ---
     print("\n[Step 3/4] Extracting SMILES for the relevant endogenous ligands...")
 
@@ -238,7 +283,7 @@ def process_gtopdb_data(input_dir: str, output_dir: str):
         columns={"target_sequence": 0, "SMILES": 1, "Affinity Median": 2}, inplace=True
     )
 
-    output_edge_path = output_dir / "gtopdb_p-l_edges.csv"
+    output_edge_path = get_path(config, "gtopdb.processed.interactions")
     output_edges.to_csv(output_edge_path, index=False, header=False)
     print(
         f"-> Successfully saved {len(output_edges)} Protein-Ligand edges (with sequences and SMILES) to: {output_edge_path}"
@@ -247,7 +292,7 @@ def process_gtopdb_data(input_dir: str, output_dir: str):
     # b) 保存新的配体信息文件 (可以保持不变，也可以只保存一次)
     output_ligands = final_df[["PubChem CID", "SMILES"]].drop_duplicates()
     output_ligands.rename(columns={"PubChem CID": 0, "SMILES": 1}, inplace=True)
-    output_ligand_path = output_dir / "gtopdb_ligands.csv"
+    output_ligand_path = get_path(config, "gtopdb.processed.ligands")
     output_ligands.to_csv(output_ligand_path, index=False, header=False)
     print(
         f"-> Successfully saved info for {len(output_ligands)} Ligand nodes to: {output_ligand_path}"
@@ -263,7 +308,7 @@ def process_gtopdb_data(input_dir: str, output_dir: str):
     output_proteins.rename(
         columns={"Target UniProt ID": 0, "target_sequence": 1}, inplace=True
     )
-    output_protein_path = output_dir / "gtopdb_proteins.csv"
+    output_protein_path = get_path(config, "gtopdb.processed.proteins")
     output_proteins.to_csv(output_protein_path, index=False, header=False)
     print(
         f"-> Successfully saved info for {len(output_proteins)} Protein nodes to: {output_protein_path}"
@@ -275,9 +320,5 @@ def process_gtopdb_data(input_dir: str, output_dir: str):
 
 
 if __name__ == "__main__":
-    # --- 配置区 ---
-    input_directory = Path("../data/gtopdb/raw")
-    output_directory = Path("../data/gtopdb/processed")
-
     # --- 执行主函数 ---
-    process_gtopdb_data(input_directory, output_directory)
+    process_gtopdb_data()

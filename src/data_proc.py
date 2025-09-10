@@ -14,12 +14,24 @@ from Bio.Align import substitution_matrices
 from tqdm import tqdm
 from joblib import Parallel, delayed
 from pathlib import Path
-from utils import get_path, check_files_exist
+from utils import get_path, check_files_exist, setup_dataset_directories
 import yaml
 
 
 # region d/l feature
 # 将SMILES字符串转换为图数据
+
+
+# --- FIXED VERSION of canonicalize_smiles ---
+def canonicalize_smiles(smiles):
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is not None:
+        return Chem.MolToSmiles(mol, canonical=True)
+    else:
+        print(f"Warning: Invalid SMILES string found and will be ignored: {smiles}")
+        return None  # Return None for invalid SMILES
+
+
 def smiles_to_graph(smiles):
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -72,12 +84,9 @@ class GCNLayer(torch.nn.Module):
 
 
 # 特征提取
-def extract_features(smiles):
+def extract_molecule_features(smiles, model, device):
     graph_data = smiles_to_graph(smiles)
-    gcn_layer = GCNLayer(in_feats=5, out_feats=128).to(device)  # 5个原子特征到128维嵌入
-    node_embeddings = gcn_layer(
-        graph_data.x.to(device), graph_data.edge_index.to(device)
-    )
+    node_embeddings = model(graph_data.x.to(device), graph_data.edge_index.to(device))
     # 使用平均池化作为读出函数
     molecule_embedding = node_embeddings.mean(dim=0)
     return molecule_embedding
@@ -150,9 +159,8 @@ class ProteinGCN(torch.nn.Module):
 
 
 # 特征提取
-def extract_aa_features(sequence):
+def extract_protein_features(sequence: str, model, device):
     graph_data = aa_sequence_to_graph(sequence)
-    model = ProteinGCN().to(device)
     node_embeddings = model(graph_data.to(device))
     # 使用平均池化作为读出函数
     protein_embedding = node_embeddings.mean(dim=0)
@@ -191,8 +199,6 @@ def calculate_drug_similarity(drug_list):
 
 
 # region p sim
-
-
 def align_pair(seq1: str, seq2: str, aligner_config: dict) -> float:
     # 在每个并行进程中重新创建一个 Aligner 对象
     try:
@@ -228,7 +234,7 @@ def get_custom_blosum62_with_U():
     return substitution_matrices.Array(data=custom_matrix_dict)
 
 
-def calculate_protein_similarity(sequence_list):
+def calculate_protein_similarity(sequence_list, cpus: int):
     # 定义 Aligner 的配置字典，以便传递给并行任务s
     aligner_config = {
         "mode": "local",
@@ -237,27 +243,53 @@ def calculate_protein_similarity(sequence_list):
         "extend_gap_score": -0.5,
     }
     num_sequences = len(sequence_list)
-    similarity_matrix = np.zeros((num_sequences, num_sequences))
-    tasks = []
+    print("--> Pre-calculating self-alignment scores for normalization...")
+    self_scores = Parallel(n_jobs=cpus)(
+        delayed(align_pair)(seq, seq, aligner_config)
+        for seq in tqdm(sequence_list, desc="Self-Alignment Pre-computation")
+    )
+    # 加上一个很小的数，防止未来出现除以零的错误 (例如空序列导致score为0)
+    self_scores = np.array(self_scores, dtype=np.float32) + 1e-8
 
+    # =========================================================================
+    # 3. [两两比对阶段] 生成所有唯一的比对任务并并行计算原始分数
+    # =========================================================================
+    tasks = []
     for i in range(num_sequences):
         for j in range(i, num_sequences):
+            # 我们只计算上三角部分，包括对角线
             tasks.append((i, j))
 
-    # 4. 使用 Parallel 和 delayed 来执行并行计算
-    results = Parallel(n_jobs=runtime_config["cpus"])(
+    print("--> Calculating pairwise raw alignment scores...")
+    raw_pairwise_scores = Parallel(n_jobs=cpus)(
         delayed(align_pair)(sequence_list[i], sequence_list[j], aligner_config)
-        for i, j in tqdm(tasks, desc="Calculating Similarities (Multi-CPU)")
+        for i, j in tqdm(tasks, desc="Pairwise Alignment")
     )
 
-    # 5. 将计算结果填充回矩阵
-    similarity_matrix = np.zeros((num_sequences, num_sequences))
-    for (i, j), score in zip(tasks, results):
+    # =========================================================================
+    # 4. [归一化与填充阶段] 使用预计算的分数进行归一化并构建矩阵
+    # =========================================================================
+    print("--> Populating similarity matrix with normalized scores...")
+    similarity_matrix = np.zeros((num_sequences, num_sequences), dtype=np.float32)
+
+    for (i, j), raw_score in zip(
+        tqdm(tasks, desc="Normalizing and Filling Matrix"), raw_pairwise_scores
+    ):
         if i == j:
-            similarity_matrix[i, j] = 1.0  # 理论上应该是序列长度，但这里按原逻辑设为1
+            similarity_matrix[i, j] = 1.0
         else:
-            similarity_matrix[i, j] = score
-            similarity_matrix[j, i] = score
+            # 计算归一化的分母
+            denominator = np.sqrt(self_scores[i] * self_scores[j])
+
+            # 应用归一化公式
+            normalized_score = raw_score / denominator
+
+            # 使用 np.clip 确保分数严格落在 [0, 1] 区间，处理浮点数精度问题
+            final_score = np.clip(normalized_score, 0, 1)
+
+            # 因为矩阵是对称的，所以同时填充 (i, j) 和 (j, i)
+            similarity_matrix[i, j] = final_score
+            similarity_matrix[j, i] = final_score
 
     return similarity_matrix
 
@@ -280,6 +312,8 @@ data_config = config.get("data", {})
 params_config = config.get("params", {})
 runtime_config = config.get("runtime", {})
 device = runtime_config["gpu"]
+primary_dataset = data_config["primary_dataset"]
+restart_flag = runtime_config["force_restart"]
 # set random seed
 random.seed(runtime_config["seed"])
 np.random.seed(runtime_config["seed"])
@@ -288,9 +322,9 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed(runtime_config["seed"])
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
-
-full_df = pd.read_csv(get_path(config, "raw.dti_interactions"))
+# make dir
+setup_dataset_directories(config)
+full_df = pd.read_csv(get_path(config, f"{primary_dataset}.raw.dti_interactions"))
 # endregion
 
 # region list
@@ -300,15 +334,20 @@ full_df = pd.read_csv(get_path(config, "raw.dti_interactions"))
 
 # 1a. 加载基础数据集的实体
 print("--- [Stage 1a] Loading base entities from full_df.csv ---")
-required_index_files = [
-    "processed.indexes.drug",
-    "processed.indexes.ligand",
-    "processed.indexes.protein",
-    "processed.nodes_metadata",
-]
-if not check_files_exist(config, *required_index_files):
+checkpoint_files_dict = {
+    "drug": f"{primary_dataset}.processed.indexes.drug",
+    "ligand": f"{primary_dataset}.processed.indexes.ligand",
+    "protein": f"{primary_dataset}.processed.indexes.protein",
+    "nodes": f"{primary_dataset}.processed.nodes_metadata",
+}
+if not check_files_exist(config, *checkpoint_files_dict.values()) or restart_flag:
     # 使用 .unique().tolist() 更高效
-    base_drugs_list = full_df["SMILES"].unique().tolist()
+    unique_smiles = full_df["SMILES"].dropna().unique()
+    base_drugs_list = [
+        canonicalize_smiles(s)
+        for s in tqdm(unique_smiles, desc="Canonicalizing Drug SMILES")
+    ]
+    base_drugs_list = [s for s in base_drugs_list if s is not None]
     base_proteins_list = full_df["Protein"].unique().tolist()
     print(
         f"-> Found {len(base_drugs_list)} unique drugs and {len(base_proteins_list)} unique proteins in base dataset."
@@ -323,7 +362,7 @@ if not check_files_exist(config, *required_index_files):
         )
         try:
             gtopdb_ligands_df = pd.read_csv(
-                get_path(config, "gtopdb.ligands"),
+                get_path(config, "gtopdb.processed.ligands"),
                 header=None,
                 names=["CID", "SMILES"],
             )
@@ -331,7 +370,7 @@ if not check_files_exist(config, *required_index_files):
             print(f"-> Found {len(extra_ligands_list)} unique ligands from GtoPdb.")
 
             gtopdb_proteins_df = pd.read_csv(
-                get_path(config, "gtopdb.proteins"),
+                get_path(config, "gtopdb.processed.proteins"),
                 header=None,
                 names=["UniProt", "Sequence"],
             )
@@ -395,47 +434,29 @@ if not check_files_exist(config, *required_index_files):
     print(f"-> Indexed {len(prot2index)} total proteins.")
 
     # --- 保存所有文件 ---
-
-    # 5. 保存索引文件
+    pkl.dump(drug2index, open(get_path(config, checkpoint_files_dict["drug"]), "wb"))
     pkl.dump(
-        drug2index,
-        open(get_path(config, "processed.indexes.drug"), "wb"),
+        ligand2index, open(get_path(config, checkpoint_files_dict["ligand"]), "wb")
     )
-    pkl.dump(
-        ligand2index,
-        open(get_path(config, "processed.indexes.ligand"), "wb"),
-    )
-    pkl.dump(
-        prot2index,
-        open(get_path(config, "processed.indexes.protein"), "wb"),
-    )
-
+    pkl.dump(prot2index, open(get_path(config, checkpoint_files_dict["protein"]), "wb"))
     # 6. 保存节点元数据文件
     AllNode_df = pd.DataFrame(node_data)  # node_data已经包含了所有类型
     AllNode_df.to_csv(
-        get_path(config, "processed.nodes_metadata"),
-        index=False,
-        header=True,
+        get_path(config, checkpoint_files_dict["nodes"]), index=False, header=True
     )
     print("-> Index and metadata files saved successfully.")
 
 else:
     print("\n--- [Stage 2] Loading indices and metadata from cache... ---")
-    index_files = {
-        "drug": "processed.indexes.drug",
-        "ligand": "processed.indexes.ligand",
-        "prot": "processed.indexes.protein",
-    }
-    # 使用字典推导式一次性加载
-    indices = {
-        key: pkl.load(get_path(config, path).open("rb"))
-        for key, path in index_files.items()
-    }
-    drug2index, ligand2index, prot2index = (
-        indices["drug"],
-        indices["ligand"],
-        indices["prot"],
-    )
+    # Reuse the list defined above. No more duplication.
+    drug_idx_path = get_path(config, checkpoint_files_dict["drug"])
+    ligand_idx_path = get_path(config, checkpoint_files_dict["ligand"])
+    prot_idx_path = get_path(config, checkpoint_files_dict["protein"])
+
+    drug2index = pkl.load(open(drug_idx_path, "rb"))
+    ligand2index = pkl.load(open(ligand_idx_path, "rb"))
+    prot2index = pkl.load(open(prot_idx_path, "rb"))
+
 # --- 为后续步骤准备最终的、完整的实体列表 ---
 # 这些列表现在是从索引字典的键中动态生成的，而不是作为中间变量传来传去
 final_smiles_list = sorted(list(drug2index.keys()) + list(ligand2index.keys()))
@@ -448,51 +469,77 @@ dl2index = {**drug2index, **ligand2index}  # 统一的小分子索引字典
 # ===================================================================
 
 # region features&sim
-checkpoint_files = [
-    "processed.molecule_similarity_matrix",
-    "processed.protein_similarity_matrix",
-    "processed.node_features",
-]
-if not check_files_exist(config, *checkpoint_files):
+
+checkpoint_files_dict = {
+    "molecule_similarity_matrix": f"{primary_dataset}.processed.molecule_similarity_matrix",
+    "protein_similarity_matrix": f"{primary_dataset}.processed.protein_similarity_matrix",
+    "node_features": f"{primary_dataset}.processed.node_features",
+}
+if not check_files_exist(config, *checkpoint_files_dict.values()) or restart_flag:
     print("\n--- [Stage 3] Generating features and similarity matrices... ---")
+    print("--> Initializing feature extraction models...")
+    # Using your GCNLayer, but a standard GCNConv would be better.
+    # .eval() is crucial: it disables dropout and other training-specific layers.
+    molecule_feature_extractor = GCNLayer(in_feats=5, out_feats=128).to(device).eval()
+    protein_feature_extractor = ProteinGCN().to(device).eval()
+
     drug_embeddings = []
-    for i, d in enumerate(final_smiles_list):
-        drug_embeddings.append(extract_features(d).cpu().detach().numpy())
+    # Use the new function signature in the loop
+    for d in tqdm(final_smiles_list, desc="Extracting Molecule Features"):
+        embedding = extract_molecule_features(d, molecule_feature_extractor, device)
+        drug_embeddings.append(embedding.cpu().detach().numpy())
 
     protein_embeddings = []
-    for i, p in enumerate(final_proteins_list):
-        protein_embeddings.append(extract_aa_features(p).cpu().detach().numpy())
+    for p in tqdm(final_proteins_list, desc="Extracting Protein Features"):
+        embedding = extract_protein_features(p, protein_feature_extractor, device)
+        protein_embeddings.append(embedding.cpu().detach().numpy())
 
     # prot_similarity_matrix = cosine_similarity(protein_embeddings)
     dl_similarity_matrix = calculate_drug_similarity(final_smiles_list)
     # notice:用U与C一样的方式计算相似度
-    prot_similarity_matrix = calculate_protein_similarity(final_proteins_list)
+    prot_similarity_matrix = calculate_protein_similarity(
+        final_proteins_list, runtime_config["cpus"]
+    )
 
     pkl.dump(
         dl_similarity_matrix,
-        open(get_path(config, "processed.molecule_similarity_matrix"), "wb"),
+        open(
+            get_path(config, checkpoint_files_dict["molecule_similarity_matrix"]),
+            "wb",
+        ),
     )
     pkl.dump(
         prot_similarity_matrix,
-        open(get_path(config, "processed.protein_similarity_matrix"), "wb"),
+        open(
+            get_path(config, checkpoint_files_dict["protein_similarity_matrix"]),
+            "wb",
+        ),
     )
     features_df = pd.concat(
         [pd.DataFrame(drug_embeddings), pd.DataFrame(protein_embeddings)], axis=0
     )
     features_df.to_csv(
-        get_path(config, "processed.node_features"),
+        get_path(config, checkpoint_files_dict["node_features"]),
         index=False,
         header=False,
     )
 else:
     # 如果文件已存在，则加载它们以供后续步骤使用
     print("\n--- [Stage 3] Loading features and similarity matrices from cache... ---")
-    features_df = pd.read_csv(get_path(config, "processed.node_features"), header=None)
     dl_similarity_matrix = pkl.load(
-        open(get_path(config, "processed.molecule_similarity_matrix"), "rb")
+        open(
+            get_path(config, checkpoint_files_dict["molecule_similarity_matrix"]),
+            "rb",
+        )
     )
     prot_similarity_matrix = pkl.load(
-        open(get_path(config, "processed.protein_similarity_matrix"), "rb")
+        open(
+            get_path(config, checkpoint_files_dict["protein_similarity_matrix"]),
+            "rb",
+        )
+    )
+    features_df = pd.read_csv(
+        get_path(config, checkpoint_files_dict["node_features"]), header=None
     )
 
 
@@ -502,8 +549,11 @@ else:
 
 # region base edges
 # 统一的检查点，检查最终的两个核心产物
-checkpoint_files = ["processed.typed_edge_list", "processed.link_prediction_labels"]
-if not check_files_exist(config, *checkpoint_files):
+checkpoint_files_dict = {
+    "typed_edge": f"{primary_dataset}.processed.typed_edge_list",
+    "link_labels": f"{primary_dataset}.processed.link_prediction_labels",
+}
+if not check_files_exist(config, *checkpoint_files_dict.values()) or restart_flag:
     print(
         "\n--- [Stage 4] Generating labeled edges for training and full typed graph... ---"
     )
@@ -522,7 +572,7 @@ if not check_files_exist(config, *checkpoint_files):
     # (可选) 从GtoPdb中提取 L-P 正样本
     if data_config["use_gtopdb"]:
         gtopdb_edges_df = pd.read_csv(
-            get_path(config, "gtopdb.interactions"),
+            get_path(config, "gtopdb.processed.interactions"),
             header=None,
             names=["Sequence", "SMILES", "Affinity"],
         )
@@ -533,6 +583,7 @@ if not check_files_exist(config, *checkpoint_files):
                 positive_pairs.append((l_idx, p_idx))
 
     # 进行随机负采样
+    # TODO: 采用高级策略负采样
     negative_pairs = []
     all_molecule_ids = list(dl2index.values())
     all_protein_ids = list(prot2index.values())
@@ -557,7 +608,7 @@ if not check_files_exist(config, *checkpoint_files):
     neg_df["label"] = 0
     dl_p_edges_df = pd.concat([pos_df, neg_df], ignore_index=True)
     dl_p_edges_df.to_csv(
-        get_path(config, "processed.link_prediction_labels"),
+        get_path(config, checkpoint_files_dict["link_labels"]),
         index=False,
         header=True,
     )
@@ -634,7 +685,9 @@ if not check_files_exist(config, *checkpoint_files):
     print(f"-> Added {pp_count} Protein-Protein edges to the graph.")
 
     # 3. 添加 D-D / L-L / D-L 相似性边
-    mol_rows, mol_cols = np.where(dl_similarity_matrix > 0.988)
+    mol_rows, mol_cols = np.where(
+        dl_similarity_matrix > params_config["molecule_similarity_threshold"]
+    )
     dd_count, ll_count, dl_count = 0, 0, 0
     # 我们需要一个快速的方法来查找ID的类型
     id_to_type_map = {idx: "drug" for idx in drug2index.values()}
@@ -664,7 +717,7 @@ if not check_files_exist(config, *checkpoint_files):
         typed_edges_list, columns=["source", "target", "edge_type"]
     )
     typed_edges_df.to_csv(
-        get_path(config, "processed.typed_edge_list"),
+        get_path(config, checkpoint_files_dict["typed_edge"]),
         index=False,
         header=True,
     )
