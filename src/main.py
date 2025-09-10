@@ -6,12 +6,13 @@ from sklearn.model_selection import StratifiedKFold
 import torch
 import torch.nn.functional as F
 import argparse
-import pickle as pkl
+import pickle as pkl  # noqa: F401
 from model import DNN
 from train import aver
 from utils import sparse_mx_to_torch_sparse_tensor, aug_random_walk, load_data
 from tqdm import tqdm
 from datetime import datetime
+# TODO: use mlflow to track experiments
 
 parser = argparse.ArgumentParser(description="RUN TRAINING")
 parser.add_argument("--device", default="cuda:1", type=str, help="Device of Training")
@@ -33,16 +34,18 @@ cmdargs = parser.parse_args()
 
 pd.set_option("display.max_rows", 10)
 
-if cmdargs.dataset == "bindingdb":
-    drug_num = 14643
-    protein_num = 2623
-elif cmdargs.dataset == "DrugBank1.4":
-    drug_num = 549
-    protein_num = 424
-else:
-    num = pkl.load(open(f"../data/{cmdargs.dataset}/num.pkl", "rb"))
-    drug_num = num["drug_num"]
-    protein_num = num["prot_num"]
+nodes_df = pd.read_csv("../data/DrugBank/nodes.csv").to_csv(
+    "../data/DrugBank/Allnode_DrPr.csv", header=None, index=False
+)
+
+drug_ids = nodes_df[nodes_df["node_type"] == "drug"]["node_id"].tolist()
+ligand_ids = nodes_df[nodes_df["node_type"] == "ligand"]["node_id"].tolist()
+protein_ids = nodes_df[nodes_df["node_type"] == "protein"]["node_id"].tolist()
+
+drug_num = len(drug_ids)
+ligand_num = len(ligand_ids)
+protein_num = len(protein_ids)
+total_nodes = len(nodes_df)
 
 print(f"Start Running on Dataset: {cmdargs.dataset}\n{cmdargs.msg}\n")
 

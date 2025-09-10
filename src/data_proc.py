@@ -1,5 +1,4 @@
 import random
-
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
@@ -14,123 +13,12 @@ from Bio import Align
 from Bio.Align import substitution_matrices
 from tqdm import tqdm
 from joblib import Parallel, delayed
-import argparse
 from pathlib import Path
-from utils import DPLdata_filepath
-
-# region gtopdb data process
-
-
-# def integrate_gtopdb_data(
-#     data_dir, smiles_list, protein_sequences, drug2index, prot2index
-# ):
-#     """
-#     将预处理好的GtoPdb数据整合进现有的节点和边列表中。
-#     这个函数是幂等的：如果整合已经完成，它会从缓存加载。
-#     主义data_dir应该是当前数据集的目录,而不是processed_gtopdb目录。
-#     """
-#     print("\n--- [Integration Stage] Starting GtoPdb Data Integration ---")
-
-#     # 定义缓存文件的路径
-#     integrated_data_cache_path = data_dir / "integration_cache.pkl"
-
-#     # 检查点逻辑
-#     if integrated_data_cache_path.exists():
-#         print("-> Found existing integration cache. Loading...")
-#         with open(integrated_data_cache_path, "rb") as f:
-#             cached_data = pkl.load(f)
-#         print("--- [Integration Stage] Complete (from cache). ---")
-#         return (
-#             cached_data["smiles_list"],
-#             cached_data["protein_sequences"],
-#             cached_data["drug2index"],
-#             cached_data["prot2index"],
-#             cached_data["extra_pl_edges"],
-#         )
-
-#     print("-> No cache found. Performing first-time integration...")
-
-#     # --- 1. 加载GtoPdb处理后的文件 ---
-#     gtopdb_processed_dir = data_dir.parent / "gtopdb/processed_gtopdb"
-#     try:
-#         gtopdb_ligands = pd.read_csv(
-#             gtopdb_processed_dir / "gtopdb_ligands.csv",
-#             header=None,
-#             names=["PubChem CID", "SMILES"],
-#         )
-#         gtopdb_edges = pd.read_csv(
-#             gtopdb_processed_dir / "gtopdb_p-l_edges.csv",
-#             header=None,
-#             names=["UniProt ID", "PubChem CID", "Affinity"],
-#         )
-#     except FileNotFoundError:
-#         print(
-#             "Warning: Processed GtoPdb files not found. Skipping integration."
-#             "Please run gtopdb_proc.py first if you want to include this data."
-#         )
-#         # 如果文件不存在，直接返回原始数据，不进行任何操作
-#         return smiles_list, protein_sequences, drug2index, prot2index, []
-
-#     # --- 2. 整合新的配体节点 (Ligands) ---
-#     original_drug_count = len(drug2index)
-#     new_smiles_added = 0
-
-#     for _, row in gtopdb_ligands.iterrows():
-#         smiles = row["SMILES"]
-#         # 只有当这个SMILES是全新的，才把它加入
-#         if smiles not in drug2index:
-#             smiles_list.append(smiles)
-#             drug2index[smiles] = len(drug2index)  # 分配新的全局唯一ID
-#             new_smiles_added += 1
-
-#     print(f"-> Added {new_smiles_added} new unique ligand nodes from GtoPdb.")
-
-#     # --- 3. 整合新的蛋白质-配体边 (P-L Edges) ---
-#     extra_pl_edges = []
-#     edges_added = 0
-
-#     # 创建一个SMILES到ID的反向映射，以方便查找
-#     cid_to_smiles = gtopdb_ligands.set_index("PubChem CID")["SMILES"]
-
-#     for _, row in gtopdb_edges.iterrows():
-#         uniprot_id = row["UniProt ID"]
-#         pubchem_cid = row["PubChem CID"]
-
-#         # 查找对应的SMILES
-#         smiles = cid_to_smiles.get(pubchem_cid)
-
-#         # 只有当这条边的两个端点都存在于我们的索引中时，才添加它
-#         if uniprot_id in prot2index and smiles in drug2index:
-#             prot_idx = prot2index[uniprot_id]
-#             drug_idx = drug2index[smiles]
-#             # 您也可以在这里保留亲和力值 row['Affinity']，如果后续需要的话
-#             extra_pl_edges.append((prot_idx, drug_idx))
-#             edges_added += 1
-
-#     print(f"-> Added {edges_added} new Protein-Ligand edges from GtoPdb.")
-
-#     # --- 4. 保存缓存，以便下次直接加载 ---
-#     cache_data = {
-#         "smiles_list": smiles_list,
-#         "protein_sequences": protein_sequences,
-#         "drug2index": drug2index,
-#         "prot2index": prot2index,
-#         "extra_pl_edges": extra_pl_edges,
-#     }
-#     with open(integrated_data_cache_path, "wb") as f:
-#         pkl.dump(cache_data, f)
-
-#     print(f"-> Integration results saved to cache: {integrated_data_cache_path}")
-#     print("--- [Integration Stage] Complete. ---")
-
-#     return smiles_list, protein_sequences, drug2index, prot2index, extra_pl_edges
+from utils import get_data_filepath, check_files_exist
+import yaml
 
 
-# endregion
-
-# region d feature
-
-
+# region d/l feature
 # 将SMILES字符串转换为图数据
 def smiles_to_graph(smiles):
     mol = Chem.MolFromSmiles(smiles)
@@ -274,9 +162,9 @@ def extract_aa_features(sequence):
 # endregion
 
 
-def calculate_drug_similarity(smiles_list):
+def calculate_drug_similarity(drug_list):
     # 将SMILES转换为RDKit分子对象
-    molecules = [Chem.MolFromSmiles(smiles) for smiles in smiles_list]
+    molecules = [Chem.MolFromSmiles(smiles) for smiles in drug_list]
     fpgen = GetMorganGenerator(radius=2, fpSize=2048)
     fingerprints = [fpgen.GetFingerprint(mol) for mol in molecules]
 
@@ -357,7 +245,7 @@ def calculate_protein_similarity(sequence_list):
             tasks.append((i, j))
 
     # 4. 使用 Parallel 和 delayed 来执行并行计算
-    results = Parallel(n_jobs=args.cpus)(
+    results = Parallel(n_jobs=runtime_config["cpus"])(
         delayed(align_pair)(sequence_list[i], sequence_list[j], aligner_config)
         for i, j in tqdm(tasks, desc="Calculating Similarities (Multi-CPU)")
     )
@@ -376,270 +264,423 @@ def calculate_protein_similarity(sequence_list):
 
 # endregion
 
+
 # region init
+def load_config(config_path="config.yaml"):
+    """Loads the YAML config file."""
+    # We assume the script is run from the `src` directory, so config is `../config.yaml`
+    # A more robust way is to determine the project root, but this works for now.
+    project_root = Path(__file__).parent.parent
+    with open(project_root / config_path, "r") as f:
+        return yaml.safe_load(f)
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--dataset", type=str, default="DrugBank", help="type of dataset.")
-parser.add_argument("--cpus", type=int, default=80, help="Number of cpus to use.")
-parser.add_argument("--seed", type=int, default=514, help="Random seed.")
-parser.add_argument("--gpu", type=str, default="cuda:1", help="which gpu to use.")
-parser.add_argument(
-    "--gtopdb", type=bool, default=False, help="Whether to integrate GtoPdb data."
-)
-args = parser.parse_args()
-random.seed(args.seed)
-np.random.seed(args.seed)
-torch.manual_seed(args.seed)
+
+config = load_config()
+data_config = config.get("data", {})
+params_config = config.get("params", {})
+runtime_config = config.get("runtime", {})
+device = runtime_config["gpu"]
+# set random seed
+random.seed(runtime_config["seed"])
+np.random.seed(runtime_config["seed"])
+torch.manual_seed(runtime_config["seed"])
 if torch.cuda.is_available():
-    torch.cuda.manual_seed(args.seed)
-device = args.gpu
-
+    torch.cuda.manual_seed(runtime_config["seed"])
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+# get paths
 current_path = Path(__file__)
-datapath = current_path.parent.parent / f"data/{args.dataset}"
-foldername = "gtopdb" if args.gtopdb else "baseline"
-
+datapath = current_path.parent.parent / f"data/{data_config['dataset_name']}"
+foldername = "gtopdb" if data_config["use_gtopdb"] else "baseline"
+gtopdb_processed_dir = datapath.parent / "gtopdb/processed"
+# create dirs if not exist
 if not (datapath / foldername).exists():
     (datapath / foldername).mkdir(parents=True, exist_ok=True)
+    (datapath / foldername / "indexes").mkdir(parents=True, exist_ok=True)
 
+full_df = pd.read_csv(datapath / "full.csv")
+# endregion
 
-def check_file_exists(*file_names: str):
-    for filename in file_names:
-        if not DPLdata_filepath(datapath, filename, foldername).exists():
-            return False
-    print(f"All {file_names} in  {foldername} exist!")
-    return True
+# region list
+# ===================================================================
+# --- STAGE 1: Load, Merge, and Index Entities ---
+# ===================================================================
 
-
-full = pd.read_csv(datapath / "full.csv")
-smiles_list = []
-protein_sequences = []
-
-for i, row in full.iterrows():
-    if row["SMILES"] not in smiles_list:
-        smiles_list.append(row["SMILES"])
-    if row["Protein"] not in protein_sequences:
-        protein_sequences.append(row["Protein"])
-
-if args.gtopdb:
-    extra_p_sequences = []
-    extra_p = pd.read_csv(
-        datapath.parent / "gtopdb/processed/gtopdb_p-l_edges.csv",
-        header=None,
-        low_memory=False,
-    )
-    for i, row in extra_p.iterrows():
-        extra_p_sequences.append(row[0])
-    print(f"Extra proteins from GtoPdb: {len(extra_p_sequences)}")
-    base_p_num = len(protein_sequences)
-    protein_sequences += extra_p_sequences
-    protein_sequences = list(set(protein_sequences))
-    final_p_num = len(protein_sequences)
+# 1a. 加载基础数据集的实体
+print("--- [Stage 1a] Loading base entities from full_df.csv ---")
+required_index_files = [
+    "indexes.drug",
+    "indexes.ligand",
+    "indexes.protein",
+    "nodes_metadata",
+]
+if not check_files_exist(config, *required_index_files):
+    # 使用 .unique().tolist() 更高效
+    base_drugs_list = full_df["SMILES"].unique().tolist()
+    base_proteins_list = full_df["Protein"].unique().tolist()
     print(
-        f"Added {final_p_num - base_p_num} unique proteins, \
-        Total proteins after GtoPdb integration: {final_p_num}"
+        f"-> Found {len(base_drugs_list)} unique drugs and {len(base_proteins_list)} unique proteins in base dataset."
     )
 
-# endregion
-
-
-# region index
-if not check_file_exists("drug2index.pkl", "prot2index.pkl"):
-    prot2index = {}
-    drug2index = {}
-    for i, d in enumerate(smiles_list):
-        if d not in drug2index:
-            drug2index[d] = len(drug2index)
-    for i, p in enumerate(protein_sequences):
-        if p not in prot2index:
-            prot2index[p] = len(drug2index) + len(prot2index)
-
-    pkl.dump(
-        drug2index, open(DPLdata_filepath(datapath, "drug2index.pkl", foldername), "wb")
-    )
-    pkl.dump(
-        prot2index, open(DPLdata_filepath(datapath, "prot2index.pkl", foldername), "wb")
-    )
-# TODO: add ligand edge
-# endregion
-
-# region base edge&nodes
-if not check_file_exists(
-    "DrPrNum_DrPr.csv",
-    "AllNegative_DrPr.csv",
-    "Allnode_DrPr.csv",  # TODO: add typed nodes and edges
-    "num.pkl",
-):
-    positive_pair_d = []
-    positive_pair_p = []
-    positive_pair = []
-    for i, row in full.iterrows():
-        if int(row["Y"]) == 1:
-            positive_pair_d.append(drug2index[row["SMILES"]])
-            positive_pair_p.append(prot2index[row["Protein"]])
-            positive_pair.append(
-                (drug2index[row["SMILES"]], prot2index[row["Protein"]])
+    # 1b. 根据开关，加载GtoPdb的“扩展包”实体
+    extra_ligands_list = []
+    extra_proteins_list = []
+    if data_config["use_gtopdb"]:
+        print(
+            "\n--- [Stage 1b] GtoPdb integration ENABLED. Loading extra entities... ---"
+        )
+        try:
+            gtopdb_ligands_df = pd.read_csv(
+                gtopdb_processed_dir / "gtopdb_ligands.csv",
+                header=None,
+                names=["CID", "SMILES"],
             )
+            extra_ligands_list = gtopdb_ligands_df["SMILES"].unique().tolist()
+            print(f"-> Found {len(extra_ligands_list)} unique ligands from GtoPdb.")
 
-    negative_pair_d = []
-    negative_pair_p = []
-    ind_d = list(drug2index.values())
-    ind_p = list(prot2index.values())
-    for _ in range(len(positive_pair)):
-        i_d = random.choice(ind_d)
-        i_p = random.choice(ind_p)
-        if (i_d, i_p) not in positive_pair:
-            negative_pair_d.append(i_d)
-            negative_pair_p.append(i_p)
+            gtopdb_proteins_df = pd.read_csv(
+                gtopdb_processed_dir / "gtopdb_proteins.csv",
+                header=None,
+                names=["UniProt", "Sequence"],
+            )
+            extra_proteins_list = gtopdb_proteins_df["Sequence"].unique().tolist()
+            print(f"-> Found {len(extra_proteins_list)} unique proteins from GtoPdb.")
 
-    Allnode = [i for i in range(len(drug2index) + len(prot2index))]
-    Allnode_df = pd.DataFrame({"node": Allnode})
+        except FileNotFoundError:
+            print(
+                "Warning: Processed GtoPdb files not found. Continuing without GtoPdb data."
+            )
+            data_config["use_gtopdb"] = False  # 将开关关掉，确保后续逻辑正确
+    else:
+        print("\n--- [Stage 1b] GtoPdb integration DISABLED. ---")
+    # endregion
 
-    print(f"pos pair: {len(positive_pair)}, neg pair: {len(negative_pair_d)}")
+    # region index
+    print("\n--- [Stage 2] Creating and saving index files... ---")
+    ligands_map = {smile: "ligand" for smile in extra_ligands_list}
+    drugs_map = {smile: "drug" for smile in base_drugs_list}
+    all_molecules_map = {**ligands_map, **drugs_map}
 
-    DrPrNum_Drpr = pd.DataFrame({"pair_d": positive_pair_d, "pair_p": positive_pair_p})
-    DrPrNum_Drpr.to_csv(
-        DPLdata_filepath(datapath, "DrPrNum_DrPr.csv", foldername),
+    # 2. 直接遍历这个map，一次性创建索引和节点元数据
+    drug2index = {}
+    ligand2index = {}
+    node_data = []
+
+    # 我们需要一个确定的顺序，所以先对SMILES排序
+    sorted_smiles = sorted(all_molecules_map.keys())
+
+    # 为所有小分子分配连续的ID (0 to N_mol-1)
+    for idx, smile in enumerate(sorted_smiles):
+        node_type = all_molecules_map[smile]
+        node_data.append({"node_id": idx, "node_type": node_type})
+        if node_type == "drug":
+            drug2index[smile] = idx
+        else:  # node_type == 'ligand'
+            ligand2index[smile] = idx
+
+    print(f"-> Indexed {len(drug2index)} drugs and {len(ligand2index)} ligands.")
+
+    # --- 统一处理所有蛋白质 ---
+
+    # 3. 对蛋白质进行去重和排序
+    # --- 蛋白质处理 ---
+    final_proteins_list = sorted(list(set(base_proteins_list + extra_proteins_list)))
+    print(
+        f"-> Total unique proteins: {len(final_proteins_list)}, \
+        base proteins: {len(base_proteins_list)}, \
+        added {len(final_proteins_list) - len(base_proteins_list)} from GtoPdb."
+    )
+
+    # 4. 为所有蛋白质分配连续的、偏移后的ID
+    protein_start_index = len(node_data)  # ID从最后一个小分子之后开始
+    prot2index = {
+        seq: i + protein_start_index for i, seq in enumerate(final_proteins_list)
+    }
+
+    for seq, idx in prot2index.items():
+        node_data.append({"node_id": idx, "node_type": "protein"})
+
+    print(f"-> Indexed {len(prot2index)} total proteins.")
+
+    # --- 保存所有文件 ---
+
+    # 5. 保存索引文件
+    pkl.dump(
+        drug2index,
+        open(get_data_filepath(config, "indexes.drug"), "wb"),
+    )
+    pkl.dump(
+        ligand2index,
+        open(get_data_filepath(config, "indexes.ligand"), "wb"),
+    )
+    pkl.dump(
+        prot2index,
+        open(get_data_filepath(config, "indexes.protein"), "wb"),
+    )
+
+    # 6. 保存节点元数据文件
+    AllNode_df = pd.DataFrame(node_data)  # node_data已经包含了所有类型
+    AllNode_df.to_csv(
+        get_data_filepath(config, "nodes_metadata"),
         index=False,
-        header=False,
+        header=True,
     )
-    AllNegative_DrPr = pd.DataFrame(
-        {"pair_d": negative_pair_d, "pair_p": negative_pair_p}
-    )
-    AllNegative_DrPr.to_csv(
-        DPLdata_filepath(datapath, "AllNegative_DrPr.csv", foldername),
-        index=False,
-        header=False,
-    )
-    Allnode_df.to_csv(
-        DPLdata_filepath(datapath, "Allnode_DrPr.csv", foldername),
-        index=False,
-        header=False,
-    )
+    print("-> Index and metadata files saved successfully.")
 
-    num = {"drug_num": len(drug2index), "prot_num": len(prot2index)}
-    pkl.dump(num, open(DPLdata_filepath(datapath, "num.pkl", foldername), "wb"))
-
+else:
+    print("\n--- [Stage 2] Loading indices and metadata from cache... ---")
+    index_files = {
+        "drug": "indexes.drug",
+        "ligand": "indexes.ligand",
+        "prot": "indexes.protein",
+    }
+    # 使用字典推导式一次性加载
+    indices = {
+        key: pkl.load(get_data_filepath(config, path).open("rb"))
+        for key, path in index_files.items()
+    }
+    drug2index, ligand2index, prot2index = (
+        indices["drug"],
+        indices["ligand"],
+        indices["prot"],
+    )
+# --- 为后续步骤准备最终的、完整的实体列表 ---
+# 这些列表现在是从索引字典的键中动态生成的，而不是作为中间变量传来传去
+final_smiles_list = sorted(list(drug2index.keys()) + list(ligand2index.keys()))
+final_proteins_list = sorted(list(prot2index.keys()))
+dl2index = {**drug2index, **ligand2index}  # 统一的小分子索引字典
 # endregion
+
+# ===================================================================
+# --- STAGE 3: Generate Features, Similarity Matrices, and Edges ---
+# ===================================================================
 
 # region features&sim
-if not check_file_exists(
-    "drug_similarity_matrix.pkl",
-    "prot_similarity_matrix.pkl",
-    "AllNodeAttribute_DrPr.csv",
-):
+checkpoint_files = [
+    "molecule_similarity_matrix",
+    "protein_similarity_matrix",
+    "node_features",
+]
+if not check_files_exist(config, *checkpoint_files):
+    print("\n--- [Stage 3] Generating features and similarity matrices... ---")
     drug_embeddings = []
-    for i, d in enumerate(smiles_list):
+    for i, d in enumerate(final_smiles_list):
         drug_embeddings.append(extract_features(d).cpu().detach().numpy())
 
     protein_embeddings = []
-    for i, p in enumerate(protein_sequences):
+    for i, p in enumerate(final_proteins_list):
         protein_embeddings.append(extract_aa_features(p).cpu().detach().numpy())
 
     # prot_similarity_matrix = cosine_similarity(protein_embeddings)
-    drug_similarity_matrix = calculate_drug_similarity(smiles_list)
+    dl_similarity_matrix = calculate_drug_similarity(final_smiles_list)
     # notice:用U与C一样的方式计算相似度
-    prot_similarity_matrix = calculate_protein_similarity(protein_sequences)
+    prot_similarity_matrix = calculate_protein_similarity(final_proteins_list)
 
     pkl.dump(
-        drug_similarity_matrix,
-        open(
-            DPLdata_filepath(datapath, "drug_similarity_matrix.pkl", foldername), "wb"
-        ),
+        dl_similarity_matrix,
+        open(get_data_filepath(config, "molecule_similarity_matrix"), "wb"),
     )
     pkl.dump(
         prot_similarity_matrix,
-        open(
-            DPLdata_filepath(datapath, "prot_similarity_matrix.pkl", foldername), "wb"
-        ),
+        open(get_data_filepath(config, "protein_similarity_matrix"), "wb"),
     )
-    AllNodeAttribute_DrPr = pd.concat(
+    features_df = pd.concat(
         [pd.DataFrame(drug_embeddings), pd.DataFrame(protein_embeddings)], axis=0
     )
-    AllNodeAttribute_DrPr.to_csv(
-        DPLdata_filepath(datapath, "AllNodeAttribute_DrPr.csv", foldername),
+    features_df.to_csv(
+        get_data_filepath(config, "node_features"),
         index=False,
         header=False,
     )
-
-# region sim edges
-if not check_file_exists(
-    "prot_edge.csv",
-    "drug_edge.csv",
-    "drug_prot_edge.csv",
-):
-    prot_edge1 = []
-    prot_edge2 = []
-    drug_edge1 = []
-    drug_edge2 = []
-
-    for i, row in pd.read_csv(
-        DPLdata_filepath(datapath, "DrPrNum_DrPr.csv", foldername), header=None
-    ).iterrows():
-        prot_edge1.append(int(row[0]))
-        prot_edge2.append(int(row[1]))
-        drug_edge1.append(int(row[0]))
-        drug_edge2.append(int(row[1]))
-
-    print(f"{args.dataset} positive edges: {len(prot_edge1)}")
-
-    pp = 0
-    p_e1 = []
-    p_e2 = []
-    for i in range(len(prot_similarity_matrix)):
-        for j in range(i + 1, len(prot_similarity_matrix)):
-            if prot_similarity_matrix[i][j] > 0.985:
-                p_e1.append(i)
-                p_e2.append(j)
-                pp += 1
-
-    random_array = np.random.randint(0, len(p_e1) - 1, size=min(500, len(p_e1) - 1))
-    for ind in random_array:
-        prot_edge1.append(p_e1[ind])
-        prot_edge2.append(p_e2[ind])
-
-    print("Prot-Prot edges: ", pp)
-    df = pd.DataFrame({"0": prot_edge1, "1": prot_edge2})
-    df.to_csv(
-        DPLdata_filepath(datapath, "prot_edge.csv", foldername),
-        index=False,
-        header=False,
+else:
+    # 如果文件已存在，则加载它们以供后续步骤使用
+    print("\n--- [Stage 3] Loading features and similarity matrices from cache... ---")
+    features_df = pd.read_csv(get_data_filepath(config, "node_features"), header=None)
+    dl_similarity_matrix = pkl.load(
+        open(get_data_filepath(config, "molecule_similarity_matrix"), "rb")
     )
-    print("P edges: ", len(prot_edge1))
-
-    dd = 0
-    d_e1 = []
-    d_e2 = []
-    for i in range(len(drug_similarity_matrix)):
-        for j in range(i + 1, len(drug_similarity_matrix)):
-            if drug_similarity_matrix[i][j] > 0.988:
-                d_e1.append(i)
-                d_e2.append(j)
-                dd += 1
-
-    random_array = np.random.randint(0, len(d_e1) - 1, size=min(500, len(d_e1) - 1))
-    for ind in random_array:
-        prot_edge1.append(d_e1[ind])
-        prot_edge2.append(d_e2[ind])
-        drug_edge1.append(d_e1[ind])
-        drug_edge2.append(d_e2[ind])
-
-    print("Drug-Drug edges: ", dd)
-    print("Total edges: ", len(prot_edge1))
-    print("D edges: ", len(drug_edge1))
-
-    df = pd.DataFrame({"0": drug_edge1, "1": drug_edge2})
-    df.to_csv(
-        DPLdata_filepath(datapath, "drug_edge.csv", foldername),
-        index=False,
-        header=False,
+    prot_similarity_matrix = pkl.load(
+        open(get_data_filepath(config, "protein_similarity_matrix"), "rb")
     )
 
-    df = pd.DataFrame({"0": prot_edge1, "1": prot_edge2})
-    df.to_csv(
-        DPLdata_filepath(datapath, "drug_prot_edge.csv", foldername),
-        index=False,
-        header=False,
-    )
-# endregion
 
-# region ligands
+# ===================================================================
+# --- STAGE 4: Generate Labeled Edges and Full Heterogeneous Graph ---
+# ===================================================================
+
+# region base edges
+# 统一的检查点，检查最终的两个核心产物
+checkpoint_files = ["typed_edge_list", "link_prediction_labels"]
+if not check_files_exist(config, *checkpoint_files):
+    print(
+        "\n--- [Stage 4] Generating labeled edges for training and full typed graph... ---"
+    )
+
+    # --- 4a. 准备链接预测任务的正负样本 ---
+    print("\n-> Generating positive and negative samples for link prediction...")
+    positive_pairs = []
+
+    # 从基础数据集 (DrugBank) 中提取 D-P 正样本
+    for _, row in full_df[full_df["Y"] == 1].iterrows():
+        if row["SMILES"] in dl2index and row["Protein"] in prot2index:
+            d_idx = dl2index[row["SMILES"]]
+            p_idx = prot2index[row["Protein"]]
+            positive_pairs.append((d_idx, p_idx))
+
+    # (可选) 从GtoPdb中提取 L-P 正样本
+    if data_config["use_gtopdb"]:
+        gtopdb_edges_df = pd.read_csv(
+            gtopdb_processed_dir / "gtopdb_p-l_edges.csv",
+            header=None,
+            names=["Sequence", "SMILES", "Affinity"],
+        )
+        for _, row in gtopdb_edges_df.iterrows():
+            if row["SMILES"] in dl2index and row["Sequence"] in prot2index:
+                l_idx = dl2index[row["SMILES"]]
+                p_idx = prot2index[row["Sequence"]]
+                positive_pairs.append((l_idx, p_idx))
+
+    # 进行随机负采样
+    negative_pairs = []
+    all_molecule_ids = list(dl2index.values())
+    all_protein_ids = list(prot2index.values())
+    positive_set = set(positive_pairs)  # 使用集合以提高查找效率
+
+    with tqdm(total=len(positive_pairs), desc="Negative Sampling") as pbar:
+        while len(negative_pairs) < len(positive_pairs):
+            dl_idx = random.choice(all_molecule_ids)
+            p_idx = random.choice(all_protein_ids)
+            if (dl_idx, p_idx) not in positive_set:
+                negative_pairs.append((dl_idx, p_idx))
+                pbar.update(1)
+
+    print(
+        f"-> Generated {len(positive_pairs)} positive and {len(negative_pairs)} negative samples."
+    )
+
+    # 保存统一的、带标签的边文件
+    pos_df = pd.DataFrame(positive_pairs, columns=["source", "target"])
+    pos_df["label"] = 1
+    neg_df = pd.DataFrame(negative_pairs, columns=["source", "target"])
+    neg_df["label"] = 0
+    dl_p_edges_df = pd.concat([pos_df, neg_df], ignore_index=True)
+    dl_p_edges_df.to_csv(
+        get_data_filepath(config, "link_prediction_labels"),
+        index=False,
+        header=True,
+    )
+    # end region
+
+    # region sim edges
+    # --- 4b. 构建完整的、带类型的异构图边列表 ---
+    print("\n-> Assembling full heterogeneous graph with typed edges...")
+    typed_edges_list = []
+
+    # 1. 添加所有正样本 D-P 和 L-P 边
+    for d_idx, p_idx in positive_pairs:
+        # 通过ID范围判断源节点是drug还是ligand
+        if d_idx < len(drug2index):
+            typed_edges_list.append([d_idx, p_idx, "drug_protein_interaction"])
+        else:
+            typed_edges_list.append([d_idx, p_idx, "ligand_protein_interaction"])
+
+    # 2. 添加 P-P 相似性边
+    print("\n-> Processing Protein-Protein similarity edges...")
+    prot_start_index = len(drug2index) + len(ligand2index)
+
+    # [MODIFIED] Get threshold and sampling config
+    p_sim_threshold = params_config["protein_similarity_threshold"]
+    max_pp_edges_to_sample = params_config.get(
+        "max_pp_edges", -1
+    )  # Use .get for safety
+
+    # Step 1: Find ALL potential edges above the threshold
+    p_rows, p_cols = np.where(prot_similarity_matrix > p_sim_threshold)
+    potential_edges = []
+    for i, j in zip(p_rows, p_cols):
+        if i < j:
+            # We store the score as well, in case we want to sample top-K in the future
+            score = prot_similarity_matrix[i, j]
+            potential_edges.append(((i, j), score))
+
+    print(
+        f"-> Found {len(potential_edges)} potential P-P edges with similarity > {p_sim_threshold}."
+    )
+
+    # Step 2: [NEW] Apply sampling if configured
+    final_pp_edges_indices = [
+        edge for edge, score in potential_edges
+    ]  # Default to all edges
+
+    # Check if max_pp_edges_to_sample is a valid positive number
+    if max_pp_edges_to_sample and max_pp_edges_to_sample > 0:
+        if len(potential_edges) > max_pp_edges_to_sample:
+            print(
+                f"-> Sampling {max_pp_edges_to_sample} edges from the potential pool..."
+            )
+            # Simple random sampling
+            sampled_indices = random.sample(
+                range(len(potential_edges)), max_pp_edges_to_sample
+            )
+            final_pp_edges_indices = [potential_edges[i][0] for i in sampled_indices]
+        else:
+            print(
+                "-> Number of potential edges is less than or equal to the sampling limit. Using all."
+            )
+
+    # Step 3: Add the final list of edges to the graph
+    pp_count = 0
+    for i, j in final_pp_edges_indices:
+        typed_edges_list.append(
+            [
+                i + prot_start_index,
+                j + prot_start_index,
+                "protein_protein_similarity",
+            ]
+        )
+        pp_count += 1
+    print(f"-> Added {pp_count} Protein-Protein edges to the graph.")
+
+    # 3. 添加 D-D / L-L / D-L 相似性边
+    mol_rows, mol_cols = np.where(dl_similarity_matrix > 0.988)
+    dd_count, ll_count, dl_count = 0, 0, 0
+    # 我们需要一个快速的方法来查找ID的类型
+    id_to_type_map = {idx: "drug" for idx in drug2index.values()}
+    id_to_type_map.update({idx: "ligand" for idx in ligand2index.values()})
+
+    for i, j in zip(mol_rows, mol_cols):
+        if i < j:
+            type1 = id_to_type_map[i]
+            type2 = id_to_type_map[j]
+            if type1 == "drug" and type2 == "drug":
+                edge_type = "drug_drug_similarity"
+                dd_count += 1
+            elif type1 == "ligand" and type2 == "ligand":
+                edge_type = "ligand_ligand_similarity"
+                ll_count += 1
+            else:  # one is drug, one is ligand
+                edge_type = "drug_ligand_similarity"
+                dl_count += 1
+            typed_edges_list.append([i, j, edge_type])
+
+    print(
+        f"-> Added {dd_count} Drug-Drug, {ll_count} Ligand-Ligand, and {dl_count} Drug-Ligand edges."
+    )
+
+    # 保存统一的、带类型的总边文件
+    typed_edges_df = pd.DataFrame(
+        typed_edges_list, columns=["source", "target", "edge_type"]
+    )
+    typed_edges_df.to_csv(
+        get_data_filepath(config, "typed_edge_list"),
+        index=False,
+        header=True,
+    )
+    print(f"-> Total edges in heterogeneous graph: {len(typed_edges_df)}")
+
+else:
+    print("\n--- [Stage 4] Final graph files already exist. Skipping. ---")
+
+# endregion (final_graph_construction)
+
+print("\nData processing pipeline finished successfully!")

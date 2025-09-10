@@ -8,8 +8,64 @@ import torch
 from pathlib import Path
 
 
-def DPLdata_filepath(datapath: Path, filename: str, foldername: str) -> Path:
-    return datapath / f"{foldername}/{filename}"
+def get_data_filepath(config: dict, filename_key: str) -> Path:
+    """
+    Constructs the full path for a data file based on the global config.
+
+    Args:
+        config (dict): The loaded YAML configuration dictionary.
+        filename_key (str): The key for the desired filename in the config file's
+                            'filenames' section (e.g., "nodes_metadata").
+
+    Returns:
+        Path: The complete, absolute path to the data file.
+    """
+    data_config = config["data"]
+
+    # 1. Determine the base data path
+    datapath = Path(data_config["root"]) / data_config["dataset_name"]
+
+    # 2. Determine the subfolder ('baseline' or 'gtopdb') from the config
+    foldername = "gtopdb" if data_config["use_gtopdb"] else "baseline"
+
+    # 3. Get the filename from the config using the provided key
+    # This part handles nested keys like 'indexes.drug'
+    keys = filename_key.split(".")
+    current_level = data_config["filenames"]
+    for key in keys:
+        current_level = current_level[key]
+    filename = current_level
+
+    return datapath / foldername / filename
+
+
+def check_files_exist(config: dict, *filename_keys: str) -> bool:
+    """
+    Checks if all specified data files exist.
+
+    Args:
+        config (dict): The loaded YAML configuration dictionary.
+        *filename_keys (str): A variable number of filename keys from the config
+                              (e.g., "nodes_metadata", "features", "indexes.drug").
+
+    Returns:
+        bool: True if all files exist, False otherwise.
+    """
+    all_exist = True
+    for key in filename_keys:
+        filepath = get_data_filepath(config, key)
+        if not filepath.exists():
+            print(f"File check FAILED: '{key}' not found at {filepath}")
+            all_exist = False
+            # Return early for efficiency
+            return False
+
+    if all_exist:
+        # Get foldername just for the print statement
+        foldername = "gtopdb" if config["data"]["use_gtopdb"] else "baseline"
+        print(f"File check PASSED: All requested files exist in folder '{foldername}'.")
+
+    return all_exist
 
 
 def aug_random_walk(adj):
