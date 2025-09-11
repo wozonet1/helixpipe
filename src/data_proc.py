@@ -381,57 +381,68 @@ if not check_files_exist(config, *checkpoint_files_dict.values()) or restart_fla
             print(
                 "Warning: Processed GtoPdb files not found. Continuing without GtoPdb data."
             )
-            data_config["use_gtopdb"] = False  # 将开关关掉，确保后续逻辑正确
     else:
         print("\n--- [Stage 1b] GtoPdb integration DISABLED. ---")
     # endregion
 
     # region index
-    print("\n--- [Stage 2] Creating and saving index files... ---")
-    ligands_map = {smile: "ligand" for smile in extra_ligands_list}
-    drugs_map = {smile: "drug" for smile in base_drugs_list}
-    all_molecules_map = {**ligands_map, **drugs_map}
+    # In data_proc.py, replace the entire "region index"
 
-    # 2. 直接遍历这个map，一次性创建索引和节点元数据
+    # region index
+    print("\n--- [Stage 2] Creating and saving index files... ---")
+
+    # 1. 首先，获取所有 drug 和 ligand 的唯一SMILES集合
+    unique_drug_smiles = set(base_drugs_list)
+    unique_ligand_smiles = set(extra_ligands_list)
+
+    # 2. [核心修复] 对所有分子进行统一规划和去重
+    # 我们定义一个优先级规则：如果一个分子同时是drug和ligand，我们视其为drug。
+    # 首先确定纯粹的ligand（只在ligand列表里出现）
+    pure_ligand_smiles = unique_ligand_smiles - unique_drug_smiles
+
+    # 所有的drug SMILES（包括那些也可能是ligand的）
+    all_drug_smiles = unique_drug_smiles
+
+    # 3. 分别对两组SMILES列表进行排序，以保证处理顺序的确定性
+    sorted_unique_drugs = sorted(list(all_drug_smiles))
+    sorted_unique_ligands = sorted(list(pure_ligand_smiles))
+    # 2. 初始化索引字典和节点元数据列表
     drug2index = {}
     ligand2index = {}
     node_data = []
+    current_id = 0
 
-    # 我们需要一个确定的顺序，所以先对SMILES排序
-    sorted_smiles = sorted(all_molecules_map.keys())
+    # 3. [核心修复] 首先为所有的 drug 分配连续的ID
+    print(f"--> Indexing {len(sorted_unique_drugs)} unique drugs...")
+    for smile in sorted_unique_drugs:
+        drug2index[smile] = current_id
+        node_data.append({"node_id": current_id, "node_type": "drug"})
+        current_id += 1
 
-    # 为所有小分子分配连续的ID (0 to N_mol-1)
-    for idx, smile in enumerate(sorted_smiles):
-        node_type = all_molecules_map[smile]
-        node_data.append({"node_id": idx, "node_type": node_type})
-        if node_type == "drug":
-            drug2index[smile] = idx
-        else:  # node_type == 'ligand'
-            ligand2index[smile] = idx
+    # 4. [核心修复] 接着为所有的 ligand 分配连续的ID
+    print(f"--> Indexing {len(sorted_unique_ligands)} unique ligands...")
+    for smile in sorted_unique_ligands:
+        ligand2index[smile] = current_id
+        node_data.append({"node_id": current_id, "node_type": "ligand"})
+        current_id += 1
 
-    print(f"-> Indexed {len(drug2index)} drugs and {len(ligand2index)} ligands.")
-
-    # --- 统一处理所有蛋白质 ---
-
-    # 3. 对蛋白质进行去重和排序
-    # --- 蛋白质处理 ---
-    final_proteins_list = sorted(list(set(base_proteins_list + extra_proteins_list)))
     print(
-        f"-> Total unique proteins: {len(final_proteins_list)}, \
-        base proteins: {len(base_proteins_list)}, \
-        added {len(final_proteins_list) - len(base_proteins_list)} from GtoPdb."
+        f"-> Indexed {len(drug2index)} drugs (IDs 0-{len(drug2index) - 1}) and {len(ligand2index)} ligands (IDs {len(drug2index)}-{len(drug2index) + len(ligand2index) - 1})."
     )
 
-    # 4. 为所有蛋白质分配连续的、偏移后的ID
-    protein_start_index = len(node_data)  # ID从最后一个小分子之后开始
+    # --- 统一处理所有蛋白质 (这部分逻辑不变) ---
+    final_proteins_list = sorted(list(set(base_proteins_list + extra_proteins_list)))
+    protein_start_index = current_id  # ID从最后一个小分子之后开始
     prot2index = {
         seq: i + protein_start_index for i, seq in enumerate(final_proteins_list)
     }
-
     for seq, idx in prot2index.items():
         node_data.append({"node_id": idx, "node_type": "protein"})
+    print(
+        f"-> Indexed {len(prot2index)} total proteins (IDs {protein_start_index}-{current_id + len(prot2index) - 1})."
+    )
 
-    print(f"-> Indexed {len(prot2index)} total proteins.")
+    # endregion index
 
     # --- 保存所有文件 ---
     pkl.dump(drug2index, open(get_path(config, checkpoint_files_dict["drug"]), "wb"))
@@ -459,7 +470,7 @@ else:
 
 # --- 为后续步骤准备最终的、完整的实体列表 ---
 # 这些列表现在是从索引字典的键中动态生成的，而不是作为中间变量传来传去
-final_smiles_list = sorted(list(drug2index.keys()) + list(ligand2index.keys()))
+final_smiles_list = sorted(list(drug2index.keys())) + sorted(list(ligand2index.keys()))
 final_proteins_list = sorted(list(prot2index.keys()))
 dl2index = {**drug2index, **ligand2index}  # 统一的小分子索引字典
 # endregion
@@ -471,8 +482,8 @@ dl2index = {**drug2index, **ligand2index}  # 统一的小分子索引字典
 # region features&sim
 
 checkpoint_files_dict = {
-    "molecule_similarity_matrix": f"{primary_dataset}.processed.molecule_similarity_matrix",
-    "protein_similarity_matrix": f"{primary_dataset}.processed.protein_similarity_matrix",
+    "molecule_similarity_matrix": f"{primary_dataset}.processed.similarity_matrices.molecule",
+    "protein_similarity_matrix": f"{primary_dataset}.processed.similarity_matrices.protein",
     "node_features": f"{primary_dataset}.processed.node_features",
 }
 if not check_files_exist(config, *checkpoint_files_dict.values()) or restart_flag:

@@ -29,6 +29,7 @@ def set_seeds(seed):
         torch.backends.cudnn.benchmark = False
 
 
+# region load data
 def load_graph_data(config: dict) -> HeteroData:
     """
     Loads all the necessary files and constructs a PyG HeteroData object.
@@ -104,6 +105,88 @@ def load_graph_data(config: dict) -> HeteroData:
 
     print("--- HeteroData object constructed successfully! ---")
     return data
+
+
+# endregion
+
+# region homo_ndls
+
+
+def convert_hetero_to_homo(hetero_data: HeteroData) -> tuple:
+    """
+    Converts a HeteroData object to a homogeneous representation suitable for NDLS.
+
+    Args:
+        hetero_data (HeteroData): The input heterogeneous graph.
+
+    Returns:
+        tuple: A tuple containing:
+            - adj (scipy.sparse.coo_matrix): The adjacency matrix in COO format.
+            - features (torch.Tensor): The combined node feature matrix.
+            - node_offsets (dict): A dictionary mapping node type to its starting index.
+    """
+    print("--> Converting HeteroData to Homogeneous Graph for NDLS...")
+    from scipy.sparse import coo_matrix
+
+    num_nodes = hetero_data.num_nodes
+
+    # 1. Concatenate all node features into a single tensor
+    features = torch.cat(
+        [hetero_data[node_type].x for node_type in hetero_data.node_types], dim=0
+    )
+
+    # 2. Calculate node offsets and combine all edge_indices
+    edge_indices = []
+    node_offsets = {}
+    current_offset = 0
+    # The order MUST be the same as the feature concatenation order
+    for node_type in hetero_data.node_types:
+        node_offsets[node_type] = current_offset
+        current_offset += hetero_data[node_type].num_nodes
+
+    for edge_type in hetero_data.edge_types:
+        source_type, _, target_type = edge_type
+        edge_index = hetero_data[edge_type].edge_index
+
+        # Apply offsets to convert local indices back to global-like indices
+        offset_edge_index = torch.stack(
+            [
+                edge_index[0] + node_offsets[source_type],
+                edge_index[1] + node_offsets[target_type],
+            ]
+        )
+        edge_indices.append(offset_edge_index)
+
+    # Also add reverse edges to make the graph undirected
+    for edge_type in hetero_data.edge_types:
+        source_type, _, target_type = edge_type
+        edge_index = hetero_data[edge_type].edge_index
+
+        offset_edge_index = torch.stack(
+            [
+                edge_index[1] + node_offsets[target_type],  # Reversed
+                edge_index[0] + node_offsets[source_type],  # Reversed
+            ]
+        )
+        edge_indices.append(offset_edge_index)
+
+    adj_coo_tensor = torch.cat(edge_indices, dim=1).unique(
+        dim=1
+    )  # Use .unique() to remove duplicates
+
+    # 3. Convert to scipy sparse matrix, which is what the old code expects
+    adj = coo_matrix(
+        (
+            np.ones(adj_coo_tensor.shape[1]),
+            (adj_coo_tensor[0].numpy(), adj_coo_tensor[1].numpy()),
+        ),
+        shape=(num_nodes, num_nodes),
+    )
+
+    print(
+        f"--> Homogeneous graph constructed: {adj.shape[0]} nodes, {adj.nnz // 2} edges."
+    )
+    return adj, features, node_offsets
 
 
 def main():

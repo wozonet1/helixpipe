@@ -6,12 +6,7 @@ from scipy.sparse import csgraph
 import sys
 import torch
 from pathlib import Path
-
-# src/utils.py
-
-from pathlib import Path
-
-# ... (你现有的 get_path 和 check_files_exist 函数) ...
+import shutil
 
 
 def setup_dataset_directories(config: dict) -> None:
@@ -29,6 +24,7 @@ def setup_dataset_directories(config: dict) -> None:
 
     data_config = config["data"]
     root_path = Path(data_config["root"])
+    runtime_config = config.get("runtime", {})
     primary_dataset = data_config.get("primary_dataset")
 
     if not primary_dataset:
@@ -39,6 +35,25 @@ def setup_dataset_directories(config: dict) -> None:
     # 1. Define all required subdirectories
     raw_dir = dataset_path / data_config["subfolders"]["raw"]
     processed_dir = dataset_path / data_config["subfolders"]["processed"]
+    use_gtopdb = data_config.get("use_gtopdb", False)
+    variant_folder_name = "gtopdb" if use_gtopdb else "baseline"
+    target_dir_to_clean = processed_dir / variant_folder_name
+
+    # 2. Execute targeted deletion if force_restart is True
+    force_restart = runtime_config.get("force_restart", False)
+    if force_restart and target_dir_to_clean.exists():
+        print(
+            f"!!! WARNING: `force_restart` is True for the '{variant_folder_name}' variant."
+        )
+        print(f"    Deleting directory: {target_dir_to_clean}")
+        try:
+            shutil.rmtree(target_dir_to_clean)
+            print(f"--> Successfully deleted old '{variant_folder_name}' directory.")
+        except OSError as e:
+            print(
+                f"--> ERROR: Failed to delete directory {target_dir_to_clean}. Error: {e}"
+            )
+            sys.exit(1)
 
     baseline_dir = processed_dir / "baseline"
     gtopdb_dir = processed_dir / "gtopdb"
@@ -47,6 +62,9 @@ def setup_dataset_directories(config: dict) -> None:
     baseline_indexes_dir = baseline_dir / "indexes"
     gtopdb_indexes_dir = gtopdb_dir / "indexes"
 
+    baseline_sim_dir = baseline_dir / "sim_matrixes"
+    gtopdb_sim_dir = gtopdb_dir / "sim_matrixes"
+
     dirs_to_create = [
         raw_dir,
         processed_dir,
@@ -54,6 +72,8 @@ def setup_dataset_directories(config: dict) -> None:
         gtopdb_dir,
         baseline_indexes_dir,
         gtopdb_indexes_dir,
+        baseline_sim_dir,
+        gtopdb_sim_dir,
     ]
 
     # 2. Loop through and create them if they don't exist
@@ -75,7 +95,7 @@ def setup_dataset_directories(config: dict) -> None:
     if not any(raw_dir.iterdir()):
         print(f"-> WARNING: The 'raw' directory at '{raw_dir}' is empty.")
         print(
-            f"   Please make sure to place your raw data files (e.g., full.csv) inside it."
+            "   Please make sure to place your raw data files (e.g., full.csv) inside it."
         )
 
 
