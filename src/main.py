@@ -281,7 +281,9 @@ def main():
 
         # 6. Logging
         if results:
-            tracker.log_cv_results(results["aucs"], results["auprs"])
+            tracker.log_cv_results(
+                results["aucs"], results["auprs"]
+            )  # FIXME: missing model metrics logging
 
     except Exception as e:
         print(f"\n!!! FATAL ERROR: Experiment run failed: {e}")
