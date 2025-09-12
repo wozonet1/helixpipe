@@ -1,21 +1,13 @@
 # src/main.py (v2.0)
 
-import yaml
 import random
 import numpy as np
 import pandas as pd
 import torch
-from pathlib import Path
 from torch_geometric.data import HeteroData
-
-from utils import get_path  # We will primarily use get_path
-
-
-def load_config(config_path="config.yaml"):
-    """Loads the YAML config file from the project root."""
-    project_root = Path(__file__).parent.parent
-    with open(project_root / config_path, "r") as f:
-        return yaml.safe_load(f)
+from encoders.ndls_homo_encoder import NDLS_Homo_Encoder
+from predictors.gbdt_predictor import GBDT_Link_Predictor
+import research_template as rt
 
 
 def set_seeds(seed):
@@ -39,20 +31,25 @@ def load_graph_data(config: dict) -> HeteroData:
     primary_dataset = config["data"]["primary_dataset"]
     data_variant = config["training"]["data_variant"]  # 'baseline' or 'gtopdb'
 
-    # Temporarily override use_gtopdb in the config for get_path to work correctly
-    # This is a small hack to reuse get_path for different variants.
+    # Temporarily override use_gtopdb in the config for rt.get_path to work correctly
+    # This is a small hack to reuse rt.get_path for different variants.
     config["data"]["use_gtopdb"] = data_variant == "gtopdb"
 
     # 1. Load node metadata and features
     nodes_df = pd.read_csv(
-        get_path(config, f"{primary_dataset}.processed.nodes_metadata")
+        rt.get_path(config, f"{primary_dataset}.processed.nodes_metadata")
     )
     features_tensor = torch.from_numpy(
         pd.read_csv(
-            get_path(config, f"{primary_dataset}.processed.node_features"), header=None
+            rt.get_path(config, f"{primary_dataset}.processed.node_features"),
+            header=None,
         ).values
     ).float()
-
+    print(f"DEBUG_5: Loaded nodes_df shape = {nodes_df.shape}")
+    print(f"DEBUG_5: Loaded features_tensor shape = {features_tensor.shape}")
+    assert nodes_df.shape[0] == features_tensor.shape[0], (
+        "FATAL: Mismatch between nodes.csv and features.csv loaded in main.py!"
+    )
     data = HeteroData()
 
     # 2. Populate node features for each node type
@@ -64,19 +61,20 @@ def load_graph_data(config: dict) -> HeteroData:
 
         # Store local-to-global ID mapping
         # And create a reverse map for easy lookup later
-        for i, global_id in enumerate(node_ids):
-            node_type_map[global_id] = (node_type, i)
+        for local_id, global_id in enumerate(node_ids):
+            node_type_map[global_id] = (node_type, local_id)
 
     print(f"-> Populated features for node types: {list(data.node_types)}")
 
     # 3. Populate edge indices for each edge type
     edges_df = pd.read_csv(
-        get_path(config, f"{primary_dataset}.processed.typed_edge_list")
+        rt.get_path(config, f"{primary_dataset}.processed.typed_edge_list")
     )
-
+    num_edges_in_csv = len(edges_df)
+    print(f"DEBUG_A: Loaded typed_edges.csv with {num_edges_in_csv} total edges.")
     # A helper map to get node type from global ID
     id_to_type_str = {row.node_id: row.node_type for row in nodes_df.itertuples()}
-
+    num_edges_loaded_into_hetero = 0
     for edge_type_str, group in edges_df.groupby("edge_type"):
         sources = group["source"].values
         targets = group["target"].values
@@ -96,13 +94,22 @@ def load_graph_data(config: dict) -> HeteroData:
         )
 
         data[edge_type_tuple].edge_index = edge_index
+        num_edges_loaded_into_hetero += edge_index.shape[1]
 
     print(f"-> Populated edges for edge types: {list(data.edge_types)}")
-
+    print(
+        f"DEBUG_B: Total edges loaded into HeteroData object: {num_edges_loaded_into_hetero}"
+    )
+    assert num_edges_in_csv == num_edges_loaded_into_hetero, (
+        f"FATAL: Edge count mismatch! CSV has {num_edges_in_csv}, but HeteroData only has {num_edges_loaded_into_hetero}."
+    )
     # We also need to add reverse edges for message passing in GNNs
     # PyG has a transform for this, but we can do it manually for clarity
     # ... (To be added in the next step) ...
-
+    print(f"DEBUG_6: Final HeteroData object has {data.num_nodes} nodes.")
+    assert data.num_nodes == len(nodes_df), (
+        "FATAL: HeteroData node count does not match nodes_df count!"
+    )
     print("--- HeteroData object constructed successfully! ---")
     return data
 
@@ -111,102 +118,192 @@ def load_graph_data(config: dict) -> HeteroData:
 
 # region homo_ndls
 
+# In src/main.py
+
 
 def convert_hetero_to_homo(hetero_data: HeteroData) -> tuple:
     """
-    Converts a HeteroData object to a homogeneous representation suitable for NDLS.
-
-    Args:
-        hetero_data (HeteroData): The input heterogeneous graph.
-
-    Returns:
-        tuple: A tuple containing:
-            - adj (scipy.sparse.coo_matrix): The adjacency matrix in COO format.
-            - features (torch.Tensor): The combined node feature matrix.
-            - node_offsets (dict): A dictionary mapping node type to its starting index.
+    Converts a HeteroData object (representing an undirected graph)
+    to a symmetric, homogeneous SciPy adjacency matrix.
     """
     print("--> Converting HeteroData to Homogeneous Graph for NDLS...")
     from scipy.sparse import coo_matrix
 
     num_nodes = hetero_data.num_nodes
-
-    # 1. Concatenate all node features into a single tensor
     features = torch.cat(
         [hetero_data[node_type].x for node_type in hetero_data.node_types], dim=0
     )
 
-    # 2. Calculate node offsets and combine all edge_indices
-    edge_indices = []
     node_offsets = {}
     current_offset = 0
-    # The order MUST be the same as the feature concatenation order
     for node_type in hetero_data.node_types:
         node_offsets[node_type] = current_offset
         current_offset += hetero_data[node_type].num_nodes
 
+    # --- [SIMPLIFIED & CORRECTED LOGIC] ---
+
+    # 1. Collect all unique undirected edges from HeteroData in global indices
+    all_edges = []
     for edge_type in hetero_data.edge_types:
         source_type, _, target_type = edge_type
         edge_index = hetero_data[edge_type].edge_index
 
-        # Apply offsets to convert local indices back to global-like indices
         offset_edge_index = torch.stack(
             [
                 edge_index[0] + node_offsets[source_type],
                 edge_index[1] + node_offsets[target_type],
             ]
         )
-        edge_indices.append(offset_edge_index)
+        all_edges.append(offset_edge_index)
 
-    # Also add reverse edges to make the graph undirected
-    for edge_type in hetero_data.edge_types:
-        source_type, _, target_type = edge_type
-        edge_index = hetero_data[edge_type].edge_index
+    # Concatenate all edges defined in the HeteroData object
+    edge_index_global = torch.cat(all_edges, dim=1)
 
-        offset_edge_index = torch.stack(
-            [
-                edge_index[1] + node_offsets[target_type],  # Reversed
-                edge_index[0] + node_offsets[source_type],  # Reversed
-            ]
-        )
-        edge_indices.append(offset_edge_index)
+    # 2. Create the symmetric (undirected) adjacency matrix
+    # We add both (u, v) and (v, u) to the edge list for the COO matrix
+    full_edge_index = torch.cat(
+        [edge_index_global, torch.stack([edge_index_global[1], edge_index_global[0]])],
+        dim=1,
+    )
 
-    adj_coo_tensor = torch.cat(edge_indices, dim=1).unique(
-        dim=1
-    )  # Use .unique() to remove duplicates
+    # Note: We do NOT use .unique() here anymore, because data_proc.py
+    # has already guaranteed the uniqueness of undirected edges.
+    # If we still want to be safe, unique can be used on the final full_edge_index.
+    full_edge_index = full_edge_index.unique(dim=1)
 
-    # 3. Convert to scipy sparse matrix, which is what the old code expects
     adj = coo_matrix(
         (
-            np.ones(adj_coo_tensor.shape[1]),
-            (adj_coo_tensor[0].numpy(), adj_coo_tensor[1].numpy()),
+            np.ones(full_edge_index.shape[1]),
+            (full_edge_index[0].numpy(), full_edge_index[1].numpy()),
         ),
         shape=(num_nodes, num_nodes),
     )
 
+    # The number of undirected edges is now correctly adj.nnz / 2
     print(
         f"--> Homogeneous graph constructed: {adj.shape[0]} nodes, {adj.nnz // 2} edges."
     )
     return adj, features, node_offsets
 
 
+# endregion
+
+
+# region main
+
+# TODO: test coldstart
+
+
 def main():
-    """Main training and evaluation script."""
-    # 1. Load Configuration and Set Seeds
-    config = load_config()
-    set_seeds(config["runtime"]["seed"])
-    device = torch.device(
-        config["runtime"]["gpu"] if torch.cuda.is_available() else "cpu"
-    )
-    print(f"Using device: {device}")
+    """
+    Main script to select and run the configured workflow, with full MLflow integration.
+    This is the central controller for all experiments.
+    """
+    # ===================================================================
+    # 1. Initialization: Load Config and Initialize Tracker
+    # ===================================================================
+    config = rt.load_config()
+    # Initialize the tracker from the research_template library
+    tracker = rt.MLflowTracker(config)
 
-    # 2. Load Data
-    hetero_data = load_graph_data(config)
-    print("\nFinal HeteroData structure:")
-    print(hetero_data)
+    # --- Start of protected block for MLflow ---
+    try:
+        # ===================================================================
+        # 2. Setup: Start MLflow Run, Set Environment, and Get Config
+        # ===================================================================
+        tracker.start_run()  # This also logs all relevant parameters
 
-    # ... STAGE 2: MODEL BUILDING (To be implemented next) ...
+        rt.set_seeds(config["runtime"]["seed"])
+        device = torch.device(
+            config["runtime"]["gpu"] if torch.cuda.is_available() else "cpu"
+        )
 
-    # ... STAGE 3: TRAINING & EVALUATION (To be implemented next) ...
+        # Get the primary switches for the experiment from config
+        training_config = config["training"]
+        encoder_name = training_config["encoder"]
+        # Use .get() for the optional predictor
+        predictor_name = training_config.get("predictor", None)
+
+        # --- [NEW] Determine paradigm by convention ---
+        paradigm = "two_stage" if predictor_name else "end_to_end"
+
+        # 3. Startup Log
+        print("\n" + "=" * 80)
+        print(" " * 20 + "Starting DTI Prediction Experiment")
+        print("=" * 80)
+        print("Configuration loaded for this run:")
+        print(f"  - Paradigm (Inferred): '{paradigm}'")
+        print(f"  - Data Variant:        '{training_config['data_variant']}'")
+        print(f"  - Encoder:             '{encoder_name}'")
+        print(f"  - Predictor:           '{predictor_name or 'N/A'}'")
+        print(f"  - Seed:                {config['runtime']['seed']}")
+        print(f"  - Device:              {device}")
+        print("=" * 80 + "\n")
+
+        hetero_data = load_graph_data(
+            config,
+        )
+
+        # 5. --- Workflow Dispatcher (based on the inferred paradigm) ---
+        results = None
+        if paradigm == "two_stage":
+            # --- Two-Stage Logic ---
+
+            # 5a. Run Encoder
+            node_embeddings = None
+            if encoder_name == "ndls_homo":
+                adj, features, _ = convert_hetero_to_homo(hetero_data)
+                encoder = NDLS_Homo_Encoder(config, device)
+                encoder.fit(adj, features)
+                node_embeddings = encoder.get_embeddings()
+            else:
+                raise NotImplementedError(
+                    f"Encoder '{encoder_name}' is not supported for the 'two_stage' paradigm."
+                )
+
+            # 5b. Run Predictor
+            if node_embeddings is not None:
+                if predictor_name == "gbdt":
+                    predictor = GBDT_Link_Predictor(config)
+                    results = predictor.predict(node_embeddings)
+                else:
+                    raise NotImplementedError(
+                        f"Predictor '{predictor_name}' is not supported."
+                    )
+
+        elif paradigm == "end_to_end":
+            # --- End-to-End Logic ---
+            print("End-to-end paradigm is not implemented yet.")
+            # Here, you would check the encoder_name and run the corresponding e2e model
+            # if encoder_name == 'rgcn_hetero':
+            #     results = run_rgcn_e2e_workflow(...)
+            pass
+
+        # 6. Logging
+        if results:
+            tracker.log_cv_results(results["aucs"], results["auprs"])
+
+    except Exception as e:
+        print(f"\n!!! FATAL ERROR: Experiment run failed: {e}")
+        # Log the failure to MLflow for tracking and easier debugging
+        if tracker.is_active:
+            import mlflow
+
+            mlflow.set_tag("run_status", "FAILED")
+            # Log the full traceback for detailed error analysis in MLflow
+            import traceback
+
+            mlflow.log_text(traceback.format_exc(), "error_traceback.txt")
+        raise  # Re-raise the exception to stop the script
+
+    finally:
+        # ===================================================================
+        # 7. Teardown: Always end the MLflow run
+        # ===================================================================
+        tracker.end_run()
+        print("\n" + "=" * 80)
+        print(" " * 27 + "Experiment Run Finished")
+        print("=" * 80 + "\n")
 
 
 if __name__ == "__main__":

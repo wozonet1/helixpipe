@@ -14,9 +14,15 @@ from Bio.Align import substitution_matrices
 from tqdm import tqdm
 from joblib import Parallel, delayed
 from pathlib import Path
-from utils import get_path, check_files_exist, setup_dataset_directories
+from research_template import (
+    get_path,
+    check_files_exist,
+    setup_dataset_directories,
+)
+import research_template as rt
 import yaml
 
+# TODO: 加强任务难度
 
 # region d/l feature
 # 将SMILES字符串转换为图数据
@@ -66,28 +72,24 @@ def smiles_to_graph(smiles):
     return data
 
 
-# 定义GCN层
-class GCNLayer(torch.nn.Module):
-    def __init__(self, in_feats, out_feats):
-        super(GCNLayer, self).__init__()
-        self.linear = torch.nn.Linear(in_feats * 2, out_feats)
+class MoleculeGCN(torch.nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.conv1 = GCNConv(in_channels, 64)
+        self.conv2 = GCNConv(64, out_channels)
 
     def forward(self, x, edge_index):
-        # 聚合邻居节点特征
-        agg = torch.zeros_like(x)
-        if edge_index.numel() == 0:
-            print("ZERO")
-            return torch.zeros([20, 128]).to(device)
-        agg[edge_index[0]] = x[edge_index[1]]
-        out = self.linear(torch.cat((x, agg), dim=-1))
-        return out
+        x = F.relu(self.conv1(x, edge_index))
+        x = self.conv2(x, edge_index)
+        return x
 
 
 # 特征提取
 def extract_molecule_features(smiles, model, device):
     graph_data = smiles_to_graph(smiles)
-    node_embeddings = model(graph_data.x.to(device), graph_data.edge_index.to(device))
-    # 使用平均池化作为读出函数
+    # 在PyG的GCNConv中, x的形状需要是 [num_nodes, in_channels]
+    x, edge_index = graph_data.x.to(device), graph_data.edge_index.to(device)
+    node_embeddings = model(x, edge_index)  # 直接调用模型
     molecule_embedding = node_embeddings.mean(dim=0)
     return molecule_embedding
 
@@ -181,7 +183,9 @@ def calculate_drug_similarity(drug_list):
 
     # 2. 将外层循环用 tqdm 包裹起来
     # desc 参数为进度条提供了一个清晰的描述
-    for i in tqdm(range(num_molecules), desc="Calculating Drug Similarities"):
+    for i in tqdm(
+        range(num_molecules), desc="Calculating Drug Similarities", leave=False
+    ):
         # 由于矩阵是对称的，我们可以只计算上三角部分来优化性能
         for j in range(i, num_molecules):
             if i == j:
@@ -246,7 +250,9 @@ def calculate_protein_similarity(sequence_list, cpus: int):
     print("--> Pre-calculating self-alignment scores for normalization...")
     self_scores = Parallel(n_jobs=cpus)(
         delayed(align_pair)(seq, seq, aligner_config)
-        for seq in tqdm(sequence_list, desc="Self-Alignment Pre-computation")
+        for seq in tqdm(
+            sequence_list, desc="Self-Alignment Pre-computation", leave=False
+        )
     )
     # 加上一个很小的数，防止未来出现除以零的错误 (例如空序列导致score为0)
     self_scores = np.array(self_scores, dtype=np.float32) + 1e-8
@@ -263,7 +269,7 @@ def calculate_protein_similarity(sequence_list, cpus: int):
     print("--> Calculating pairwise raw alignment scores...")
     raw_pairwise_scores = Parallel(n_jobs=cpus)(
         delayed(align_pair)(sequence_list[i], sequence_list[j], aligner_config)
-        for i, j in tqdm(tasks, desc="Pairwise Alignment")
+        for i, j in tqdm(tasks, desc="Pairwise Alignment", leave=False)
     )
 
     # =========================================================================
@@ -273,7 +279,12 @@ def calculate_protein_similarity(sequence_list, cpus: int):
     similarity_matrix = np.zeros((num_sequences, num_sequences), dtype=np.float32)
 
     for (i, j), raw_score in zip(
-        tqdm(tasks, desc="Normalizing and Filling Matrix"), raw_pairwise_scores
+        tqdm(
+            tasks,
+            desc="Normalizing and Filling Matrix",
+            leave=False,
+        ),
+        raw_pairwise_scores,
     ):
         if i == j:
             similarity_matrix[i, j] = 1.0
@@ -345,13 +356,10 @@ if not check_files_exist(config, *checkpoint_files_dict.values()) or restart_fla
     unique_smiles = full_df["SMILES"].dropna().unique()
     base_drugs_list = [
         canonicalize_smiles(s)
-        for s in tqdm(unique_smiles, desc="Canonicalizing Drug SMILES")
+        for s in tqdm(unique_smiles, desc="Canonicalizing Drug SMILES", leave=False)
     ]
     base_drugs_list = [s for s in base_drugs_list if s is not None]
     base_proteins_list = full_df["Protein"].unique().tolist()
-    print(
-        f"-> Found {len(base_drugs_list)} unique drugs and {len(base_proteins_list)} unique proteins in base dataset."
-    )
 
     # 1b. 根据开关，加载GtoPdb的“扩展包”实体
     extra_ligands_list = []
@@ -383,6 +391,13 @@ if not check_files_exist(config, *checkpoint_files_dict.values()) or restart_fla
             )
     else:
         print("\n--- [Stage 1b] GtoPdb integration DISABLED. ---")
+    print(
+        f"DEBUG_1A: Initial unique drugs = {len(set(base_drugs_list))}, proteins = {len(set(base_proteins_list))}"
+    )
+    if data_config["use_gtopdb"]:
+        print(
+            f"DEBUG_1B: Initial unique extra ligands = {len(set(extra_ligands_list))}, extra proteins = {len(set(extra_proteins_list))}"
+        )
     # endregion
 
     # region index
@@ -412,23 +427,15 @@ if not check_files_exist(config, *checkpoint_files_dict.values()) or restart_fla
     node_data = []
     current_id = 0
 
-    # 3. [核心修复] 首先为所有的 drug 分配连续的ID
-    print(f"--> Indexing {len(sorted_unique_drugs)} unique drugs...")
     for smile in sorted_unique_drugs:
         drug2index[smile] = current_id
         node_data.append({"node_id": current_id, "node_type": "drug"})
         current_id += 1
 
-    # 4. [核心修复] 接着为所有的 ligand 分配连续的ID
-    print(f"--> Indexing {len(sorted_unique_ligands)} unique ligands...")
     for smile in sorted_unique_ligands:
         ligand2index[smile] = current_id
         node_data.append({"node_id": current_id, "node_type": "ligand"})
         current_id += 1
-
-    print(
-        f"-> Indexed {len(drug2index)} drugs (IDs 0-{len(drug2index) - 1}) and {len(ligand2index)} ligands (IDs {len(drug2index)}-{len(drug2index) + len(ligand2index) - 1})."
-    )
 
     # --- 统一处理所有蛋白质 (这部分逻辑不变) ---
     final_proteins_list = sorted(list(set(base_proteins_list + extra_proteins_list)))
@@ -439,9 +446,9 @@ if not check_files_exist(config, *checkpoint_files_dict.values()) or restart_fla
     for seq, idx in prot2index.items():
         node_data.append({"node_id": idx, "node_type": "protein"})
     print(
-        f"-> Indexed {len(prot2index)} total proteins (IDs {protein_start_index}-{current_id + len(prot2index) - 1})."
+        f"DEBUG_2: Total indexed entities = drug({len(drug2index)}) + ligand({len(ligand2index)}) + protein({len(prot2index)}) = {len(drug2index) + len(ligand2index) + len(prot2index)}"
     )
-
+    print(f"DEBUG_2: Total rows in node_data list = {len(node_data)}")
     # endregion index
 
     # --- 保存所有文件 ---
@@ -473,6 +480,11 @@ else:
 final_smiles_list = sorted(list(drug2index.keys())) + sorted(list(ligand2index.keys()))
 final_proteins_list = sorted(list(prot2index.keys()))
 dl2index = {**drug2index, **ligand2index}  # 统一的小分子索引字典
+print(f"DEBUG_3: Length of final_smiles_list = {len(final_smiles_list)}")
+print(f"DEBUG_3: Length of final_proteins_list = {len(final_proteins_list)}")
+print(
+    f"DEBUG_3: Total nodes based on final_lists = {len(final_smiles_list) + len(final_proteins_list)}"
+)
 # endregion
 
 # ===================================================================
@@ -491,17 +503,17 @@ if not check_files_exist(config, *checkpoint_files_dict.values()) or restart_fla
     print("--> Initializing feature extraction models...")
     # Using your GCNLayer, but a standard GCNConv would be better.
     # .eval() is crucial: it disables dropout and other training-specific layers.
-    molecule_feature_extractor = GCNLayer(in_feats=5, out_feats=128).to(device).eval()
+    molecule_feature_extractor = MoleculeGCN(5, 128).to(device).eval()
     protein_feature_extractor = ProteinGCN().to(device).eval()
 
     drug_embeddings = []
     # Use the new function signature in the loop
-    for d in tqdm(final_smiles_list, desc="Extracting Molecule Features"):
+    for d in tqdm(final_smiles_list, desc="Extracting Molecule Features", leave=False):
         embedding = extract_molecule_features(d, molecule_feature_extractor, device)
         drug_embeddings.append(embedding.cpu().detach().numpy())
 
     protein_embeddings = []
-    for p in tqdm(final_proteins_list, desc="Extracting Protein Features"):
+    for p in tqdm(final_proteins_list, desc="Extracting Protein Features", leave=False):
         embedding = extract_protein_features(p, protein_feature_extractor, device)
         protein_embeddings.append(embedding.cpu().detach().numpy())
 
@@ -533,6 +545,12 @@ if not check_files_exist(config, *checkpoint_files_dict.values()) or restart_fla
         get_path(config, checkpoint_files_dict["node_features"]),
         index=False,
         header=False,
+    )
+    print(f"DEBUG_4: Shape of final features_df = {features_df.shape}")
+    # --- The most critical assertion ---
+    num_nodes_from_stage2 = len(drug2index) + len(ligand2index) + len(prot2index)
+    assert features_df.shape[0] == num_nodes_from_stage2, (
+        f"FATAL: Feature matrix length ({features_df.shape[0]}) does not match indexed node count ({num_nodes_from_stage2})!"
     )
 else:
     # 如果文件已存在，则加载它们以供后续步骤使用
@@ -571,40 +589,76 @@ if not check_files_exist(config, *checkpoint_files_dict.values()) or restart_fla
 
     # --- 4a. 准备链接预测任务的正负样本 ---
     print("\n-> Generating positive and negative samples for link prediction...")
-    positive_pairs = []
+
+    # [NEW] Use a set to store NORMALIZED positive pairs to automatically handle duplicates and symmetry from the source file.
+    positive_pairs_normalized_set = set()
 
     # 从基础数据集 (DrugBank) 中提取 D-P 正样本
-    for _, row in full_df[full_df["Y"] == 1].iterrows():
-        if row["SMILES"] in dl2index and row["Protein"] in prot2index:
-            d_idx = dl2index[row["SMILES"]]
-            p_idx = prot2index[row["Protein"]]
-            positive_pairs.append((d_idx, p_idx))
+    print("--> Scanning positive interactions from DrugBank...")
+    for _, row in tqdm(
+        full_df[full_df["Y"] == 1].iterrows(),
+        total=full_df[full_df["Y"] == 1].shape[0],
+        desc="DrugBank Pairs",
+        leave=False,
+    ):
+        smiles = row["SMILES"]
+        protein = row["Protein"]
+        if smiles in dl2index and protein in prot2index:
+            d_idx = dl2index[smiles]
+            p_idx = prot2index[protein]
+            # [CORE FIX] Normalize the pair by sorting the IDs before adding to the set
+            normalized_pair = tuple(sorted((d_idx, p_idx)))
+            positive_pairs_normalized_set.add(normalized_pair)
 
     # (可选) 从GtoPdb中提取 L-P 正样本
     if data_config["use_gtopdb"]:
+        print("--> Scanning positive interactions from GtoPdb...")
         gtopdb_edges_df = pd.read_csv(
-            get_path(config, "gtopdb.processed.interactions"),
+            rt.get_path(config, "gtopdb.processed.interactions"),
             header=None,
             names=["Sequence", "SMILES", "Affinity"],
         )
-        for _, row in gtopdb_edges_df.iterrows():
-            if row["SMILES"] in dl2index and row["Sequence"] in prot2index:
-                l_idx = dl2index[row["SMILES"]]
-                p_idx = prot2index[row["Sequence"]]
-                positive_pairs.append((l_idx, p_idx))
+        for _, row in tqdm(
+            gtopdb_edges_df.iterrows(),
+            total=len(gtopdb_edges_df),
+            desc="GtoPdb Pairs",
+            leave=False,
+        ):
+            smiles = row["SMILES"]
+            sequence = row["Sequence"]
+            if smiles in dl2index and sequence in prot2index:
+                l_idx = dl2index[smiles]
+                p_idx = prot2index[sequence]
+                # [CORE FIX] Normalize the pair here as well
+                normalized_pair = tuple(sorted((l_idx, p_idx)))
+                positive_pairs_normalized_set.add(normalized_pair)
 
-    # 进行随机负采样
-    # TODO: 采用高级策略负采样
+    # Convert the clean, unique, normalized set back to a list for further processing
+    positive_pairs = list(positive_pairs_normalized_set)
+    print(
+        f"-> Found {len(positive_pairs)} unique, normalized positive pairs after cleaning."
+    )
+
+    # --- 进行随机负采样 ---
+    # The logic here is now safer because the positive set is clean.
+    print("--> Performing negative sampling...")
     negative_pairs = []
     all_molecule_ids = list(dl2index.values())
     all_protein_ids = list(prot2index.values())
-    positive_set = set(positive_pairs)  # 使用集合以提高查找效率
 
-    with tqdm(total=len(positive_pairs), desc="Negative Sampling") as pbar:
+    # The set of positive pairs is already normalized, so we can use it directly for checking
+    # positive_set_for_neg_sampling = {tuple(sorted(p)) for p in positive_pairs} # This is redundant now
+
+    with tqdm(total=len(positive_pairs), desc="Negative Sampling", leave=False) as pbar:
         while len(negative_pairs) < len(positive_pairs):
             dl_idx = random.choice(all_molecule_ids)
             p_idx = random.choice(all_protein_ids)
-            if (dl_idx, p_idx) not in positive_set:
+
+            # Normalize the candidate pair before checking for existence
+            normalized_candidate = tuple(sorted((dl_idx, p_idx)))
+
+            if normalized_candidate not in positive_pairs_normalized_set:
+                # We store the original (potentially directional) pair for the negative set
                 negative_pairs.append((dl_idx, p_idx))
                 pbar.update(1)
 
@@ -612,14 +666,19 @@ if not check_files_exist(config, *checkpoint_files_dict.values()) or restart_fla
         f"-> Generated {len(positive_pairs)} positive and {len(negative_pairs)} negative samples."
     )
 
-    # 保存统一的、带标签的边文件
+    # --- 保存统一的、带标签的边文件 ---
+    # Note: For positive pairs, we are now saving the normalized (min_id, max_id) version.
+    # This ensures consistency.
     pos_df = pd.DataFrame(positive_pairs, columns=["source", "target"])
     pos_df["label"] = 1
     neg_df = pd.DataFrame(negative_pairs, columns=["source", "target"])
     neg_df["label"] = 0
+
     dl_p_edges_df = pd.concat([pos_df, neg_df], ignore_index=True)
     dl_p_edges_df.to_csv(
-        get_path(config, checkpoint_files_dict["link_labels"]),
+        rt.get_path(
+            config, checkpoint_files_dict["link_labels"]
+        ),  # Assuming graph_files_dict is defined
         index=False,
         header=True,
     )

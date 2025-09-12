@@ -8,7 +8,7 @@ from pathlib import Path
 import requests
 import re
 import yaml
-from utils import get_path
+from research_template import get_path
 
 
 def load_config(config_path="config.yaml"):

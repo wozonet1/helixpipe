@@ -7,6 +7,14 @@ import sys
 import torch
 from pathlib import Path
 import shutil
+import yaml
+
+
+def load_config(config_path="config.yaml"):
+    """Loads the YAML config file from the project root."""
+    project_root = Path(__file__).parent.parent
+    with open(project_root / config_path, "r") as f:
+        return yaml.safe_load(f)
 
 
 def setup_dataset_directories(config: dict) -> None:
@@ -259,114 +267,6 @@ def load_file_as_Adj_matrix(Alledge, features):
     #   relation_matrix[mi, lnc] = 1
     Adj = sp.csr_matrix(relation_matrix, dtype=np.float32)
     return Adj
-
-
-def load_data(edgelist, node_features, node_labels):
-    features = sp.csr_matrix(
-        node_features, dtype=np.float32
-    )  # drug and target features
-    # features = normalize(features)
-    idx_train = range(500)
-    idx_val = range(500, 660)
-    idx_test = range(660, int(node_features.shape[0]))
-    features = torch.FloatTensor(np.array(features.todense()))
-    labels = torch.LongTensor(np.array(node_labels))
-    adj = load_file_as_Adj_matrix(edgelist, node_features)
-    # adj = normalize(adj + sp.eye(adj.shape[0]))
-    # adj = sparse_mx_to_torch_sparse_tensor(adj)
-    idx_train = torch.LongTensor(idx_train)
-    idx_val = torch.LongTensor(idx_val)
-    idx_test = torch.LongTensor(idx_test)
-    return adj, features, labels, idx_train, idx_val, idx_test
-
-
-def load_data1(path="../data", dataset="cora"):
-    """
-    ind.[:dataset].x     => the feature vectors of the training instances (scipy.sparse.csr.csr_matrix)
-    ind.[:dataset].y     => the one-hot labels of the labeled training instances (numpy.ndarray)
-    ind.[:dataset].allx  => the feature vectors of both labeled and unlabeled training instances (csr_matrix)
-    ind.[:dataset].ally  => the labels for instances in ind.dataset_str.allx (numpy.ndarray)
-    ind.[:dataset].graph => the dict in the format {index: [index of neighbor nodes]} (collections.defaultdict)
-    ind.[:dataset].tx => the feature vectors of the test instances (scipy.sparse.csr.csr_matrix)
-    ind.[:dataset].ty => the one-hot labels of the test instances (numpy.ndarray)
-    ind.[:dataset].test.index => indices of test instances in graph, for the inductive setting
-    """
-    print("Upload {} dataset.".format(dataset))
-
-    names = ["x", "y", "tx", "ty", "allx", "ally", "graph"]
-    objects = []
-
-    for i in range(len(names)):
-        with open("{}/ind.{}.{}".format(path, dataset, names[i]), "rb") as f:
-            if sys.version_info > (3, 0):
-                objects.append(pkl.load(f, encoding="latin1"))
-            else:
-                objects.append(pkl.load(f))
-
-    x, y, tx, ty, allx, ally, graph = tuple(objects)
-
-    test_idx_reorder = parse_index_file("{}/ind.{}.test.index".format(path, dataset))
-    test_idx_range = np.sort(test_idx_reorder)
-
-    if dataset == "citeseer":
-        # Citeseer dataset contains some isolated nodes in the graph
-        test_idx_range_full = range(min(test_idx_reorder), max(test_idx_reorder) + 1)
-        tx_extended = sp.lil_matrix((len(test_idx_range_full), x.shape[1]))
-        tx_extended[test_idx_range - min(test_idx_range), :] = tx
-        tx = tx_extended
-
-        ty_extended = np.zeros((len(test_idx_range_full), y.shape[1]))
-        ty_extended[test_idx_range - min(test_idx_range), :] = ty
-        ty = ty_extended
-
-    features = sp.vstack((allx, tx)).tolil()
-    features[test_idx_reorder, :] = features[test_idx_range, :]
-
-    adj = nx.adjacency_matrix(nx.from_dict_of_lists(graph))
-
-    print("| # of nodes : {}".format(adj.shape[0]))
-    print("| # of edges : {}".format(adj.sum().sum() / 2))
-
-    # features = normalize(features)
-    print("| # of features : {}".format(features.shape[1]))
-    print("| # of clases   : {}".format(ally.shape[1]))
-
-    features = torch.FloatTensor(np.array(features.todense()))
-    adj.tocoo().astype(np.float32)  # FIXME: no use
-
-    labels = np.vstack((ally, ty))
-    labels[test_idx_reorder, :] = labels[test_idx_range, :]
-
-    if dataset == "citeseer":
-        save_label = np.where(labels)[1]
-    labels = torch.LongTensor(np.where(labels)[1])
-
-    idx_train = range(len(y))
-    idx_val = range(len(y), len(y) + 500)
-    idx_test = test_idx_range.tolist()
-
-    print("| # of train set : {}".format(len(idx_train)))
-    print("| # of val set   : {}".format(len(idx_val)))
-    print("| # of test set  : {}".format(len(idx_test)))
-
-    idx_train, idx_val, idx_test = list(
-        map(lambda x: torch.LongTensor(x), [idx_train, idx_val, idx_test])
-    )
-
-    def missing_elements(L):
-        start, end = L[0], L[-1]
-        return sorted(set(range(start, end + 1)).difference(L))
-
-    if dataset == "citeseer":
-        L = np.sort(idx_test)
-        missing = missing_elements(L)
-
-        for element in missing:
-            save_label = np.insert(save_label, element, 0)
-
-        labels = torch.LongTensor(save_label)
-
-    return adj, features, labels, idx_train, idx_val, idx_test
 
 
 def graph_decompose(adj, graph_name, k, metis_p, strategy="edge"):
