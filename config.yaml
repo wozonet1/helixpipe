@@ -1,44 +1,58 @@
 # ===================================================================
-#      Configuration for DTI Prediction Project (v2.1)
+#      Configuration for DTI Prediction Project (v4.2)
 # ===================================================================
-# This version supports the raw/processed structure for ALL datasets.
+# This is the final, fully-featured config BEFORE Hydra refactoring.
+# It uses a single file to manage all experimental parameters.
 
-# --- Data Configuration ---
+# ===================================================================
+# 1. Data Configuration
+# ===================================================================
 data:
-  # The root directory for all data.
   root: "data"
-
-  # The name of the primary dataset currently in use for the main pipeline.
-  primary_dataset: "DrugBank"
-
-  # The key strategic switch for your project.
-  use_gtopdb: true
-
-  # --- Subfolder structure definition ---
+  primary_dataset: "DrugBank"  # Options: "DrugBank", "davis", "biosnap"
+  
+  # This flag is used by data_proc.py to decide which data variant to GENERATE.
+  use_gtopdb: false
+  
   subfolders:
     raw: "raw"
     processed: "processed"
 
-  # --- Filename Registry ---
-  # This section now clearly separates files by their dataset.
   files:
-    # --- Files related to the primary dataset (e.g., DrugBank) ---
     DrugBank:
       raw:
         dti_interactions: "full.csv"
+        columns: { drug_id: "SMILES", target_id: "Protein", label: "Y" }
       processed:
+        typed_edge_list_template: "typed_edges_suffix-{relations_suffix}.csv"
+        link_prediction_labels: "dl_p_edges.csv"
         nodes_metadata: "nodes.csv"
         node_features: "features.csv"
-        typed_edge_list: "typed_edges.csv"
-        link_prediction_labels: "dl_p_edges.csv"
-        molecule_similarity_matrix: "dl_similarity_matrix.pkl"
-        protein_similarity_matrix: "prot_similarity_matrix.pkl"
+        similarity_matrices:
+          molecule: "sim_matrixes/dl_similarity_matrix.pkl"
+          protein: "sim_matrixes/prot_similarity_matrix.pkl"
         indexes:
           drug: "indexes/drug2index.pkl"
           ligand: "indexes/ligand2index.pkl"
           protein: "indexes/prot2index.pkl"
-
-    # --- Files related to the GtoPdb dataset ---
+          
+    davis:
+      raw:
+        dti_interactions: "full.csv"
+        columns: { drug_id: "SMILES", target_id: "Protein", label: "Y" }
+      processed:
+        typed_edge_list_template: "typed_edges_suffix-{relations_suffix}.csv"
+        link_prediction_labels: "dl_p_edges.csv"
+        nodes_metadata: "nodes.csv"
+        node_features: "features.csv"
+        similarity_matrices:
+          molecule: "sim_matrixes/dl_similarity_matrix.pkl"
+          protein: "sim_matrixes/prot_similarity_matrix.pkl"
+        indexes:
+          drug: "indexes/drug2index.pkl"
+          ligand: "indexes/ligand2index.pkl"
+          protein: "indexes/prot2index.pkl"
+          
     gtopdb:
       raw:
         interactions: "interactions.csv"
@@ -49,45 +63,82 @@ data:
         proteins: "gtopdb_proteins.csv"
         interactions: "gtopdb_p-l_edges.csv"
 
-# --- Data Processing Parameters ---
+# ===================================================================
+# 2. Data Processing Parameters
+# ===================================================================
 params:
-    protein_similarity_threshold: 0.8 # Assuming normalization is applied
-    max_pp_edges: 500
-    molecule_similarity_threshold: 0.988
-    gtopdb:
-      max_affinity_nM: 10000
+  protein_similarity_threshold: 0.8
+  max_pp_edges: 500
+  molecule_similarity_threshold: 0.988 # Used for D-D, L-L
+  drug_ligand_similarity_threshold: 0.7 # A separate, more lenient threshold
+  gtopdb_max_affinity_nM: 10000
+  negative_sampling_strategy: "popular" # Options: "uniform", "popular"
+  
+  # Fine-grained control for ablation studies. This will be used to generate the filename suffix.
+  include_relations:
+    abbreviations:
+      dp_interaction: "dp"
+      lp_interaction: "lp"
+      pp_similarity: "pp"
+      dd_similarity: "dd"
+      dl_similarity: "dl"
+      ll_similarity: "ll"
+    flags:
+      dp_interaction: true
+      lp_interaction: true
+      pp_similarity: true
+      dd_similarity: true
+      dl_similarity: true
+      ll_similarity: true
 
-# --- Runtime Configuration ---
+# ===================================================================
+# 3. Runtime Configuration
+# ===================================================================
 runtime:
   seed: 514
   cpus: 80
   gpu: "cuda:1"
   force_restart: false
 
+# ===================================================================
+# 4. Model Training Configuration
+# ===================================================================
 training:
-  # The variant of the processed data to use ('baseline' or 'gtopdb')
-  # This corresponds to the subfolder in `processed/`
-  data_variant: "baseline" #or'gtopdb'
+  # The variant of the processed data to USE for this experiment run.
+  data_variant: "baseline"  # Options: 'baseline', 'gtopdb'
 
-  # Model architecture
-  model:
-    workflow: "ndls_gbdt"
-    rgcn:
+  # --- Implicit Paradigm Definition ---
+  # If 'predictor' key exists, it's 'two_stage'. Otherwise, 'end_to_end'.
+  encoder: "ndls_homo"
+  predictor: "gbdt"
+  
+  encoders:
+    ndls_homo:
+      k1: 200
+      epsilon1: 0.03
+    rgcn_hetero:
       hidden_channels: 128
       out_channels: 128
       num_layers: 2
-  ndls:
-      k1: 200        # Corresponds to old args.k1
-      epsilon1: 0.03 # Corresponds to old args.epsilon1
-      # ... other NDLS-specific parameters
-  gbdt:
+  
+  predictors:
+    gbdt:
       n_estimators: 500
       max_depth: 7
-  # Training hyperparameters
-  learning_rate: 0.001
-  weight_decay: 0.0005
-  epochs: 200
-  batch_size: 512 # For sampling edges during training
+      learning_rate: 0.1
+      subsample: 0.8
 
-  # Cross-validation settings
+  end_to_end:
+    learning_rate: 0.001
+    weight_decay: 0.0005
+    epochs: 200
+    batch_size: 512
+
   k_folds: 5
+
+# ===================================================================
+# 5. Experiment Tracking Configuration
+# ===================================================================
+mlflow:
+  tracking_uri: "mlruns"
+  experiment_name: "DTI_Prediction_Ablation_Studys

@@ -11,6 +11,7 @@ from .ndls_utils import (
     localize_optimal_hops,
 )
 import tqdm as tqdm
+from omegaconf import DictConfig
 
 
 class NDLS_Homo_Encoder:

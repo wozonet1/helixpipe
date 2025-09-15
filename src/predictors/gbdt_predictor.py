@@ -80,7 +80,7 @@ class GBDT_Link_Predictor:
                 ),  # Use .get for optional params
                 learning_rate=self.params.get("learning_rate", 0.1),
                 random_state=seed,
-                verbose=0,
+                verbose=1,
             )
 
             model.fit(X_train, y_train)
@@ -106,3 +106,14 @@ class GBDT_Link_Predictor:
         print(f"Mean AUC over {k_folds} folds: {mean_auc:.4f} ± {std_auc:.4f}")
         print(f"Mean AUPR over {k_folds} folds: {mean_aupr:.4f} ± {std_aupr:.4f}")
         print("=" * 50)
+        final_results = {
+            "aucs": aucs,
+            "auprs": auprs,
+            "mean_auc": mean_auc,
+            "mean_aupr": mean_aupr,
+            "std_auc": std_auc,
+            "std_aupr": std_aupr,
+        }
+
+        # Return this dictionary so the main function can receive it
+        return final_results

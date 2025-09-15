@@ -1,0 +1,67 @@
+# ===============================================
+#       Main Hydra Config for DTI Project
+# ===============================================
+
+# --- 1. Default Component Combination ---
+# Hydra will load the corresponding yaml file from each sub-directory.
+defaults:
+  - data: davis  # Default dataset to use
+  - encoder: ndls_homo
+  - predictor: gbdt
+  - _self_  # This line is important, it tells Hydra to also load the rest of this file.
+
+data:
+  subfolders:
+    raw: "raw"
+    processed: "processed"
+  use_gtopdb: false
+  files:
+    raw:
+      dti_interactions: "full.csv"
+    processed:
+        typed_edge_list_template: "typed_edges_suffix-{relations_suffix}.csv"
+        link_prediction_labels: "dl_p_edges.csv"
+        nodes_metadata: "nodes.csv"
+        node_features: "features.csv"
+        similarity_matrices:
+          molecule: "sim_matrixes/dl_similarity_matrix.pkl"
+          protein: "sim_matrixes/prot_similarity_matrix.pkl"
+        indexes:
+          drug: "indexes/drug2index.pkl"
+          ligand: "indexes/ligand2index.pkl"
+          protein: "indexes/prot2index.pkl"
+# --- 2. Global Parameters (that don't belong to a specific component) ---
+# These are mostly parameters for data processing and evaluation
+training:
+  paradigm: "two_stage" # Or can be inferred. Let's keep it simple for now.
+  k_folds: 5
+
+params:
+  protein_similarity_threshold: 0.8
+  max_pp_edges: 500
+  include_relations:
+    abbreviations:
+      dp_interaction: "dp"
+      lp_interaction: "lp"
+      pp_similarity: "pp"
+      dd_similarity: "dd"
+      dl_similarity: "dl"
+      ll_similarity: "ll"
+    flags:
+      dp_interaction: true
+      lp_interaction: true
+      pp_similarity: true
+      dd_similarity: true
+      dl_similarity: true
+      ll_similarity: true
+
+runtime:
+  seed: 514
+  cpus: 80
+  gpu: "cuda:1"
+  force_restart: false
+  output_dir: "outputs/${data.primary_dataset}/${training.paradigm}/${encoder.name}"
+
+mlflow:
+  tracking_uri: "mlruns"
+  experiment_name: "DTI_Prediction_Hydra_on_${data.primary_dataset}"
