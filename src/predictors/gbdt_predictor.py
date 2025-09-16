@@ -84,7 +84,7 @@ class GBDT_Link_Predictor:
         model = GradientBoostingClassifier(
             n_estimators=self.params["n_estimators"],
             max_depth=self.params["max_depth"],
-            subsample=self.params.get("subsample", 1.0),  # Use .get for optional params
+            subsample=self.params.get("subsample"),  # Use .get for optional params
             learning_rate=self.params.get("learning_rate", 0.1),
             random_state=seed,
             verbose=1,

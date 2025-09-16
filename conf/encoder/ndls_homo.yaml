@@ -1,4 +1,14 @@
 # Hyperparameters for the ndls_homo encoder
 name: ndls_homo
+smoothing_mode: 'iterative'
+smoothing_alpha: 0.15
 k1: 200
 epsilon1: 0.03
+refiner:
+  # To enable the refiner, set 'enabled' to true.
+  enabled: true  # <--- The master switch! Set to false to disable.
+
+  # Hyperparameters for the DNN refiner module
+  hidden_channels: 64
+  out_channels: 64
+  dropout: 0.8

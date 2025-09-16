@@ -7,11 +7,37 @@ from research_template import sparse_mx_to_torch_sparse_tensor
 from .ndls_utils import (
     augmented_random_walk_normalization,
     aver,
+    aver_smooth_vectorized,
     diffuse_features_on_homo_graph,
     localize_optimal_hops,
 )
 import tqdm as tqdm
-from omegaconf import DictConfig
+import torch.nn as nn
+
+
+class DNNRefiner(nn.Module):
+    """
+    A simple two-layer fully-connected network to refine node features.
+    This mimics the hidden DNN layer from the original implementation.
+    """
+
+    def __init__(
+        self, in_channels: int, hidden_channels: int, out_channels: int, dropout: float
+    ):
+        super().__init__()
+        self.fcn1 = nn.Linear(in_channels, hidden_channels)
+        self.fcn2 = nn.Linear(hidden_channels, out_channels)
+        self.dropout = dropout
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Note: The original code applies dropout BEFORE the first layer, which is unusual.
+        # We will replicate this behavior for perfect reproduction.
+        x = F.dropout(x, self.dropout, training=self.training)
+        x = self.fcn1(x)
+        x = F.dropout(x, self.dropout, training=self.training)
+        x = self.fcn2(x)
+        # The original code returns log_softmax and the raw embeddings. We only need the embeddings.
+        return x
 
 
 class NDLS_Homo_Encoder:
@@ -28,6 +54,12 @@ class NDLS_Homo_Encoder:
         self.params = config.encoder
         self.device = device
         self.embeddings = None
+        self.refiner = None
+        if self.params.refiner.enabled:
+            print("--> DNN Refiner is ENABLED.")
+            # We don't know the input dimension yet, so we'll instantiate it in fit()
+        else:
+            print("--> DNN Refiner is DISABLED.")
 
     def fit(self, adj: coo_matrix, features: torch.Tensor):
         """
@@ -76,9 +108,51 @@ class NDLS_Homo_Encoder:
         # 3. Smoothing Stage
         # ===================================================================
         print("--> Stage 3: Performing final smoothing...")
-        smoothed_features = aver(hops.cpu(), adj, [f.cpu() for f in feature_list])
+        smoothing_mode = self.params.get("smoothing_mode", "lookup")
+
+        if smoothing_mode == "iterative":
+            print("    -> Using 'iterative' smoothing mode.")
+            alpha = self.params.get("smoothing_alpha", 0.15)
+            # Call our new, efficient, vectorized function
+            smoothed_features = aver_smooth_vectorized(
+                hops.cpu(), [f.cpu() for f in feature_list], alpha
+            )
+        else:  # Default to our original 'lookup' method
+            print("    -> Using 'lookup' smoothing mode.")
+            smoothed_features = aver(hops.cpu(), adj, [f.cpu() for f in feature_list])
 
         self.embeddings = pd.DataFrame(smoothed_features.numpy())
+        print(f"--> NDLS embeddings generated with shape: {self.embeddings.shape}")
+
+        if self.params.refiner.enabled:
+            print("--> Stage 4: Applying DNN Feature Refiner...")
+
+            # 1. Instantiate the refiner now that we know the input dimension
+            refiner_params = self.params.refiner
+            self.refiner = DNNRefiner(
+                in_channels=smoothed_features.shape[1],
+                hidden_channels=refiner_params.hidden_channels,
+                out_channels=refiner_params.out_channels,
+                dropout=refiner_params.dropout,
+            ).to(self.device)
+
+            # 2. Put the refiner in evaluation mode (important for dropout)
+            self.refiner.eval()
+
+            # 3. Perform a forward pass to get the refined embeddings
+            # The operation is unsupervised, so no backpropagation is needed.
+            with torch.no_grad():
+                final_embeddings_tensor = self.refiner(
+                    smoothed_features.to(self.device)
+                )
+
+            # Move embeddings back to CPU for GBDT
+            final_embeddings_tensor = final_embeddings_tensor.cpu()
+        else:
+            # If refiner is disabled, just use the smoothed features directly
+            final_embeddings_tensor = smoothed_features
+
+        self.embeddings = pd.DataFrame(final_embeddings_tensor.numpy())
         print(f"--> NDLS embeddings generated with shape: {self.embeddings.shape}")
 
         return self

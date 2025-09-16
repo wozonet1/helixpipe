@@ -1,0 +1,4 @@
+# Configuration specific to the 'davis' dataset
+name: biosnap
+root: "biosnap"
+primary_dataset: "biosnap"

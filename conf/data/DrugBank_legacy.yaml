@@ -1,0 +1,16 @@
+# conf/dataset/drugbank_legacy.yaml
+
+primary_dataset: DrugBank_Legacy # This will be the subfolder name in data/
+legacy_mode: true
+name: DrugBank_Legacy
+root: "data"
+# We add paths to the legacy files here, so our code remains clean
+# This makes our config the single source of truth for file names
+files:
+  raw:
+    all_nodes: "Allnode_DrPr.csv"
+    all_node_attributes: "AllNodeAttribute_DrPr.csv"
+    all_edges_combined: "drug_prot_edge.csv"
+    positive_interactions: "DrPrNum_DrPr.csv"
+    all_negative_samples: "AllNegative_DrPr.csv"
+    num_info: "num.pkl"

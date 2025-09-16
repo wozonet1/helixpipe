@@ -8,7 +8,7 @@ defaults:
   - data: DrugBank  # Default dataset to use
   - encoder: ndls_homo
   - predictor: gbdt
-  - relations: DP_no_sim
+  - relations: DP_sim
   - _self_  # This line is important, it tells Hydra to also load the rest of this file.
 
 
@@ -65,7 +65,7 @@ params:
 
 runtime:
   seed: 514
-  cpus: 80
+  cpus: 100
   gpu: "cuda:1"
   force_restart: false
 

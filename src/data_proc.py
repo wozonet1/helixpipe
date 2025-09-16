@@ -15,8 +15,7 @@ from tqdm import tqdm
 from joblib import Parallel, delayed
 from research_template import get_path, check_files_exist
 import research_template as rt
-import hydra
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 # TODO: 加强任务难度
 

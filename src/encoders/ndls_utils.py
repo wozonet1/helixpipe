@@ -85,7 +85,58 @@ def aver(
     return output_features
 
 
-# Location: src/encoders/ndls_utils.py or a new src/encoders/ops.py
+# In src/encoders/ndls_utils.py
+
+
+def aver_smooth_vectorized(
+    hops: torch.Tensor, feature_list: list[torch.Tensor], alpha: float = 0.15
+) -> torch.Tensor:
+    """
+    An efficient, vectorized implementation of the iterative smoothing with teleportation.
+
+    Args:
+        hops (torch.Tensor): A 1D tensor of optimal hop for each node.
+        feature_list (list[torch.Tensor]): List of diffused features at each hop.
+        alpha (float): The teleport probability to the initial features.
+
+    Returns:
+        torch.Tensor: The final smoothed node feature matrix.
+    """
+    num_nodes, feature_dim = feature_list[0].shape
+    device = feature_list[0].device
+
+    # --- 1. Pre-calculate the cumulative sum of features ---
+    # F_sum[k] will store the sum of features from hop 0 to k.
+    feature_stack = torch.stack(feature_list, dim=0)  # Shape: [k, num_nodes, dim]
+    F_sum = torch.cumsum(feature_stack, dim=0)  # Shape: [k, num_nodes, dim]
+
+    # --- 2. Initialize the output tensor ---
+    output_features = torch.zeros(num_nodes, feature_dim, device=device)
+    hops = hops.long()
+
+    # --- 3. Vectorized processing for each unique hop value ---
+    for h in torch.unique(hops):
+        if h == 0:
+            # Nodes with hop 0 just use their original features
+            node_indices = torch.where(hops == h)[0]
+            output_features[node_indices] = feature_list[0][node_indices]
+        else:
+            node_indices = torch.where(hops == h)[0]
+
+            # Get the cumulative sum of features up to hop h-1 for these nodes
+            # Shape: [num_selected_nodes, dim]
+            sum_f_j = F_sum[h - 1, node_indices, :]
+
+            # Get the initial features (at hop 0) for these nodes
+            f_0 = feature_list[0][node_indices]
+
+            # Apply the formula in a single vectorized operation
+            # final_feature = ((1-alpha) * sum(F_j) + h * alpha * F_0) / h
+            final_features_h = ((1 - alpha) * sum_f_j + h * alpha * f_0) / h
+
+            output_features[node_indices] = final_features_h
+
+    return output_features
 
 
 def diffuse_features_on_homo_graph(
