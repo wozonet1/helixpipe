@@ -12,7 +12,7 @@ data:
   primary_dataset: "DrugBank"
 
   # The key strategic switch for your project.
-  use_gtopdb: true
+  use_gtopdb: false
 
   # --- Subfolder structure definition ---
   subfolders:
@@ -31,8 +31,9 @@ data:
         node_features: "features.csv"
         typed_edge_list: "typed_edges.csv"
         link_prediction_labels: "dl_p_edges.csv"
-        molecule_similarity_matrix: "dl_similarity_matrix.pkl"
-        protein_similarity_matrix: "prot_similarity_matrix.pkl"
+        similarity_matrices:
+          molecule: "dl_similarity_matrix.pkl"
+          protein: "prot_similarity_matrix.pkl"
         indexes:
           drug: "indexes/drug2index.pkl"
           ligand: "indexes/ligand2index.pkl"
@@ -69,18 +70,15 @@ training:
   # This corresponds to the subfolder in `processed/`
   data_variant: "baseline" #or'gtopdb'
 
-  # Model architecture
-  model:
-    workflow: "ndls_gbdt"
-    rgcn:
-      hidden_channels: 128
-      out_channels: 128
-      num_layers: 2
-  ndls:
-      k1: 200        # Corresponds to old args.k1
-      epsilon1: 0.03 # Corresponds to old args.epsilon1
-      # ... other NDLS-specific parameters
-  gbdt:
+  encoder: ndls_homo
+  predictor: gbdt
+  encoders:
+    ndls_homo:
+        k1: 200        # Corresponds to old args.k1
+        epsilon1: 0.03 # Corresponds to old args.epsilon1
+        # ... other NDLS-specific parameters
+  predictors:
+    gbdt:
       n_estimators: 500
       max_depth: 7
   # Training hyperparameters

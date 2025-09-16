@@ -80,7 +80,7 @@ class GBDT_Link_Predictor:
                 ),  # Use .get for optional params
                 learning_rate=self.params.get("learning_rate", 0.1),
                 random_state=seed,
-                verbose=0,
+                verbose=1,
             )
 
             model.fit(X_train, y_train)
