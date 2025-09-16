@@ -1,0 +1,10 @@
+#仅仅开启dl与一般的interaction,用来说明dl边价值
+name: DPL_only_dl
+
+flags:
+      dp_interaction: true
+      lp_interaction: true
+      pp_similarity: false
+      dd_similarity: false
+      dl_similarity: true
+      ll_similarity: false

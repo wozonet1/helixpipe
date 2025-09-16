@@ -25,13 +25,7 @@ class NDLS_Homo_Encoder:
         Initializes the encoder with configuration and device.
         """
         self.config = config
-
-        # --- [MODIFIED] Access parameters from the new, correct location ---
-        # It now reads the currently active encoder's name from the config
-        # and uses it to find the correct parameter block.
-        active_encoder_name = config["training"]["encoder"]
-        self.params = config["training"]["encoders"][active_encoder_name]
-
+        self.params = config.encoder
         self.device = device
         self.embeddings = None
 

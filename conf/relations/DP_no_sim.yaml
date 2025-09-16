@@ -1,0 +1,8 @@
+name: DP_no_sim
+flags:
+        dp_interaction: true
+        lp_interaction: false
+        pp_similarity: false
+        dd_similarity: false
+        dl_similarity: false
+        ll_similarity: false

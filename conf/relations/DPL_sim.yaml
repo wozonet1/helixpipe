@@ -1,0 +1,9 @@
+name: DPL_sim
+
+flags:
+      dp_interaction: true
+      lp_interaction: true
+      pp_similarity: true
+      dd_similarity: true
+      dl_similarity: true
+      ll_similarity: true

@@ -1,6 +1,3 @@
-# src/main.py (v2.0)
-
-import random
 import numpy as np
 import pandas as pd
 import torch
@@ -8,39 +5,21 @@ from torch_geometric.data import HeteroData
 from encoders.ndls_homo_encoder import NDLS_Homo_Encoder
 from predictors.gbdt_predictor import GBDT_Link_Predictor
 import research_template as rt
-
-
-def set_seeds(seed):
-    """Sets random seeds for reproducibility."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+from omegaconf import DictConfig
 
 
 # region load data
-def load_graph_data(config: dict, data_variant: str) -> HeteroData:
+def load_graph_data(config: dict) -> HeteroData:
     """
     Loads all the necessary files and constructs a PyG HeteroData object.
     """
     print("--- [Step 1] Loading graph data and constructing HeteroData object... ---")
 
-    primary_dataset = config["data"]["primary_dataset"]
-
-    # Temporarily override use_gtopdb in the config for rt.get_path to work correctly
-    # This is a small hack to reuse rt.get_path for different variants.
-    config["data"]["use_gtopdb"] = data_variant == "gtopdb"
-
     # 1. Load node metadata and features
-    nodes_df = pd.read_csv(
-        rt.get_path(config, f"{primary_dataset}.processed.nodes_metadata")
-    )
+    nodes_df = pd.read_csv(rt.get_path(config, "processed.nodes_metadata"))
     features_tensor = torch.from_numpy(
         pd.read_csv(
-            rt.get_path(config, f"{primary_dataset}.processed.node_features"),
+            rt.get_path(config, "processed.node_features"),
             header=None,
         ).values
     ).float()
@@ -66,7 +45,7 @@ def load_graph_data(config: dict, data_variant: str) -> HeteroData:
     print(f"-> Populated features for node types: {list(data.node_types)}")
 
     # 3. Populate edge indices for each edge type
-    typed_edges_key = f"{primary_dataset}.processed.typed_edge_list_template"
+    typed_edges_key = "processed.typed_edge_list_template"
     edges_path = rt.get_path(config, typed_edges_key)
     print(f"--> Loading graph structure from resolved path: {edges_path}")
     try:
@@ -122,10 +101,7 @@ def load_graph_data(config: dict, data_variant: str) -> HeteroData:
 
 
 # endregion
-
 # region homo_ndls
-
-# In src/main.py
 
 
 def convert_hetero_to_homo(hetero_data: HeteroData) -> tuple:
@@ -195,62 +171,47 @@ def convert_hetero_to_homo(hetero_data: HeteroData) -> tuple:
 
 # endregion
 
+# region train
 
-# region main
 
 # TODO: test coldstart
-
-
-def train():
-    """
-    Main script to select and run the configured workflow, with full MLflow integration.
-    This is the central controller for all experiments.
-    """
-    # ===================================================================
-    # 1. Initialization: Load Config and Initialize Tracker
-    # ===================================================================
-    config = rt.load_config()
-    # Initialize the tracker from the research_template library
+def train(config: DictConfig):
     tracker = rt.MLflowTracker(config)
-
     # --- Start of protected block for MLflow ---
     try:
         # ===================================================================
         # 2. Setup: Start MLflow Run, Set Environment, and Get Config
         # ===================================================================
         tracker.start_run()  # This also logs all relevant parameters
-
-        rt.set_seeds(config["runtime"]["seed"])
         device = torch.device(
             config["runtime"]["gpu"] if torch.cuda.is_available() else "cpu"
         )
 
         # Get the primary switches for the experiment from config
         training_config = config["training"]
-        encoder_name = training_config["encoder"]
+        encoder_name = config.encoder.name
         # Use .get() for the optional predictor
-        predictor_name = training_config.get("predictor", None)
+        predictor_name = config.predictor.name
 
-        # --- [NEW] Determine paradigm by convention ---
-        paradigm = "two_stage" if predictor_name else "end_to_end"
+        paradigm = training_config.paradigm
+        data_variant = "gtopdb" if config.data.use_gtopdb else "baseline"
 
         # 3. Startup Log
-        config_hash = rt.get_relations_config_hash(config)
         print("\n" + "=" * 80)
         print(" " * 20 + "Starting DTI Prediction Experiment")
         print("=" * 80)
         print("Configuration loaded for this run:")
         print(f"  - Paradigm (Inferred): '{paradigm}'")
         print(f"  - Primary Dataset:     '{config['data']['primary_dataset']}'")
-        print(f"  - Data Variant:        '{training_config['data_variant']}'")
+        print(f"  - Data Variant:        '{data_variant}'")
         print(f"  - Encoder:             '{encoder_name}'")
         print(f"  - Predictor:           '{predictor_name or 'N/A'}'")
-        print(f"  - Graph Config Hash:   '{config_hash}'")
+        print(f"  - Use Relations:   '{config.relations.name}'")
         print(f"  - Seed:                {config['runtime']['seed']}")
         print(f"  - Device:              {device}")
         print("=" * 80 + "\n")
 
-        hetero_data = load_graph_data(config, training_config["data_variant"])
+        hetero_data = load_graph_data(config)
 
         # 5. --- Workflow Dispatcher (based on the inferred paradigm) ---
         results = None
@@ -289,9 +250,7 @@ def train():
 
         # 6. Logging
         if results:
-            tracker.log_cv_results(
-                results["aucs"], results["auprs"]
-            )  # FIXME:mlflow missing model metrics logging
+            tracker.log_cv_results(results["aucs"], results["auprs"])
 
     except Exception as e:
         print(f"\n!!! FATAL ERROR: Experiment run failed: {e}")

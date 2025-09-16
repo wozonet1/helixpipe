@@ -1,0 +1,9 @@
+# This component defines the 'pure_interactions' configuration
+name: DPL_no_sim
+flags:
+      dp_interaction: true
+      lp_interaction: true
+      pp_similarity: false
+      dd_similarity: false
+      dl_similarity: false
+      ll_similarity: false

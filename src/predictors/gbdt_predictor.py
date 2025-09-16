@@ -1,9 +1,9 @@
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score, average_precision_score
+from joblib import Parallel, delayed
 
 # 从通用模板库导入
 from research_template.path_manager import get_path
@@ -20,10 +20,27 @@ class GBDT_Link_Predictor:
         Initializes the predictor with configuration.
         """
         self.config = config
-        self.params = config["training"]["predictors"]["gbdt"]
+        self.params = config.predictor
         self.runtime_params = config["runtime"]
-        self.data_params = config["data"]
         self.training_params = config["training"]
+
+    @staticmethod
+    def _train_and_evaluate_fold(
+        model, X_train, y_train, X_test, y_test, fold_num, k_folds
+    ):
+        """Helper function to process a single fold of cross-validation."""
+        model.fit(X_train, y_train)
+        y_pred_proba = model.predict_proba(X_test)[:, 1]
+
+        fold_auc = roc_auc_score(y_test, y_pred_proba)
+        fold_aupr = average_precision_score(y_test, y_pred_proba)
+
+        # We can still print progress from within the parallel jobs
+        print(
+            f"    Fold {fold_num}/{k_folds} - AUC: {fold_auc:.4f}, AUPR: {fold_aupr:.4f}"
+        )
+
+        return fold_auc, fold_aupr
 
     def predict(self, node_embeddings: pd.DataFrame):
         """
@@ -39,13 +56,10 @@ class GBDT_Link_Predictor:
 
         k_folds = self.training_params["k_folds"]
         seed = self.runtime_params["seed"]
-        primary_dataset = self.data_params["primary_dataset"]
 
         # 1. [MODERNIZED] Load labeled edges from the unified file
         print("--> Loading link prediction labels...")
-        labeled_edges_path = get_path(
-            self.config, f"{primary_dataset}.processed.link_prediction_labels"
-        )
+        labeled_edges_path = get_path(self.config, "processed.link_prediction_labels")
         labeled_edges_df = pd.read_csv(labeled_edges_path)
 
         X_pairs = labeled_edges_df[["source", "target"]].values
@@ -66,34 +80,32 @@ class GBDT_Link_Predictor:
         aucs, auprs = [], []
 
         print(f"--> Starting {k_folds}-Fold Cross-Validation...")
-        for fold, (train_idx, test_idx) in enumerate(
-            tqdm(skf.split(X_features, y_labels), total=k_folds, desc="CV Folds")
-        ):
-            X_train, X_test = X_features[train_idx], X_features[test_idx]
-            y_train, y_test = y_labels[train_idx], y_labels[test_idx]
 
-            model = GradientBoostingClassifier(
-                n_estimators=self.params["n_estimators"],
-                max_depth=self.params["max_depth"],
-                subsample=self.params.get(
-                    "subsample", 1.0
-                ),  # Use .get for optional params
-                learning_rate=self.params.get("learning_rate", 0.1),
-                random_state=seed,
-                verbose=1,
+        model = GradientBoostingClassifier(
+            n_estimators=self.params["n_estimators"],
+            max_depth=self.params["max_depth"],
+            subsample=self.params.get("subsample", 1.0),  # Use .get for optional params
+            learning_rate=self.params.get("learning_rate", 0.1),
+            random_state=seed,
+            verbose=1,
+        )
+        parallel_results = Parallel(n_jobs=self.runtime_params["cpus"])(
+            delayed(self._train_and_evaluate_fold)(
+                model,
+                X_features[train_idx],
+                y_labels[train_idx],
+                X_features[test_idx],
+                y_labels[test_idx],
+                fold + 1,
+                k_folds,
             )
-
-            model.fit(X_train, y_train)
-            y_pred_proba = model.predict_proba(X_test)[:, 1]
-
-            fold_auc = roc_auc_score(y_test, y_pred_proba)
-            fold_aupr = average_precision_score(y_test, y_pred_proba)
-            print(
-                f"    Fold {fold + 1}/{k_folds} - AUC: {fold_auc:.4f}, AUPR: {fold_aupr:.4f}"
+            for fold, (train_idx, test_idx) in enumerate(
+                skf.split(X_features, y_labels)
             )
-            aucs.append(fold_auc)
-            auprs.append(fold_aupr)
-
+        )
+        aucs, auprs = zip(*parallel_results)
+        aucs = list(aucs)
+        auprs = list(auprs)
         # 4. Print final aggregated results
         mean_auc = np.mean(aucs)
         std_auc = np.std(aucs)

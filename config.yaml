@@ -134,7 +134,7 @@ training:
     epochs: 200
     batch_size: 512
 
-  k_folds: 5
+  k_folds: 10
 
 # ===================================================================
 # 5. Experiment Tracking Configuration

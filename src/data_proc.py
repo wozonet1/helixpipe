@@ -15,8 +15,8 @@ from tqdm import tqdm
 from joblib import Parallel, delayed
 from research_template import get_path, check_files_exist
 import research_template as rt
-
-from omegaconf import DictConfig
+import hydra
+from omegaconf import DictConfig, OmegaConf
 
 # TODO: 加强任务难度
 
@@ -319,7 +319,7 @@ def process_data(config: DictConfig):
     primary_dataset = data_config["primary_dataset"]
     restart_flag = runtime_config.get("force_restart", False)
 
-    full_df = pd.read_csv(get_path(config, f"{primary_dataset}.raw.dti_interactions"))
+    full_df = pd.read_csv(get_path(config, "raw.dti_interactions"))
     # endregion
 
     # region list
@@ -330,10 +330,10 @@ def process_data(config: DictConfig):
     # 1a. 加载基础数据集的实体
     print("--- [Stage 1a] Loading base entities from full_df.csv ---")
     checkpoint_files_dict = {
-        "drug": f"{primary_dataset}.processed.indexes.drug",
-        "ligand": f"{primary_dataset}.processed.indexes.ligand",
-        "protein": f"{primary_dataset}.processed.indexes.protein",
-        "nodes": f"{primary_dataset}.processed.nodes_metadata",
+        "drug": "processed.indexes.drug",
+        "ligand": "processed.indexes.ligand",
+        "protein": "processed.indexes.protein",
+        "nodes": "processed.nodes_metadata",
     }
     if not check_files_exist(config, *checkpoint_files_dict.values()) or restart_flag:
         # 使用 .unique().tolist() 更高效
@@ -488,9 +488,9 @@ def process_data(config: DictConfig):
     # region features&sim
 
     checkpoint_files_dict = {
-        "molecule_similarity_matrix": f"{primary_dataset}.processed.similarity_matrices.molecule",
-        "protein_similarity_matrix": f"{primary_dataset}.processed.similarity_matrices.protein",
-        "node_features": f"{primary_dataset}.processed.node_features",
+        "molecule_similarity_matrix": "processed.similarity_matrices.molecule",
+        "protein_similarity_matrix": "processed.similarity_matrices.protein",
+        "node_features": "processed.node_features",
     }
     if not check_files_exist(config, *checkpoint_files_dict.values()) or restart_flag:
         print("\n--- [Stage 3] Generating features and similarity matrices... ---")
@@ -581,8 +581,8 @@ def process_data(config: DictConfig):
     # Define file keys using the new template system and dictionary best practice.
     primary_dataset = config["data"]["primary_dataset"]
     graph_files_dict = {
-        "typed_edges_template": f"{primary_dataset}.processed.typed_edge_list_template",
-        "link_labels": f"{primary_dataset}.processed.link_prediction_labels",
+        "typed_edges_template": "processed.typed_edge_list_template",
+        "link_labels": "processed.link_prediction_labels",
     }
 
     # The check for the main graph file now dynamically resolves the hashed filename.
@@ -873,3 +873,26 @@ def process_data(config: DictConfig):
 
     # This is the final print of the script
     print("\nData processing pipeline finished successfully!")
+
+
+# # region Hydra Entry
+# @hydra.main(config_path="../conf", config_name="config", version_base=None)
+# def hydra_entry_point(cfg: DictConfig):
+#     """
+#     This function serves as the Hydra entry point to run data processing.
+#     """
+
+#     # Convert OmegaConf to a plain dict for maximum compatibility
+#     config_dict = OmegaConf.to_container(cfg, resolve=True)
+
+#     # Perform global setup
+#     rt.set_seeds(config_dict["runtime"]["seed"])
+#     rt.setup_dataset_directories(config_dict)
+
+#     # Execute the main logic
+#     process_data(config_dict)
+
+
+# if __name__ == "__main__":
+#     hydra_entry_point()
+# # end region

@@ -1,0 +1,26 @@
+# conf/experiment/data_ablation_parallel.yaml
+# This experiment is designed to run different data source combinations in parallel.
+
+defaults:
+  - _self_
+  - dataset: davis        # Specify the dataset for this experiment series
+  - data: default         # Start with the baseline data config
+  - encoder: ndls_homo
+  - predictor: gbdt
+  - relations: DP_sim     # Choose a default relation for this sweep
+  
+  # --- 核心指令：告诉Hydra使用Joblib启动器 ---
+  - override hydra/launcher: joblib
+
+# 全局Hydra设置
+hydra:
+  # 对joblib启动器进行精细化配置
+  launcher:
+    joblib:
+      # -1 表示使用所有可用的CPU核心。
+      # 您的服务器有80核，可以设置为 80，或者-1让它自动决定。
+      # 设置为-2表示使用除一个核心外的所有核心，这通常是个好主意，可以避免服务器卡死。
+      n_jobs: 100
+
+# 实验系列的其他元数据
+# ...
