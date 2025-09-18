@@ -1,6 +1,6 @@
 name: gbdt
-n_estimators: 499
+n_estimators: 500
 max_depth: 7
 # Training hyperparameters
 learning_rate: 0.1
-subsample: 0.85
+subsample: 1.0

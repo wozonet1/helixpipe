@@ -89,6 +89,7 @@ class GBDT_Link_Predictor:
             random_state=seed,
             verbose=1,
         )
+        print(model.get_params())
         parallel_results = Parallel(n_jobs=self.runtime_params["cpus"])(
             delayed(self._train_and_evaluate_fold)(
                 model,

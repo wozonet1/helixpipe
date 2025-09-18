@@ -5,10 +5,10 @@
 # --- 1. Default Component Combination ---
 # Hydra will load the corresponding yaml file from each sub-directory.
 defaults:
-  - data: davis # Default dataset to use
+  - data: DrugBank # Default dataset to use
   - encoder: ndls_homo
   - predictor: gbdt
-  - relations: DP_sim
+  - relations: DP_no_sim
   - _self_  # This line is important, it tells Hydra to also load the rest of this file.
 
 
@@ -17,7 +17,7 @@ data:
   subfolders:
     raw: "raw"
     processed: "processed"
-  use_gtopdb: true
+  use_gtopdb: false
   files:
     raw:
       dti_interactions: "full.csv"
@@ -56,7 +56,7 @@ training:
   k_folds: 10
 
 params:
-  protein_similarity_threshold: 0.5
+  protein_similarity_threshold: 0.8
   max_pp_edges: 500
   molecule_similarity_threshold: 0.988 # Used for D-D, L-L
   drug_ligand_similarity_threshold: 0.7 # A separate, more lenient threshold

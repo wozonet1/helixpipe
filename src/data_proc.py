@@ -313,7 +313,6 @@ def process_data(config: DictConfig):
     params_config = config["params"]
     runtime_config = config["runtime"]
     device = runtime_config["gpu"]
-    primary_dataset = data_config["primary_dataset"]
     restart_flag = runtime_config.get("force_restart", False)
 
     full_df = pd.read_csv(get_path(config, "raw.dti_interactions"))
