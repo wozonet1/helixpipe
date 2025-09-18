@@ -56,7 +56,7 @@ training:
   k_folds: 10
 
 params:
-  protein_similarity_threshold: 0.8
+  protein_similarity_threshold: 0.5
   max_pp_edges: 500
   molecule_similarity_threshold: 0.988 # Used for D-D, L-L
   drug_ligand_similarity_threshold: 0.7 # A separate, more lenient threshold
@@ -68,6 +68,7 @@ runtime:
   cpus: 100
   gpu: "cuda:1"
   force_restart: false
+  sim_restart: true
 
 mlflow:
   tracking_uri: "mlruns"

@@ -17,8 +17,6 @@ from research_template import get_path, check_files_exist
 import research_template as rt
 from omegaconf import DictConfig
 
-# TODO: 加强任务难度
-
 # region d/l feature
 # 将SMILES字符串转换为图数据
 
@@ -580,16 +578,27 @@ def process_data(config: DictConfig):
         "typed_edges_template": "processed.typed_edge_list_template",
         "link_labels": "processed.link_prediction_labels",
     }
+    sim_restart_flag = config.runtime.sim_restart
 
     # The check for the main graph file now dynamically resolves the hashed filename.
     # We check 'link_labels' separately as it's generated only once.
     # Note: The restart_flag will override these checks.
-    typed_edges_path = rt.get_path(config, graph_files_dict["typed_edges_template"])
-    link_labels_path = rt.get_path(config, graph_files_dict["link_labels"])
 
-    if not typed_edges_path.exists() or not link_labels_path.exists() or restart_flag:
-        print("\n--- [Stage 4] Generating labeled edges and/or full typed graph... ---")
-
+    if (
+        not check_files_exist(config, *graph_files_dict.values())
+        or restart_flag
+        or sim_restart_flag
+    ):
+        if sim_restart_flag:
+            print(
+                "\n--- [Stage 4] SIM_RESTART ENABLED: Re-generating graph from cached similarity matrices... ---"
+            )
+        else:
+            print(
+                "\n--- [Stage 4] Generating labeled edges and/or full typed graph... ---"
+            )
+        typed_edges_path = rt.get_path(config, graph_files_dict["typed_edges_template"])
+        link_labels_path = rt.get_path(config, graph_files_dict["link_labels"])
         # --- 4a. 准备链接预测任务的正负样本 ---
         # This part runs only if the link_labels file is missing or restart is forced.
         if not link_labels_path.exists() or restart_flag:
@@ -740,6 +749,7 @@ def process_data(config: DictConfig):
         # endregion
 
         # region sim edges
+        # TODO: 新的restart,重新计算
         # --- 4b. 构建完整的、带类型的异构图边列表 ---
         print(
             "\n-> Assembling full heterogeneous graph based on `include_relations` config..."
@@ -869,26 +879,3 @@ def process_data(config: DictConfig):
 
     # This is the final print of the script
     print("\nData processing pipeline finished successfully!")
-
-
-# # region Hydra Entry
-# @hydra.main(config_path="../conf", config_name="config", version_base=None)
-# def hydra_entry_point(cfg: DictConfig):
-#     """
-#     This function serves as the Hydra entry point to run data processing.
-#     """
-
-#     # Convert OmegaConf to a plain dict for maximum compatibility
-#     config_dict = OmegaConf.to_container(cfg, resolve=True)
-
-#     # Perform global setup
-#     rt.set_seeds(config_dict["runtime"]["seed"])
-#     rt.setup_dataset_directories(config_dict)
-
-#     # Execute the main logic
-#     process_data(config_dict)
-
-
-# if __name__ == "__main__":
-#     hydra_entry_point()
-# # end region
