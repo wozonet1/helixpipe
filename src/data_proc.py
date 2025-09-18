@@ -19,7 +19,7 @@ from research_template import (
     check_files_exist,
     setup_dataset_directories,
 )
-import research_template as rt
+import research_template_legacy as rt
 import yaml
 
 # TODO: 加强任务难度

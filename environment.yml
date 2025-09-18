@@ -43,5 +43,5 @@ dependencies:
   - scipy
   - scikit-learn
   - networkx
-  - nivtop
+  - nvitop
   

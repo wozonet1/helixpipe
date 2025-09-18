@@ -6,7 +6,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score, average_precision_score
 
 # 从通用模板库导入
-from research_template.path_manager import get_path
+from research_template_legacy.path_manager import get_path
 
 
 class GBDT_Link_Predictor:

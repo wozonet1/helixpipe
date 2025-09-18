@@ -3,7 +3,7 @@ import torch.nn.functional as F
 import pandas as pd
 import numpy as np
 from scipy.sparse import coo_matrix
-from research_template import sparse_mx_to_torch_sparse_tensor
+from research_template_legacy import sparse_mx_to_torch_sparse_tensor
 from .ndls_utils import (
     augmented_random_walk_normalization,
     aver,

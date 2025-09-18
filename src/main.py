@@ -7,7 +7,7 @@ import torch
 from torch_geometric.data import HeteroData
 from encoders.ndls_homo_encoder import NDLS_Homo_Encoder
 from predictors.gbdt_predictor import GBDT_Link_Predictor
-import research_template as rt
+import research_template_legacy as rt
 
 
 def set_seeds(seed):
