@@ -8,6 +8,7 @@ from rdkit.Chem import AllChem, DataStructs
 import sys
 from pathlib import Path
 import research_template as rt
+import hydra
 
 # --- Add project root to path to allow importing research_template ---
 # This makes the script runnable from the `analysis/` directory
@@ -15,7 +16,8 @@ project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root.parent / "common_utils"))
 
 
-def analyze_drug_ligand_similarity():
+@hydra.main(config_path="../conf", config_name="config", version_base=None)
+def analyze_drug_ligand_similarity(config):
     """
     Analyzes and visualizes the Tanimoto similarity distribution
     between drugs from the primary dataset and ligands from GtoPdb.
@@ -23,18 +25,13 @@ def analyze_drug_ligand_similarity():
     print("--- Starting Drug-Ligand Similarity Analysis ---")
 
     # 1. Load configuration and paths
-    config = rt.load_config()
     primary_dataset = config["data"]["primary_dataset"]
     # We need the 'gtopdb' variant of the processed data for this analysis
     config["data"]["use_gtopdb"] = True
 
     try:
-        drug_index_path = rt.get_path(
-            config, f"{primary_dataset}.processed.indexes.drug"
-        )
-        ligand_index_path = rt.get_path(
-            config, f"{primary_dataset}.processed.indexes.ligand"
-        )
+        drug_index_path = rt.get_path(config, "processed.indexes.drug")
+        ligand_index_path = rt.get_path(config, "processed.indexes.ligand")
 
         drug2index = pd.read_pickle(drug_index_path)
         ligand2index = pd.read_pickle(ligand_index_path)
@@ -126,7 +123,7 @@ def analyze_drug_ligand_similarity():
 
     # Save the plot
     output_filename = (
-        project_root / "analysis" / f"dl_similarity_distribution_{primary_dataset}.png"
+        project_root / "analysis" / f"dl_similarity_distribution/{primary_dataset}.png"
     )
     plt.savefig(output_filename, dpi=300)
 

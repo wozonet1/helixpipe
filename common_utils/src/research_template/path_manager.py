@@ -1,6 +1,26 @@
 from pathlib import Path
 import shutil
 import sys
+from omegaconf import DictConfig
+
+
+def ensure_path_exists(filepath: Path):
+    """
+    Ensures that the parent directory of a given file path exists.
+    If the directory does not exist, it is created.
+
+    Args:
+        filepath (Path): The Path object representing the full file path.
+    """
+    # .parent gets the directory containing the file
+    # e.g., for Path('/path/to/my/file.csv'), .parent is Path('/path/to/my')
+    parent_directory = filepath.parent
+
+    # .mkdir() creates the directory.
+    # `parents=True` means it will create any necessary parent directories as well.
+    #   (e.g., if neither '/path' nor '/path/to' exist, it creates both)
+    # `exist_ok=True` means it will NOT raise an error if the directory already exists.
+    parent_directory.mkdir(parents=True, exist_ok=True)
 
 
 def setup_dataset_directories(config: dict) -> None:
@@ -93,72 +113,93 @@ def setup_dataset_directories(config: dict) -> None:
         )
 
 
-def get_path(config: dict, file_key: str) -> Path:
+def get_relations_suffix(cfg: DictConfig) -> str:
     """
-    Constructs the full path for any file defined in the config.
-    This is the single source of truth for all file paths in the project.
+    Generates a human-readable suffix based on the `relations` config group.
+    """
+    try:
+        # The relations config is now a top-level component.
+        abbrs = cfg.data.files.processed.abbr
+        relations_flags = cfg.relations.flags
+        suffix_parts = [
+            abbrs[key]
+            for key in sorted(abbrs.keys())
+            if relations_flags.get(key, False)
+        ]
 
-    It understands the nested dataset structure (e.g., DrugBank/raw)
-    and the `baseline/gtopdb` variant for processed files of the primary dataset.
+        if not suffix_parts:
+            return "no_relations"
+        return "-".join(suffix_parts)
+
+    except Exception as e:
+        print(
+            f"Error getting relations suffix. Check 'conf/relations/*' structure. Error: {e}"
+        )
+        return "config_error"
+
+
+def get_path(cfg: DictConfig, file_key: str) -> Path:
+    """
+    Constructs the full path for any data file, understanding the difference
+    between primary dataset files and auxiliary data source files.
 
     Args:
-        config (dict): The loaded YAML configuration dictionary.
-        file_key (str): A dot-separated key pointing to the filename in the config.
-                        e.g., "DrugBank.raw.dti_interactions",
-                        "DrugBank.processed.nodes_metadata",
-                        "gtopdb.processed.interactions"
+        cfg (DictConfig): The Hydra configuration object.
+        file_key (str): A dot-separated key (e.g., "processed.nodes_metadata"
+                        or "gtopdb.processed.ligands").
 
     Returns:
-        Path: The complete Path object for the requested file.
+        Path: The complete, absolute Path object to the data file.
     """
-    data_config = config["data"]
-    root_path = Path(data_config["root"])
+    from hydra.utils import get_original_cwd
 
-    # 1. Parse the key
+    project_root = Path(get_original_cwd())
+    # Assuming your top-level data folder is named 'data' in the project root
+    data_root = project_root / "data"
+
     key_parts = file_key.split(".")
-    if len(key_parts) < 3:
-        raise ValueError(
-            f"Invalid file_key '{file_key}'. Must have at least 3 parts (e.g., 'DataSet.raw.fileName')."
-        )
 
-    dataset_name = key_parts[0]
-    data_type = key_parts[1]  # 'raw' or 'processed'
+    base_dir = None
 
-    # 2. Determine the base directory
-    subfolder_name = data_config["subfolders"].get(data_type)
-    if not subfolder_name:
-        raise KeyError(
-            f"Data type '{data_type}' not defined in data.subfolders config."
-        )
+    # --- [NEW CONTEXT-AWARE LOGIC] ---
+    if key_parts[0] == "gtopdb":
+        # CONTEXT 1: Auxiliary Data Source (gtopdb)
+        # Path: data/gtopdb/raw/ or data/gtopdb/processed/
+        # key_parts[0] is 'gtopdb', key_parts[1] is 'raw' or 'processed'
+        data_source_name = key_parts[0]
+        subfolder_name = key_parts[1]
+        base_dir = data_root / data_source_name / subfolder_name
 
-    base_dir = root_path / dataset_name / subfolder_name
+    else:
+        # CONTEXT 2: Primary Dataset (davis, drugbank, etc.)
+        # Path: data/davis/processed/baseline/
+        primary_dataset = cfg.data.primary_dataset  # Correctly access dataset name
+        subfolder_name = key_parts[0]  # 'raw' or 'processed'
+        base_dir = data_root / primary_dataset / subfolder_name
 
-    # 3. Handle the special case for 'processed' files of the PRIMARY dataset
-    # They need an additional 'baseline' or 'gtopdb' sub-subfolder.
-    primary_dataset_name = data_config.get("primary_dataset")
-    if data_type == "processed" and dataset_name == primary_dataset_name:
-        variant_folder = (
-            "gtopdb" if data_config.get("use_gtopdb", False) else "baseline"
-        )
-        base_dir = base_dir / variant_folder
+        # The 'variant' sub-folder only applies to 'processed' data of the primary dataset
+        if subfolder_name == "processed":
+            variant = "gtopdb" if cfg.data.use_gtopdb else "baseline"
+            base_dir = base_dir / variant
 
-    # 4. Retrieve the filename from the config
-    filename_dict_level = data_config["files"]
-    try:
-        for part in key_parts:
-            filename_dict_level = filename_dict_level[part]
-        filename = filename_dict_level
-    except KeyError:
-        raise KeyError(f"File key '{file_key}' not found in the config.yaml structure.")
+    # --- Filename lookup and rendering logic remains the same ---
 
-    # Make sure the parent directory exists, creating it if necessary.
-    # This is a good practice to avoid errors when writing files.
-    base_dir.mkdir(parents=True, exist_ok=True)
+    # 1. Retrieve the filename template by navigating the `files` block
+    current_level = cfg.data.files
+    for key in key_parts:
+        current_level = current_level[key]
+    filename_template = current_level
 
-    return base_dir / filename
+    # 2. Render the filename template if it's dynamic
+    final_filename = filename_template
+    if "{relations_suffix}" in str(filename_template):
+        relations_suffix = get_relations_suffix(cfg)
+        final_filename = filename_template.format(relations_suffix=relations_suffix)
+
+    return base_dir / final_filename
 
 
-def check_files_exist(config: dict, *file_keys: str) -> bool:
+def check_files_exist(config: DictConfig, *file_keys: str) -> bool:
     """
     Checks if all specified data files (referenced by their config keys) exist.
     (This function can remain largely the same, as it relies on get_path)

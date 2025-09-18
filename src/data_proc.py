@@ -576,9 +576,6 @@ def process_data(config: DictConfig):
     # ===================================================================
     # --- STAGE 4: Generate Labeled Edges and Full Heterogeneous Graph ---
     # ===================================================================
-
-    # Define file keys using the new template system and dictionary best practice.
-    primary_dataset = config["data"]["primary_dataset"]
     graph_files_dict = {
         "typed_edges_template": "processed.typed_edge_list_template",
         "link_labels": "processed.link_prediction_labels",
@@ -748,7 +745,7 @@ def process_data(config: DictConfig):
             "\n-> Assembling full heterogeneous graph based on `include_relations` config..."
         )
 
-        relations_config = config.get("params", {}).get("include_relations", {})
+        relations_config = config.relations.flags
         typed_edges_list = []
 
         # --- Add Interaction Edges based on switches ---

@@ -6,13 +6,15 @@ This __init__.py file serves as the public API for the research_template package
 # --- Import key functions from submodules to expose them at the top level ---
 
 # From config_loader.py
-from .config_loader import load_config
+from .config_loader import load_config_with_override as load_config
 
 # From path_manager.py
 from .path_manager import (
     get_path,
     check_files_exist,
     setup_dataset_directories,
+    ensure_path_exists,
+    get_relations_suffix,
 )
 
 # From reproducibility.py
@@ -44,4 +46,6 @@ __all__ = [
     "normalize_sparse_matrix",
     "accuracy",
     "MLflowTracker",
+    "ensure_path_exists",
+    "get_relations_suffix",
 ]

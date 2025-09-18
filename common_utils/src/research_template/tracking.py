@@ -1,6 +1,6 @@
 import mlflow
 from pathlib import Path
-from datetime import datetime
+from omegaconf import OmegaConf
 
 
 class MLflowTracker:
@@ -17,22 +17,16 @@ class MLflowTracker:
             return
         # 1. [NEW] Construct the custom run name
         try:
-            # Get current timestamp in a clean format
-            timestamp = datetime.now().strftime(
-                "%Y%m%d-%H%M%S"
-            )  # e.g., "20231028-153000"
-
             # Get key parameters from config
-            training_config = self.config.get("training", {})
-            data_variant = training_config.get("data_variant", "unknown_data")
-            encoder = training_config.get("encoder", "unknown_encoder")
+            data_variant = "gtopdb" if config.data.use_gtopdb else "baseline"
+            encoder = config.encoder.name
 
             # Combine them into a descriptive name
-            custom_run_name = f"{timestamp}_{data_variant}_{encoder}"
+            custom_run_name = f"{config.data.primary_dataset}_{data_variant}-{config.relations.name}-{encoder}"
 
         except Exception:
             # Fallback to default naming if config structure is unexpected
-            custom_run_name = f"run_{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            custom_run_name = "config_error"
         self.custom_run_name = custom_run_name
         tracking_uri = mlflow_config.get("tracking_uri", "mlruns")
         tracking_path = Path(tracking_uri)
@@ -54,57 +48,60 @@ class MLflowTracker:
 
     def _log_active_workflow_params(self):
         """
-        [PRIVATE METHOD] A centralized and smart way to log all relevant parameters.
-        This method intelligently navigates the config to log only what's needed for the active run.
+        [REFACTORED] A centralized and smart way to log all relevant parameters from a
+        flat, component-based Hydra config.
         """
         print("--> Logging parameters to MLflow...")
 
-        # 1. Log non-training related, general configs
-        mlflow.log_params(self.config.get("runtime", {}))
-        # We can be more selective about what to log from the huge data config
-        data_params_to_log = {
-            "primary_dataset": self.config.get("data", {}).get("primary_dataset"),
-            "use_gtopdb_in_datagen": self.config.get("data", {}).get("use_gtopdb"),
-        }
-        mlflow.log_params(data_params_to_log)
-        mlflow.log_params(self.config.get("params", {}))  # Log data processing params
+        # --- 1. Log simple, top-level parameter blocks ---
+        # These are blocks with simple key-value pairs
+        mlflow.log_params(OmegaConf.to_container(self.config.runtime, resolve=True))
+        mlflow.log_params(OmegaConf.to_container(self.config.params, resolve=True))
+        mlflow.log_params({"k_folds": self.config.training.k_folds})
 
-        # 2. Get the active workflow's blueprint
-        training_config = self.config.get("training", {})
-        # --- [MODIFIED] Logic to log based on the new config structure ---
+        # --- 2. Log key identifiers of the experiment ---
+        # This section defines the "what" of the experiment
 
-        # 1. Get component names directly from the top level
-        encoder_name = training_config.get("encoder")
-        predictor_name = training_config.get("predictor")  # Will be None if not present
+        # Determine the data variant for clear logging
+        data_variant = "gtopdb" if self.config.data.use_gtopdb else "baseline"
 
-        # 2. Determine paradigm by convention
-        paradigm = "two_stage" if predictor_name else "end_to_end"
+        # Check if a predictor is defined to determine the paradigm
+        paradigm = self.config.training.paradigm
+        predictor_name = (
+            self.config.predictor.name if hasattr(self.config, "predictor") else "N/A"
+        )
 
-        # 3. Build the params_to_log dictionary
-        params_to_log = {
+        workflow_identifiers = {
+            "dataset": self.config.data.primary_dataset,
+            "data_variant": data_variant,
             "paradigm": paradigm,
-            "data_variant": training_config.get("data_variant"),
-            "encoder": encoder_name,
-            "predictor": predictor_name or "N/A",  # Use 'N/A' if None
-            "k_folds": training_config.get("k_folds"),
+            "encoder": self.config.encoder.name,
+            "predictor": predictor_name,
         }
+        mlflow.log_params(workflow_identifiers)
 
-        # 4. Dynamically find and add component hyperparameters (logic is the same)
-        if encoder_name:
-            encoder_params = training_config.get("encoders", {}).get(encoder_name, {})
-            params_to_log.update({f"enc_{k}": v for k, v in encoder_params.items()})
+        # --- 3. Log the 'include_relations' switches with a prefix ---
+        # Correctly access the relations switches from the composed config
+        mlflow.log_param("relations", self.config.relations.name)
 
-        if predictor_name:
-            predictor_params = training_config.get("predictors", {}).get(
-                predictor_name, {}
+        # --- 4. Log hyperparameters for the ACTIVE components ---
+        # This is the most significant change: we access component configs directly at the top level.
+
+        # Log Encoder Hyperparameters
+        # OmegaConf.to_container converts the config object to a plain dict
+        encoder_params = OmegaConf.to_container(self.config.encoder, resolve=True)
+        encoder_params.pop("name", None)  # Remove the name key as it's already logged
+        mlflow.log_params({f"enc_{k}": v for k, v in encoder_params.items()})
+
+        # Log Predictor Hyperparameters (only if a predictor is defined)
+        if hasattr(self.config, "predictor"):
+            predictor_params = OmegaConf.to_container(
+                self.config.predictor, resolve=True
             )
-            params_to_log.update({f"prd_{k}": v for k, v in predictor_params.items()})
+            predictor_params.pop("name", None)
+            mlflow.log_params({f"prd_{k}": v for k, v in predictor_params.items()})
 
-        if paradigm == "end_to_end":
-            e2e_params = training_config.get("end_to_end", {})
-            params_to_log.update(e2e_params)
-
-        mlflow.log_params(params_to_log)
+        print("--> Parameter logging complete.")
 
     def start_run(self):
         """
@@ -114,7 +111,7 @@ class MLflowTracker:
         if not self.is_active:
             return
 
-        mlflow.start_run(run_name=self.cutom_run_name)
+        mlflow.start_run(run_name=self.custom_run_name)
         print(f"--> MLflow run started. Name: '{self.custom_run_name}'")
 
         # [MODIFIED] Simply call the centralized logging method

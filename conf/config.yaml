@@ -5,7 +5,7 @@
 # --- 1. Default Component Combination ---
 # Hydra will load the corresponding yaml file from each sub-directory.
 defaults:
-  - data: DrugBank  # Default dataset to use
+  - data: davis # Default dataset to use
   - encoder: ndls_homo
   - predictor: gbdt
   - relations: DP_sim
@@ -17,7 +17,7 @@ data:
   subfolders:
     raw: "raw"
     processed: "processed"
-  use_gtopdb: false
+  use_gtopdb: true
   files:
     raw:
       dti_interactions: "full.csv"
@@ -72,3 +72,4 @@ runtime:
 mlflow:
   tracking_uri: "mlruns"
   experiment_name: "DTI_Prediction_Hydra_on_${data.primary_dataset}"
+
