@@ -1,14 +1,10 @@
-# ===============================================
-#       Main Hydra Config for DTI Project
-# ===============================================
 
-# --- 1. Default Component Combination ---
-# Hydra will load the corresponding yaml file from each sub-directory.
 defaults:
   - data: DrugBank # Default dataset to use
   - encoder: ndls_homo
   - predictor: gbdt
-  - relations: DP_no_sim
+  - relations: DP_sim
+  - params: default
   - _self_  # This line is important, it tells Hydra to also load the rest of this file.
 
 
@@ -30,7 +26,7 @@ data:
           dd_similarity: dd
           dl_similarity: dl
           ll_similarity: ll
-        link_prediction_labels: "dl_p_edges.csv"
+        link_prediction_labels: "dl_p_edges{split_suffix}.csv"
         nodes_metadata: "nodes.csv"
         node_features: "features.csv"
         similarity_matrices:
@@ -53,22 +49,19 @@ data:
 # These are mostly parameters for data processing and evaluation
 training:
   paradigm: "two_stage" # Or can be inferred. Let's keep it simple for now.
-  k_folds: 10
-
-params:
-  protein_similarity_threshold: 0.8
-  max_pp_edges: 500
-  molecule_similarity_threshold: 0.988 # Used for D-D, L-L
-  drug_ligand_similarity_threshold: 0.7 # A separate, more lenient threshold
-  gtopdb_max_affinity_nM: 10000
-  negative_sampling_strategy: "popular" # Options: "uniform", "popular"
+  warm_start_cv:
+    k_folds: 10
+  cold_start_eval:
+    # This block is now a placeholder for future cold-start specific eval params.
+    # The main logic is driven by the 'params.split_config' block.
+    enabled: true 
 
 runtime:
   seed: 514
   cpus: 100
   gpu: "cuda:1"
   force_restart: false
-  sim_restart: true
+  sim_restart: false
 
 mlflow:
   tracking_uri: "mlruns"

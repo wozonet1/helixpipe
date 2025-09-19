@@ -175,7 +175,6 @@ def convert_hetero_to_homo(hetero_data: HeteroData) -> tuple:
 
 
 # TODO: test coldstart
-# TODO: use old data 0.99
 def train(config: DictConfig):
     tracker = rt.MLflowTracker(config)
     # --- Start of protected block for MLflow ---

@@ -6,7 +6,7 @@ from sklearn.metrics import roc_auc_score, average_precision_score
 from joblib import Parallel, delayed
 
 # 从通用模板库导入
-from research_template.path_manager import get_path
+import research_template.path_manager as rt
 
 
 class GBDT_Link_Predictor:
@@ -25,7 +25,7 @@ class GBDT_Link_Predictor:
         self.training_params = config["training"]
 
     @staticmethod
-    def _train_and_evaluate_fold(
+    def _train_and_evaluate_warm_start_fold(
         model, X_train, y_train, X_test, y_test, fold_num, k_folds
     ):
         """Helper function to process a single fold of cross-validation."""
@@ -43,23 +43,28 @@ class GBDT_Link_Predictor:
         return fold_auc, fold_aupr
 
     def predict(self, node_embeddings: pd.DataFrame):
-        """
-        The main method to run the entire link prediction cross-validation pipeline.
+        split_mode = self.config.params.split_config.mode
 
-        Args:
-            node_embeddings (pd.DataFrame): A DataFrame of node embeddings, where the index
-                                            corresponds to the global node ID.
-        """
-        print(
-            "--- [Predictor] Running GBDT Cross-Validation for Link Prediction... ---"
-        )
+        if split_mode == "random":
+            print("--- [Predictor] Starting WARM-START Cross-Validation Workflow ---")
+            return self._run_warm_start_cv(node_embeddings)
+        elif split_mode in ["drug", "protein", "pair"]:
+            print(
+                f"--- [Predictor] Starting COLD-START ('{split_mode}') Evaluation Workflow ---"
+            )
+            return self._run_cold_start_eval(node_embeddings)
+        else:
+            raise ValueError(f"Unknown split_mode '{split_mode}' in config.")
 
+    def _run_warm_start_cv(self, node_embeddings):
         k_folds = self.training_params["k_folds"]
         seed = self.runtime_params["seed"]
 
         # 1. [MODERNIZED] Load labeled edges from the unified file
         print("--> Loading link prediction labels...")
-        labeled_edges_path = get_path(self.config, "processed.link_prediction_labels")
+        labeled_edges_path = rt.get_path(
+            self.config, "processed.link_prediction_labels"
+        )
         labeled_edges_df = pd.read_csv(labeled_edges_path)
 
         X_pairs = labeled_edges_df[["source", "target"]].values
@@ -91,7 +96,7 @@ class GBDT_Link_Predictor:
         )
         print(model.get_params())
         parallel_results = Parallel(n_jobs=self.runtime_params["cpus"])(
-            delayed(self._train_and_evaluate_fold)(
+            delayed(self._train_and_evaluate_warm_start_fold)(
                 model,
                 X_features[train_idx],
                 y_labels[train_idx],
@@ -129,4 +134,80 @@ class GBDT_Link_Predictor:
         }
 
         # Return this dictionary so the main function can receive it
+        return final_results
+
+    def _run_cold_start_eval(self, node_embeddings: pd.DataFrame):
+        """
+        Performs link prediction on a pre-defined cold-start train/test split.
+        """
+        seed = self.runtime_params.seed
+        split_config = self.config.params.split_config
+
+        # 1. Load the pre-split train and test labeled edge files
+        print("--> Loading pre-split train and test sets for cold-start evaluation...")
+        train_path = rt.get_path(
+            self.config,
+            "processed.link_prediction_labels_template",
+            split_suffix=split_config.train_file_suffix,
+        )
+        test_path = rt.get_path(
+            self.config,
+            "processed.link_prediction_labels_template",
+            split_suffix=split_config.test_file_suffix,
+        )
+
+        train_df = pd.read_csv(train_path)
+        test_df = pd.read_csv(test_path)
+
+        # 2. Construct feature matrices for TRAIN and TEST sets separately
+        print("--> Constructing feature matrices...")
+
+        # Training features
+        X_train_pairs = train_df[["source", "target"]].values
+        y_train = train_df["label"].values
+        X_train_source = node_embeddings.iloc[X_train_pairs[:, 0]].values
+        X_train_target = node_embeddings.iloc[X_train_pairs[:, 1]].values
+        X_train = np.concatenate([X_train_source, X_train_target], axis=1)
+
+        # Test features
+        X_test_pairs = test_df[["source", "target"]].values
+        y_test = test_df["label"].values
+        X_test_source = node_embeddings.iloc[X_test_pairs[:, 0]].values
+        X_test_target = node_embeddings.iloc[X_test_pairs[:, 1]].values
+        X_test = np.concatenate([X_test_source, X_test_target], axis=1)
+
+        print(f"--> Train shape: {X_train.shape}, Test shape: {X_test.shape}")
+
+        # 3. Train a SINGLE model on the entire training set
+        print("--> Training GBDT model on the entire cold-start training set...")
+        model = GradientBoostingClassifier(
+            # ... (get parameters from self.params as before) ...
+            random_state=seed,
+            verbose=1,
+        )
+        model.fit(X_train, y_train)
+
+        # 4. Evaluate on the cold test set
+        print("--> Evaluating model on the cold-start test set...")
+        y_pred_proba = model.predict_proba(X_test)[:, 1]
+
+        auc_score = roc_auc_score(y_test, y_pred_proba)
+        aupr_score = average_precision_score(y_test, y_pred_proba)
+
+        print("\n" + "=" * 50)
+        print("    GBDT Link Prediction COLD-START Results")
+        print("=" * 50)
+        print(f"AUC on cold test set: {auc_score:.4f}")
+        print(f"AUPR on cold test set: {aupr_score:.4f}")
+        print("=" * 50)
+
+        # The result is a single set of scores, not a list from CV
+        final_results = {
+            "aucs": [auc_score],
+            "auprs": [aupr_score],
+            "mean_auc": auc_score,
+            "mean_aupr": aupr_score,
+            "std_auc": 0.0,
+            "std_aupr": 0.0,
+        }
         return final_results

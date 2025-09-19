@@ -16,11 +16,10 @@ from joblib import Parallel, delayed
 from research_template import get_path, check_files_exist
 import research_template as rt
 from omegaconf import DictConfig
+from pathlib import Path
+
 
 # region d/l feature
-# 将SMILES字符串转换为图数据
-
-
 # --- FIXED VERSION of canonicalize_smiles ---
 def canonicalize_smiles(smiles):
     mol = Chem.MolFromSmiles(smiles)
@@ -307,6 +306,85 @@ def calculate_protein_similarity(sequence_list, cpus: int):
 # endregion
 
 
+def _generate_and_save_labeled_set(
+    positive_pairs: list,
+    positive_pairs_normalized_set: set,
+    dl2index: dict,
+    prot2index: dict,
+    config: DictConfig,
+    output_path: Path,
+):
+    print(
+        f"    -> Generating labeled set with {len(positive_pairs)} positive pairs for: {output_path.name}..."
+    )
+
+    negative_pairs = []
+    all_molecule_ids = list(dl2index.values())
+    all_protein_ids = list(prot2index.values())
+
+    # Get the strategy from config
+    sampling_strategy = config.params.negative_sampling_strategy
+
+    with tqdm(
+        total=len(positive_pairs),
+        desc=f"Negative Sampling ({sampling_strategy})",
+        leave=False,  # Set leave to False for cleaner logging inside a loop
+    ) as pbar:
+        if sampling_strategy == "popular":
+            # --- Popularity-Biased Strategy ---
+            mol_degrees = {}
+            prot_degrees = {}
+            # [MODIFICATION] Popularity is calculated based on ALL positive pairs for a stable distribution
+            for u, v in positive_pairs_normalized_set:
+                mol_degrees[u] = mol_degrees.get(u, 0) + 1
+                prot_degrees[v] = prot_degrees.get(v, 0) + 1
+
+            mol_weights = [mol_degrees.get(mol_id, 1) for mol_id in all_molecule_ids]
+            prot_weights = [prot_degrees.get(prot_id, 1) for prot_id in all_protein_ids]
+
+            while len(negative_pairs) < len(positive_pairs):
+                dl_idx = random.choices(all_molecule_ids, weights=mol_weights, k=1)[0]
+                p_idx = random.choices(all_protein_ids, weights=prot_weights, k=1)[0]
+                normalized_candidate = tuple(sorted((dl_idx, p_idx)))
+
+                # Check against the set of ALL positives to prevent generating a known interaction
+                if normalized_candidate not in positive_pairs_normalized_set:
+                    negative_pairs.append((dl_idx, p_idx))
+                    pbar.update(1)
+
+        elif sampling_strategy == "uniform":
+            # --- Uniform Random Strategy ---
+            while len(negative_pairs) < len(positive_pairs):
+                dl_idx = random.choice(all_molecule_ids)
+                p_idx = random.choice(all_protein_ids)
+                normalized_candidate = tuple(sorted((dl_idx, p_idx)))
+
+                if normalized_candidate not in positive_pairs_normalized_set:
+                    negative_pairs.append((dl_idx, p_idx))
+                    pbar.update(1)
+        else:
+            raise ValueError(
+                f"Unknown negative_sampling_strategy: '{sampling_strategy}'"
+            )
+
+    print(f"        -> Generated {len(negative_pairs)} negative samples.")
+
+    # --- [THIS PART IS ALSO MOVED FROM YOUR ORIGINAL CODE] ---
+    # Save the unified, labeled edge file
+    pos_df = pd.DataFrame(positive_pairs, columns=["source", "target"])
+    pos_df["label"] = 1
+    neg_df = pd.DataFrame(negative_pairs, columns=["source", "target"])
+    neg_df["label"] = 0
+    labeled_df = (
+        pd.concat([pos_df, neg_df], ignore_index=True)
+        .sample(frac=1)
+        .reset_index(drop=True)
+    )
+
+    rt.ensure_path_exists(output_path)
+    labeled_df.to_csv(output_path, index=False, header=True)
+
+
 def process_data(config: DictConfig):
     # region init
     data_config = config["data"]
@@ -568,313 +646,342 @@ def process_data(config: DictConfig):
         )
 
     # region positive edges
-    # In src/data_proc.py
 
     # ===================================================================
     # --- STAGE 4: Generate Labeled Edges and Full Heterogeneous Graph ---
     # ===================================================================
-    graph_files_dict = {
-        "typed_edges_template": "processed.typed_edge_list_template",
-        "link_labels": "processed.link_prediction_labels",
-    }
-    sim_restart_flag = config.runtime.sim_restart
+    split_config = config.params.split_config
+    split_mode = split_config.mode
+    test_fraction = split_config.test_fraction
+    seed = config.runtime.seed
 
-    # The check for the main graph file now dynamically resolves the hashed filename.
-    # We check 'link_labels' separately as it's generated only once.
-    # Note: The restart_flag will override these checks.
-
+    labels_template_key = "processed.link_prediction_labels_template"
+    graph_template_key = "processed.typed_edge_list_template"
+    train_labels_path = rt.get_path(
+        config, labels_template_key, split_suffix=split_config.train_file_suffix
+    )
+    test_labels_path = rt.get_path(
+        config, labels_template_key, split_suffix=split_config.test_file_suffix
+    )
+    print(f"--> Preparing and splitting positive pairs with mode: '{split_mode}'...")
     if (
-        not check_files_exist(config, *graph_files_dict.values())
-        or restart_flag
-        or sim_restart_flag
+        not (train_labels_path.exists() and test_labels_path.exists())
+        or config.runtime.force_restart
     ):
-        if sim_restart_flag:
-            print(
-                "\n--- [Stage 4] SIM_RESTART ENABLED: Re-generating graph from cached similarity matrices... ---"
-            )
-        else:
-            print(
-                "\n--- [Stage 4] Generating labeled edges and/or full typed graph... ---"
-            )
-        typed_edges_path = rt.get_path(config, graph_files_dict["typed_edges_template"])
-        link_labels_path = rt.get_path(config, graph_files_dict["link_labels"])
-        # --- 4a. 准备链接预测任务的正负样本 ---
-        # This part runs only if the link_labels file is missing or restart is forced.
-        if not link_labels_path.exists() or restart_flag:
-            print("--> Generating positive and negative samples for link prediction...")
+        print(
+            "--> Labeled train/test files not found or restart forced. Generating new splits..."
+        )
+        positive_pairs_normalized_set = set()
 
-            # Use a set to store NORMALIZED positive pairs to handle duplicates/symmetry.
-            positive_pairs_normalized_set = set()
+        # Filter the DataFrame for positive labels first
+        positive_interactions_df = full_df[full_df["Y"] == 1].copy()
 
-            # Filter the DataFrame for positive labels first
-            positive_interactions_df = full_df[full_df["Y"] == 1].copy()
+        # Pre-compute a mapping from raw to canonical SMILES to avoid re-computation
+        raw_smiles_in_pos = positive_interactions_df["SMILES"].dropna().unique()
+        canonical_map = {s: canonicalize_smiles(s) for s in raw_smiles_in_pos}
+        positive_interactions_df["canonical_smiles"] = positive_interactions_df[
+            "SMILES"
+        ].map(canonical_map)
 
-            # Pre-compute a mapping from raw to canonical SMILES to avoid re-computation
-            raw_smiles_in_pos = positive_interactions_df["SMILES"].dropna().unique()
-            canonical_map = {s: canonicalize_smiles(s) for s in raw_smiles_in_pos}
-            positive_interactions_df["canonical_smiles"] = positive_interactions_df[
-                "SMILES"
-            ].map(canonical_map)
-
-            for _, row in tqdm(
-                positive_interactions_df.iterrows(),
-                total=len(positive_interactions_df),
-                desc="Processing Interaction Pairs",
+        for _, row in tqdm(
+            positive_interactions_df.iterrows(),
+            total=len(positive_interactions_df),
+            desc="Processing Interaction Pairs",
+        ):
+            canonical_s, protein = row["canonical_smiles"], row["Protein"]
+            if (
+                pd.notna(canonical_s)
+                and canonical_s in dl2index
+                and protein in prot2index
             ):
-                canonical_s, protein = row["canonical_smiles"], row["Protein"]
-                if (
-                    pd.notna(canonical_s)
-                    and canonical_s in dl2index
-                    and protein in prot2index
-                ):
-                    d_idx, p_idx = dl2index[canonical_s], prot2index[protein]
-                    normalized_pair = tuple(sorted((d_idx, p_idx)))
+                d_idx, p_idx = dl2index[canonical_s], prot2index[protein]
+                normalized_pair = tuple(sorted((d_idx, p_idx)))
+                positive_pairs_normalized_set.add(normalized_pair)
+
+        # Scan interactions from GtoPdb if enabled
+        if data_config["use_gtopdb"]:
+            print("--> Scanning positive interactions from GtoPdb...")
+            gtopdb_edges_df = pd.read_csv(
+                rt.get_path(config, "gtopdb.processed.interactions"),
+                header=None,
+                names=["Sequence", "SMILES", "Affinity"],
+            )
+            for _, row in tqdm(
+                gtopdb_edges_df.iterrows(),
+                total=len(gtopdb_edges_df),
+                desc="GtoPdb Pairs",
+            ):
+                smiles, sequence = row["SMILES"], row["Sequence"]
+                if smiles in dl2index and sequence in prot2index:
+                    l_idx, p_idx = dl2index[smiles], prot2index[sequence]
+                    normalized_pair = tuple(sorted((l_idx, p_idx)))
                     positive_pairs_normalized_set.add(normalized_pair)
 
-            # Scan interactions from GtoPdb if enabled
-            if data_config["use_gtopdb"]:
-                print("--> Scanning positive interactions from GtoPdb...")
-                gtopdb_edges_df = pd.read_csv(
-                    rt.get_path(config, "gtopdb.processed.interactions"),
-                    header=None,
-                    names=["Sequence", "SMILES", "Affinity"],
+        positive_pairs = list(positive_pairs_normalized_set)
+        print(
+            f"-> Found {len(positive_pairs)} unique, normalized positive pairs after cleaning."
+        )
+        train_positive_pairs = []
+        test_positive_pairs = []
+
+        # Ensure the 'random' module is imported for shuffling
+        import random
+
+        random.seed(seed)
+
+        if split_mode == "random":
+            print("    -> Performing random (warm-start) edge split...")
+            from sklearn.model_selection import train_test_split
+
+            train_positive_pairs, test_positive_pairs = train_test_split(
+                positive_pairs, test_size=test_fraction, random_state=seed
+            )
+
+        elif split_mode == "drug":
+            print("    -> Performing cold-start split on DRUGS...")
+            # Note: drug IDs are smaller than protein IDs in our indexing scheme
+            drug_ids_in_pairs = sorted(
+                list(set([p[0] for p in positive_pairs if p[0] < len(drug2index)]))
+            )
+
+            num_test_drugs = int(len(drug_ids_in_pairs) * test_fraction)
+            random.shuffle(drug_ids_in_pairs)
+            test_drug_ids = set(drug_ids_in_pairs[:num_test_drugs])
+
+            train_positive_pairs = [
+                p for p in positive_pairs if p[0] not in test_drug_ids
+            ]
+            test_positive_pairs = [p for p in positive_pairs if p[0] in test_drug_ids]
+
+        elif split_mode == "protein":
+            print("    -> Performing cold-start split on PROTEINS...")
+            protein_ids_in_pairs = sorted(list(set([p[1] for p in positive_pairs])))
+
+            num_test_proteins = int(len(protein_ids_in_pairs) * test_fraction)
+            random.shuffle(protein_ids_in_pairs)
+            test_protein_ids = set(protein_ids_in_pairs[:num_test_proteins])
+
+            train_positive_pairs = [
+                p for p in positive_pairs if p[1] not in test_protein_ids
+            ]
+            test_positive_pairs = [
+                p for p in positive_pairs if p[1] in test_protein_ids
+            ]
+
+        elif split_mode == "pair":
+            # This is the most complex split and can be implemented later.
+            # It requires splitting both drugs and proteins simultaneously.
+            print("    -> Cold-start 'pair' split is not implemented yet. Skipping.")
+            # For now, we'll just treat it like a random split to avoid errors
+            from sklearn.model_selection import train_test_split
+
+            train_positive_pairs, test_positive_pairs = train_test_split(
+                positive_pairs, test_size=test_fraction, random_state=seed
+            )
+        else:
+            raise ValueError(f"Unknown split_mode '{split_mode}' in config.")
+
+        print(
+            f"--> Split complete: {len(train_positive_pairs)} positive pairs for TRAIN, "
+            f"{len(test_positive_pairs)} positive pairs for TEST."
+        )
+        # endregion
+
+        _generate_and_save_labeled_set(
+            positive_pairs=train_positive_pairs,
+            positive_pairs_normalized_set=positive_pairs_normalized_set,
+            dl2index=dl2index,
+            prot2index=prot2index,
+            config=config,
+            output_path=train_labels_path,  # This path was defined in the cache check block
+        )
+
+        _generate_and_save_labeled_set(
+            positive_pairs=test_positive_pairs,
+            positive_pairs_normalized_set=positive_pairs_normalized_set,
+            dl2index=dl2index,
+            prot2index=prot2index,
+            config=config,
+            output_path=test_labels_path,  # This path was also defined earlier
+        )
+        print(
+            f"-> Saved link prediction labels as {train_labels_path} and {test_labels_path}"
+        )
+    else:
+        print("--> Found existing labeled train/test files. Loading from cache...")
+        print("--> Loading TRAINING positive pairs for graph construction...")
+        train_labels_df = pd.read_csv(train_labels_path)
+        train_positive_df = train_labels_df[train_labels_df["label"] == 1]
+        train_positive_pairs = list(
+            zip(train_positive_df["source"], train_positive_df["target"])
+        )
+        print(f"    -> Loaded {len(train_positive_pairs)} training positive pairs.")
+    # endregion
+
+    # region sim edges
+    num_folds = split_config.k_folds_cold
+    for fold_idx in range(1, num_folds + 1):
+        # In the future, we would re-split data for each fold here.
+        # For now, we just use the single split we've already created.
+
+        print(f"\n--- Processing Graph for Fold {fold_idx}/{num_folds} ---")
+        graph_output_path = rt.get_path(config, graph_template_key)
+        sim_restart_flag = config.runtime.get("sim_restart", False)
+
+        if not graph_output_path.exists() or restart_flag or sim_restart_flag:
+            if sim_restart_flag:
+                print(
+                    f"\n--- [SIM_RESTART] Re-assembling graph with new settings at {graph_output_path.name} ---"
                 )
-                for _, row in tqdm(
-                    gtopdb_edges_df.iterrows(),
-                    total=len(gtopdb_edges_df),
-                    desc="GtoPdb Pairs",
+            else:
+                print(
+                    f"\n--- Assembling full heterogeneous graph for TRAINING at {graph_output_path.name} ---"
+                )
+            relations_config = config.relations.flags
+            typed_edges_list = []
+            # coldsplit
+            train_node_ids = set(prot2index.values())
+            if split_mode == "drug":
+                # Get drug IDs from the training positive pairs
+                train_drug_ids = set(
+                    [p[0] for p in train_positive_pairs if p[0] < len(drug2index)]
+                )
+                train_node_ids.update(train_drug_ids)
+            elif split_mode == "protein":
+                # Get protein IDs from the training positive pairs
+                # This is technically redundant but good for clarity
+                train_protein_ids = set([p[1] for p in train_positive_pairs])
+                # The training nodes are all drugs + only the training proteins
+                train_node_ids = set(dl2index.values()).union(train_protein_ids)
+            else:  # 'random' mode
+                # In random split, all nodes are part of the training graph's universe
+                train_node_ids.update(dl2index.values())
+
+            print(
+                f"--> Constructing training graph with a total of {len(train_node_ids)} allowed nodes."
+            )
+
+            # --- Add Interaction Edges based on switches ---
+            dp_added, lp_added = 0, 0
+            # The `positive_pairs` list contains all unique (Molecule_ID, Protein_ID) tuples.
+            for u, v in train_positive_pairs:
+                # We need to re-check the type of the molecule node `u`.
+                is_drug = u < len(drug2index)
+                if is_drug and relations_config.get("dp_interaction", True):
+                    typed_edges_list.append([u, v, "drug_protein_interaction"])
+                    dp_added += 1
+                elif not is_drug and relations_config.get("lp_interaction", True):
+                    typed_edges_list.append([u, v, "ligand_protein_interaction"])
+                    lp_added += 1
+            print(
+                f"--> Added {dp_added} DP and {lp_added} LP interactions based on config."
+            )
+
+            # --- Conditionally add PP similarity edges ---
+            if relations_config.get("pp_similarity", True):
+                print("--> Adding Protein-Protein similarity edges...")
+                prot_start_index = len(drug2index) + len(ligand2index)
+                p_sim_threshold = params_config["protein_similarity_threshold"]
+                max_pp_edges_to_sample = params_config.get("max_pp_edges", -1)
+
+                p_rows, p_cols = np.where(prot_similarity_matrix > p_sim_threshold)
+                potential_edges = [(i, j) for i, j in zip(p_rows, p_cols) if i < j]
+
+                print(
+                    f"    - Found {len(potential_edges)} potential P-P edges with similarity > {p_sim_threshold}."
+                )
+
+                final_pp_edges_indices = potential_edges
+                if max_pp_edges_to_sample and 0 < max_pp_edges_to_sample < len(
+                    potential_edges
                 ):
-                    smiles, sequence = row["SMILES"], row["Sequence"]
-                    if smiles in dl2index and sequence in prot2index:
-                        l_idx, p_idx = dl2index[smiles], prot2index[sequence]
-                        normalized_pair = tuple(sorted((l_idx, p_idx)))
-                        positive_pairs_normalized_set.add(normalized_pair)
-
-            positive_pairs = list(positive_pairs_normalized_set)
-            print(
-                f"-> Found {len(positive_pairs)} unique, normalized positive pairs after cleaning."
-            )
-            # endregion
-
-            # region negative edges
-            negative_pairs = []
-            all_molecule_ids = list(dl2index.values())
-            all_protein_ids = list(prot2index.values())
-
-            # Get the strategy from config, default to 'uniform' for backward compatibility
-            sampling_strategy = params_config.get(
-                "negative_sampling_strategy", "uniform"
-            )
-            print(
-                f"--> Performing negative sampling with strategy: '{sampling_strategy}'..."
-            )
-
-            with tqdm(
-                total=len(positive_pairs),
-                desc=f"Negative Sampling ({sampling_strategy})",
-            ) as pbar:
-                if sampling_strategy == "popular":
-                    # --- Popularity-Biased Strategy ---
-                    # a. Calculate node degrees (popularity) from positive pairs
-                    mol_degrees = {}
-                    prot_degrees = {}
-                    for u, v in positive_pairs:
-                        # Assuming u is molecule and v is protein after normalization
-                        mol_degrees[u] = mol_degrees.get(u, 0) + 1
-                        prot_degrees[v] = prot_degrees.get(v, 0) + 1
-
-                    # b. Create weight lists that correspond to the ID lists
-                    # Use a small default weight (e.g., 1) for nodes that have 0 degree in the positive set
-                    mol_weights = [
-                        mol_degrees.get(mol_id, 1) for mol_id in all_molecule_ids
-                    ]
-                    prot_weights = [
-                        prot_degrees.get(prot_id, 1) for prot_id in all_protein_ids
-                    ]
-
-                    while len(negative_pairs) < len(positive_pairs):
-                        # c. Use random.choices for weighted sampling
-                        dl_idx = random.choices(
-                            all_molecule_ids, weights=mol_weights, k=1
-                        )[0]
-                        p_idx = random.choices(
-                            all_protein_ids, weights=prot_weights, k=1
-                        )[0]
-
-                        normalized_candidate = tuple(sorted((dl_idx, p_idx)))
-                        if normalized_candidate not in positive_pairs_normalized_set:
-                            negative_pairs.append((dl_idx, p_idx))
-                            pbar.update(1)
-
-                elif sampling_strategy == "uniform":
-                    # --- Uniform Random Strategy (Original Logic) ---
-                    while len(negative_pairs) < len(positive_pairs):
-                        dl_idx = random.choice(all_molecule_ids)
-                        p_idx = random.choice(all_protein_ids)
-
-                        normalized_candidate = tuple(sorted((dl_idx, p_idx)))
-                        if normalized_candidate not in positive_pairs_normalized_set:
-                            negative_pairs.append((dl_idx, p_idx))
-                            pbar.update(1)
-                else:
-                    raise ValueError(
-                        f"Unknown negative_sampling_strategy: '{sampling_strategy}'. "
-                        f"Choose from 'uniform' or 'popular'."
+                    print(
+                        f"    - Sampling {max_pp_edges_to_sample} edges from the potential pool..."
                     )
+                    sampled_indices = random.sample(
+                        range(len(potential_edges)), max_pp_edges_to_sample
+                    )
+                    final_pp_edges_indices = [
+                        potential_edges[i] for i in sampled_indices
+                    ]
+
+                for i, j in final_pp_edges_indices:
+                    # Convert local protein indices to global IDs
+                    global_id_i = i + prot_start_index
+                    global_id_j = j + prot_start_index
+
+                    # [CRITICAL FILTER] Only add the edge if BOTH nodes are in the training set
+                    if global_id_i in train_node_ids and global_id_j in train_node_ids:
+                        typed_edges_list.append(
+                            [global_id_i, global_id_j, "protein_protein_similarity"]
+                        )
+
+                print(
+                    f"    - Added {len(final_pp_edges_indices)} P-P edges to the graph."
+                )
+
+            # --- Conditionally add Molecule similarity edges ---
+            dd_added, dl_added, ll_added = 0, 0, 0
+            if any(
+                [
+                    relations_config.get(k)
+                    for k in ["dd_similarity", "dl_similarity", "ll_similarity"]
+                ]
+            ):
+                print("--> Adding Molecule similarity edges...")
+                mol_rows, mol_cols = np.where(
+                    dl_similarity_matrix
+                    > params_config["molecule_similarity_threshold"]
+                )
+                id_to_type_map = {idx: "drug" for idx in drug2index.values()}
+                id_to_type_map.update({idx: "ligand" for idx in ligand2index.values()})
+
+                for i, j in zip(mol_rows, mol_cols):
+                    if i < j and i in train_node_ids and j in train_node_ids:
+                        type1, type2 = id_to_type_map[i], id_to_type_map[j]
+
+                        if (
+                            type1 == "drug"
+                            and type2 == "drug"
+                            and relations_config.get("dd_similarity", True)
+                        ):
+                            typed_edges_list.append([i, j, "drug_drug_similarity"])
+                            dd_added += 1
+                        elif (
+                            type1 == "ligand"
+                            and type2 == "ligand"
+                            and relations_config.get("ll_similarity", True)
+                        ):
+                            typed_edges_list.append([i, j, "ligand_ligand_similarity"])
+                            ll_added += 1
+                        elif type1 != type2 and relations_config.get(
+                            "dl_similarity", True
+                        ):
+                            u, v = (i, j) if type1 == "drug" else (j, i)
+                            typed_edges_list.append([u, v, "drug_ligand_similarity"])
+                            dl_added += 1
+                print(
+                    f"    - Added {dd_added} D-D, {dl_added} D-L, and {ll_added} L-L edges based on config."
+                )
+            # endregion
+            # --- Finalize and Save using the dynamic path ---
+            print(f"\n--> Saving final graph structure to: {graph_output_path}")
+            rt.ensure_path_exists(graph_output_path)
+
+            typed_edges_df = pd.DataFrame(
+                typed_edges_list, columns=["source", "target", "edge_type"]
+            )
+            typed_edges_df.to_csv(graph_output_path, index=False, header=True)
 
             print(
-                f"-> Generated {len(positive_pairs)} positive and {len(negative_pairs)} negative samples."
+                f"-> Total edges in the final heterogeneous graph: {len(typed_edges_df)}"
             )
 
-            # Save the unified, labeled edge file
-            pos_df = pd.DataFrame(positive_pairs, columns=["source", "target"])
-            pos_df["label"] = 1
-            neg_df = pd.DataFrame(negative_pairs, columns=["source", "target"])
-            neg_df["label"] = 0
-            dl_p_edges_df = pd.concat([pos_df, neg_df], ignore_index=True)
-
-            rt.ensure_path_exists(link_labels_path)
-            dl_p_edges_df.to_csv(link_labels_path, index=False, header=True)
-            print(f"-> Saved link prediction labels to {link_labels_path}")
         else:
             print(
-                "\n--> Link prediction labels file already exists. Loading positive pairs from cache."
+                f"\n--> Found existing training graph file for Fold {fold_idx}. Skipping construction."
             )
-            labeled_edges_df = pd.read_csv(link_labels_path)
-            positive_pairs_df = labeled_edges_df[labeled_edges_df["label"] == 1]
-            positive_pairs = list(
-                zip(positive_pairs_df["source"], positive_pairs_df["target"])
-            )
-        # endregion
-
-        # region sim edges
-        # TODO: 新的restart,重新计算
-        # --- 4b. 构建完整的、带类型的异构图边列表 ---
-        print(
-            "\n-> Assembling full heterogeneous graph based on `include_relations` config..."
-        )
-
-        relations_config = config.relations.flags
-        typed_edges_list = []
-
-        # --- Add Interaction Edges based on switches ---
-        dp_added, lp_added = 0, 0
-        # The `positive_pairs` list contains all unique (Molecule_ID, Protein_ID) tuples.
-        for u, v in positive_pairs:
-            # We need to re-check the type of the molecule node `u`.
-            is_drug = u < len(drug2index)
-            if is_drug and relations_config.get("dp_interaction", True):
-                typed_edges_list.append([u, v, "drug_protein_interaction"])
-                dp_added += 1
-            elif not is_drug and relations_config.get("lp_interaction", True):
-                typed_edges_list.append([u, v, "ligand_protein_interaction"])
-                lp_added += 1
-        print(
-            f"--> Added {dp_added} DP and {lp_added} LP interactions based on config."
-        )
-
-        # --- Conditionally add PP similarity edges ---
-        if relations_config.get("pp_similarity", True):
-            print("--> Adding Protein-Protein similarity edges...")
-            prot_start_index = len(drug2index) + len(ligand2index)
-            p_sim_threshold = params_config["protein_similarity_threshold"]
-            max_pp_edges_to_sample = params_config.get("max_pp_edges", -1)
-
-            p_rows, p_cols = np.where(prot_similarity_matrix > p_sim_threshold)
-            potential_edges = [(i, j) for i, j in zip(p_rows, p_cols) if i < j]
-
-            print(
-                f"    - Found {len(potential_edges)} potential P-P edges with similarity > {p_sim_threshold}."
-            )
-
-            final_pp_edges_indices = potential_edges
-            if max_pp_edges_to_sample and 0 < max_pp_edges_to_sample < len(
-                potential_edges
-            ):
-                print(
-                    f"    - Sampling {max_pp_edges_to_sample} edges from the potential pool..."
-                )
-                sampled_indices = random.sample(
-                    range(len(potential_edges)), max_pp_edges_to_sample
-                )
-                final_pp_edges_indices = [potential_edges[i] for i in sampled_indices]
-
-            for i, j in final_pp_edges_indices:
-                typed_edges_list.append(
-                    [
-                        i + prot_start_index,
-                        j + prot_start_index,
-                        "protein_protein_similarity",
-                    ]
-                )
-            print(f"    - Added {len(final_pp_edges_indices)} P-P edges to the graph.")
-
-        # --- Conditionally add Molecule similarity edges ---
-        dd_added, dl_added, ll_added = 0, 0, 0
-        if any(
-            [
-                relations_config.get(k)
-                for k in ["dd_similarity", "dl_similarity", "ll_similarity"]
-            ]
-        ):
-            print("--> Adding Molecule similarity edges...")
-            mol_rows, mol_cols = np.where(
-                dl_similarity_matrix > params_config["molecule_similarity_threshold"]
-            )
-            id_to_type_map = {idx: "drug" for idx in drug2index.values()}
-            id_to_type_map.update({idx: "ligand" for idx in ligand2index.values()})
-
-            for i, j in zip(mol_rows, mol_cols):
-                if i < j:
-                    type1, type2 = id_to_type_map[i], id_to_type_map[j]
-
-                    if (
-                        type1 == "drug"
-                        and type2 == "drug"
-                        and relations_config.get("dd_similarity", True)
-                    ):
-                        typed_edges_list.append([i, j, "drug_drug_similarity"])
-                        dd_added += 1
-                    elif (
-                        type1 == "ligand"
-                        and type2 == "ligand"
-                        and relations_config.get("ll_similarity", True)
-                    ):
-                        typed_edges_list.append([i, j, "ligand_ligand_similarity"])
-                        ll_added += 1
-                    elif type1 != type2 and relations_config.get("dl_similarity", True):
-                        u, v = (i, j) if type1 == "drug" else (j, i)
-                        typed_edges_list.append([u, v, "drug_ligand_similarity"])
-                        dl_added += 1
-            print(
-                f"    - Added {dd_added} D-D, {dl_added} D-L, and {ll_added} L-L edges based on config."
-            )
-        # endregion
-        # --- Finalize and Save using the dynamic path ---
-        print(f"\n--> Saving final graph structure to: {typed_edges_path}")
-        rt.ensure_path_exists(typed_edges_path)
-
-        typed_edges_df = pd.DataFrame(
-            typed_edges_list, columns=["source", "target", "edge_type"]
-        )
-        typed_edges_df.to_csv(typed_edges_path, index=False, header=True)
-
-        print(f"-> Total edges in the final heterogeneous graph: {len(typed_edges_df)}")
-
-    else:
-        relations_suffix = rt.get_relations_suffix(config)
-
-        # 2. Get the specific filename that was found and caused the skip
-        # (This makes the message even more informative)
-        typed_edges_key = graph_files_dict["typed_edges_template"]
-        found_path = rt.get_path(config, typed_edges_key)
-
-        # 3. Print a clear, informative, and accurate message
-        print(
-            "\n--- [Stage 4] Skipping graph generation: All necessary files found. ---"
-        )
-        print(f"    - Configuration Suffix: '{relations_suffix}'")
-        print(f"    - Found existing graph file: {found_path.name}")
+            print(f"    - Existing file: {graph_output_path.name}")
 
     # This is the final print of the script
     print("\nData processing pipeline finished successfully!")
