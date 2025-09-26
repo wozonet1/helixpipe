@@ -1,8 +1,6 @@
 import numpy as np
-import pandas as pd
 import torch
 from encoders.ndls_homo_encoder import NDLS_Homo_Encoder
-from predictors.rgcn_link_predictor import RGCNLinkPredictor
 from predictors.gbdt_predictor import GBDT_Link_Predictor
 import research_template as rt
 from omegaconf import DictConfig
@@ -11,20 +9,30 @@ import mlflow
 import traceback
 import hydra  # noqa: F401
 from tqdm import tqdm
+from predictors.rgcn_link_predictor import RGCNLinkPredictor
 from sklearn.metrics import roc_auc_score, average_precision_score
-import torch_geometric.transforms as T
+
 from encoders.ndls_homo_utils import convert_hetero_to_homo
-from data_utils.loaders import load_graph_data_for_fold, load_labels_for_fold
+from data_utils.loaders import (
+    load_graph_data_for_fold,
+    load_labels_for_fold,
+    convert_df_to_local_tensors,
+    create_global_to_local_maps,
+)
+
+target_edge_type = ("drug", "drug_protein_interaction", "protein")
 
 
-def run_workflow_for_fold(config, hetero_graph, train_df, test_df, device):
+def run_workflow_for_fold(config, hetero_graph, train_df, test_df, device, maps):
     """根据配置分派并执行相应的工作流"""
     paradigm = config.training.paradigm
 
     if paradigm == "two_stage":
         return run_two_stage_workflow(config, hetero_graph, train_df, test_df, device)
     elif paradigm == "end_to_end":
-        return run_end_to_end_workflow(config, hetero_graph, train_df, test_df, device)
+        return run_end_to_end_workflow(
+            config, hetero_graph, train_df, test_df, device, maps
+        )
     else:
         raise ValueError(f"Unknown paradigm: {paradigm}")
 
@@ -57,21 +65,10 @@ def run_two_stage_workflow(config, hetero_graph, train_df, test_df, device):
 
 
 # region e2e
-def run_end_to_end_workflow(config, hetero_graph, train_df, test_df, device):
+def run_end_to_end_workflow(config, hetero_graph, train_df, test_df, device, maps):
     print("\n--- Running End-to-End (RGCN) Workflow ---")
-
-    hetero_graph = T.ToUndirected(merge=True)(hetero_graph)
     hetero_graph = hetero_graph.to(device)
-    # --- [核心调试步骤] 在实例化之前，打印出metadata ---
-    model_metadata = hetero_graph.metadata()
-    target_edge_type = ("drug", "drug_protein_interaction", "protein")
-    print("--- [DEBUG] Metadata passed to RGCNLinkPredictor: ---")
-    print(f"Node Types: {model_metadata[0]}")
-    print(f"Edge Types: {model_metadata[1]}")
-    print("----------------------------------------------------")
-    # 1. 实例化端到端模型
-    # 注意: _target_ 指向我们之前创建的 RGCNLinkPredictor 类
-    # --- [核心排查步骤] 手动创建模型实例，绕过Hydra ---
+
     try:
         print("--> Attempting manual instantiation...")
         model = RGCNLinkPredictor(
@@ -81,7 +78,7 @@ def run_end_to_end_workflow(config, hetero_graph, train_df, test_df, device):
             num_layers=config.predictor.params.num_layers,
             dropout=config.predictor.params.dropout,
             # 传入我们刚刚打印的、确凿无疑的metadata
-            metadata=model_metadata,
+            metadata=hetero_graph.metadata(),
         )
         print("--> Manual instantiation SUCCEEDED!")
         model.to(device)
@@ -94,54 +91,26 @@ def run_end_to_end_workflow(config, hetero_graph, train_df, test_df, device):
         print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
         # 即使出错，我们也手动结束，防止其他错误干扰
         raise e
+    print("--> Model instantiation successful!")
     optimizer = torch.optim.Adam(model.parameters(), lr=config.training.learning_rate)
 
     print("--> Preparing full-batch training & testing tensors with LOCAL indices...")
-
-    nodes_df = pd.read_csv(rt.get_path(config, "processed.nodes_metadata"))
-    global_to_local_maps = {}
-
-    for node_type, group in nodes_df.groupby("node_type"):
-        # 将子DataFrame的索引重置为一个从0开始的新列，名为'local_id'
-        local_df = (
-            group.reset_index(drop=True)
-            .reset_index()
-            .rename(columns={"index": "local_id"})
-        )
-        # 将'node_id'（全局ID）设为索引，然后选取'local_id'列，转换为字典
-        global_to_local_maps[node_type] = local_df.set_index("node_id")[
-            "local_id"
-        ].to_dict()
-
     # [验证] 我们可以打印一个映射来检查它的正确性
     print(
         "DEBUG: Drug global to local map sample:",
-        list(global_to_local_maps["drug"].items())[:5],
+        list(maps["drug"].items())[:5],
     )
 
     # a. 转换训练集 (后续逻辑几乎不变)
     src_type, _, dst_type = target_edge_type
-    train_src_local = torch.tensor(
-        [global_to_local_maps[src_type][gid] for gid in train_df["source"]],
-        dtype=torch.long,
+    train_edge_label_index, train_edge_label = convert_df_to_local_tensors(
+        train_df, maps, src_type, dst_type, device
     )
-    train_dst_local = torch.tensor(
-        [global_to_local_maps[dst_type][gid] for gid in train_df["target"]],
-        dtype=torch.long,
-    )
-    train_edge_label_index = torch.stack([train_src_local, train_dst_local]).to(device)
-    train_edge_label = torch.from_numpy(train_df["label"].values).to(device)
 
     # b. 转换测试集
-    test_src_local = torch.tensor(
-        [global_to_local_maps[src_type][gid] for gid in test_df["source"]],
-        dtype=torch.long,
+    test_edge_label_index, test_labels = convert_df_to_local_tensors(
+        test_df, maps, src_type, dst_type, device
     )
-    test_dst_local = torch.tensor(
-        [global_to_local_maps[dst_type][gid] for gid in test_df["target"]],
-        dtype=torch.long,
-    )
-    test_edge_label_index = torch.stack([test_src_local, test_dst_local]).to(device)
     test_labels = test_df["label"].values
     # --- [DEBUG PROBE 1] Verifying Tensor Shapes Before Training ---
     print("\n" + "=" * 50)
@@ -173,8 +142,6 @@ def run_end_to_end_workflow(config, hetero_graph, train_df, test_df, device):
     assert test_edge_label_index.shape[1] == len(test_df)
     print("=" * 50 + "\n")
 
-    # --- 4. 训练循环 (现在是按Epoch，而不是按Batch) ---
-    print("--> Starting full-batch model training...")
     # --- 4. 训练循环 (现在是按Epoch，而不是按Batch) ---
     print("--> Starting full-batch model training...")
     for epoch in tqdm(range(config.training.epochs), desc="Epochs"):
@@ -253,14 +220,17 @@ def train(config: DictConfig):
             print("\n" + "#" * 80)
             print(f"#{' ' * 28}PROCESSING FOLD {fold_idx} / {k_folds}{' ' * 28}#")
             print("#" * 80 + "\n")
-
+            global_to_local_maps = create_global_to_local_maps(config)
             # 1. Load data specific to the current fold
-            hetero_data = load_graph_data_for_fold(config, fold_idx)
+            hetero_data = load_graph_data_for_fold(
+                config,
+                fold_idx,
+            )
             train_df, test_df = load_labels_for_fold(config, fold_idx)
 
             # 2. --- Workflow Dispatcher (based on paradigm) ---
             fold_results = run_workflow_for_fold(
-                config, hetero_data, train_df, test_df, device
+                config, hetero_data, train_df, test_df, device, global_to_local_maps
             )
 
             # 3. Store results for the current fold

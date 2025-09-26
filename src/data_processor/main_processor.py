@@ -1,410 +1,66 @@
 import random
-from rdkit import Chem
-from rdkit.Chem import AllChem
-from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
 import numpy as np
 import pandas as pd
-import torch
-from torch_geometric.data import Data
-import torch.nn.functional as F
-from torch_geometric.nn import GCNConv
 import pickle as pkl
-from Bio import Align
-from Bio.Align import substitution_matrices
-from tqdm import tqdm
-from joblib import Parallel, delayed
 from research_template import get_path, check_files_exist
 import research_template as rt
 from omegaconf import DictConfig
 from pathlib import Path
-
-
-# region d/l feature
-# --- FIXED VERSION of canonicalize_smiles ---
-def canonicalize_smiles(smiles):
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is not None:
-        return Chem.MolToSmiles(mol, canonical=True)
-    else:
-        print(f"Warning: Invalid SMILES string found and will be ignored: {smiles}")
-        return None  # Return None for invalid SMILES
-
-
-def smiles_to_graph(smiles):
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        raise ValueError("Invalid SMILE string")
-
-    # 提取原子特征
-    atom_features = []
-    for atom in mol.GetAtoms():
-        atom_features.append(
-            [
-                atom.GetAtomicNum(),  # 原子序数
-                atom.GetDegree(),  # 成键数
-                atom.GetTotalNumHs(),  # 附着氢原子数量
-                atom.GetFormalCharge(),  # 价态
-                int(atom.GetIsAromatic()),  # 是否为芳环
-            ]
-        )
-
-    atom_features = torch.tensor(atom_features, dtype=torch.float)
-
-    if mol.GetNumBonds() > 0:
-        edges = []
-        for bond in mol.GetBonds():
-            edges.append((bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()))
-            edges.append((bond.GetEndAtomIdx(), bond.GetBeginAtomIdx()))  # Undirected
-
-        # This creates a [num_bonds * 2, 2] tensor, then transposes to [2, num_bonds * 2]
-        edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
-    else:
-        # If there are no bonds, create an empty edge_index of the correct shape [2, 0]
-        edge_index = torch.empty((2, 0), dtype=torch.long)
-
-    # 转换为PyG数据格式
-    x = atom_features
-    data = Data(x=x, edge_index=edge_index)
-    return data
-
-
-class MoleculeGCN(torch.nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-        self.conv1 = GCNConv(in_channels, 64)
-        self.conv2 = GCNConv(64, out_channels)
-
-    def forward(self, x, edge_index):
-        x = F.relu(self.conv1(x, edge_index))
-        x = self.conv2(x, edge_index)
-        return x
-
-
-# 特征提取
-def extract_molecule_features(smiles, model, device):
-    graph_data = smiles_to_graph(smiles)
-    # 在PyG的GCNConv中, x的形状需要是 [num_nodes, in_channels]
-    x, edge_index = graph_data.x.to(device), graph_data.edge_index.to(device)
-    node_embeddings = model(x, edge_index)  # 直接调用模型
-    molecule_embedding = node_embeddings.mean(dim=0)
-    return molecule_embedding
-
-
-# endregion
-
-# region p feature
-# 氨基酸编码
-aa_index = {
-    "A": 0,
-    "R": 1,
-    "N": 2,
-    "D": 3,
-    "C": 4,
-    "E": 5,
-    "Q": 6,
-    "G": 7,
-    "H": 8,
-    "I": 9,
-    "L": 10,
-    "K": 11,
-    "M": 12,
-    "F": 13,
-    "P": 14,
-    "S": 15,
-    "T": 16,
-    "W": 17,
-    "Y": 18,
-    "V": 19,
-    "X": 20,
-    "U": 21,
-}
-
-
-# 将氨基酸序列转换为图数据
-def aa_sequence_to_graph(sequence):
-    # 提取氨基酸特征
-    node_features = torch.tensor(
-        [aa_index[aa] for aa in sequence], dtype=torch.float
-    ).unsqueeze(1)
-
-    # 构建邻接矩阵
-    edges = []
-    for i in range(len(sequence) - 1):
-        edges.append((i, i + 1))
-        edges.append((i + 1, i))  # 无向图
-
-    edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
-
-    # 转换为PyG数据格式
-    x = node_features
-    data = Data(x=x, edge_index=edge_index)
-    return data
-
-
-# 定义GCN模型
-class ProteinGCN(
-    torch.nn.Module,
-):
-    def __init__(self):
-        super(ProteinGCN, self).__init__()
-        self.conv1 = GCNConv(1, 64)
-        self.conv2 = GCNConv(64, 128)  # 20为氨基酸种类数
-
-    def forward(self, data):
-        x, edge_index = data.x, data.edge_index
-        x = F.relu(self.conv1(x, edge_index))
-        x = F.dropout(x, training=self.training)
-        x = self.conv2(x, edge_index)
-        return F.log_softmax(x, dim=1)
-
-
-# 特征提取
-def extract_protein_features(sequence: str, model, device):
-    graph_data = aa_sequence_to_graph(sequence)
-    node_embeddings = model(graph_data.to(device))
-    # 使用平均池化作为读出函数
-    protein_embedding = node_embeddings.mean(dim=0)
-    return protein_embedding
-
-
-# endregion
-
-
-def calculate_drug_similarity(drug_list):
-    # 将SMILES转换为RDKit分子对象
-    molecules = [Chem.MolFromSmiles(smiles) for smiles in drug_list]
-    fpgen = GetMorganGenerator(radius=2, fpSize=2048)
-    fingerprints = [fpgen.GetFingerprint(mol) for mol in molecules]
-
-    num_molecules = len(molecules)
-    similarity_matrix = np.zeros((num_molecules, num_molecules))
-
-    # 2. 将外层循环用 tqdm 包裹起来
-    # desc 参数为进度条提供了一个清晰的描述
-    for i in tqdm(
-        range(num_molecules), desc="Calculating Drug Similarities", leave=False
-    ):
-        # 由于矩阵是对称的，我们可以只计算上三角部分来优化性能
-        for j in range(i, num_molecules):
-            if i == j:
-                similarity_matrix[i, j] = 1.0
-            else:
-                # 计算Tanimoto相似性
-                similarity = AllChem.DataStructs.TanimotoSimilarity(
-                    fingerprints[i], fingerprints[j]
-                )
-                # 因为矩阵是对称的，所以同时填充 (i, j) 和 (j, i)
-                similarity_matrix[i, j] = similarity
-                similarity_matrix[j, i] = similarity
-
-    return similarity_matrix
-
-
-# region p sim
-def align_pair(seq1: str, seq2: str, aligner_config: dict) -> float:
-    # 在每个并行进程中重新创建一个 Aligner 对象
-    try:
-        aligner = Align.PairwiseAligner(**aligner_config)
-        return aligner.score(seq1.upper(), seq2.upper())
-    except Exception as e:
-        print(f"Sequences: {seq1}\n{seq2}")  ##测试为什么用新的align算法会失败
-        print(f"Error aligning sequences: {e}")
-        return 0.0
-
-
-def get_custom_blosum62_with_U():
-    """
-    加载标准的BLOSUM62矩阵,并增加对'U'(硒半胱氨酸)的支持。
-    'U'的打分规则将完全模仿'C'(半胱氨酸)。
-    """
-    # 加载标准的BLOSUM62矩阵
-    blosum62 = substitution_matrices.load("BLOSUM62")
-    # 将其转换为Python字典以便修改
-    custom_matrix_dict = dict(blosum62)
-    # 获取所有标准氨基酸的字母 (包括 B, Z, X)
-    old_alphabet = blosum62.alphabet
-    # 为'U'增加打分规则
-    for char in old_alphabet:
-        # U-X 的得分 = C-X 的得分
-
-        score = custom_matrix_dict.get(("C", char), custom_matrix_dict.get((char, "C")))
-        if score is not None:
-            custom_matrix_dict[("U", char)] = score
-            custom_matrix_dict[(char, "U")] = score
-    # U-U 的得分 = C-C 的得分
-    custom_matrix_dict[("U", "U")] = custom_matrix_dict[("C", "C")]
-    return substitution_matrices.Array(data=custom_matrix_dict)
-
-
-def calculate_protein_similarity(sequence_list, cpus: int):
-    # 定义 Aligner 的配置字典，以便传递给并行任务s
-    aligner_config = {
-        "mode": "local",
-        "substitution_matrix": get_custom_blosum62_with_U(),
-        "open_gap_score": -10,
-        "extend_gap_score": -0.5,
-    }
-    num_sequences = len(sequence_list)
-    print("--> Pre-calculating self-alignment scores for normalization...")
-    self_scores = Parallel(n_jobs=cpus)(
-        delayed(align_pair)(seq, seq, aligner_config)
-        for seq in tqdm(
-            sequence_list, desc="Self-Alignment Pre-computation", leave=False
-        )
-    )
-    # 加上一个很小的数，防止未来出现除以零的错误 (例如空序列导致score为0)
-    self_scores = np.array(self_scores, dtype=np.float32) + 1e-8
-
-    # =========================================================================
-    # 3. [两两比对阶段] 生成所有唯一的比对任务并并行计算原始分数
-    # =========================================================================
-    tasks = []
-    for i in range(num_sequences):
-        for j in range(i, num_sequences):
-            # 我们只计算上三角部分，包括对角线
-            tasks.append((i, j))
-
-    print("--> Calculating pairwise raw alignment scores...")
-    raw_pairwise_scores = Parallel(n_jobs=cpus)(
-        delayed(align_pair)(sequence_list[i], sequence_list[j], aligner_config)
-        for i, j in tqdm(tasks, desc="Pairwise Alignment", leave=False)
-    )
-
-    # =========================================================================
-    # 4. [归一化与填充阶段] 使用预计算的分数进行归一化并构建矩阵
-    # =========================================================================
-    print("--> Populating similarity matrix with normalized scores...")
-    similarity_matrix = np.zeros((num_sequences, num_sequences), dtype=np.float32)
-
-    for (i, j), raw_score in zip(
-        tqdm(
-            tasks,
-            desc="Normalizing and Filling Matrix",
-            leave=False,
-        ),
-        raw_pairwise_scores,
-    ):
-        if i == j:
-            similarity_matrix[i, j] = 1.0
-        else:
-            # 计算归一化的分母
-            denominator = np.sqrt(self_scores[i] * self_scores[j])
-
-            # 应用归一化公式
-            normalized_score = raw_score / denominator
-
-            # 使用 np.clip 确保分数严格落在 [0, 1] 区间，处理浮点数精度问题
-            final_score = np.clip(normalized_score, 0, 1)
-
-            # 因为矩阵是对称的，所以同时填充 (i, j) 和 (j, i)
-            similarity_matrix[i, j] = final_score
-            similarity_matrix[j, i] = final_score
-
-    return similarity_matrix
-
-
-# endregion
-
-
-def _generate_and_save_labeled_set(
-    positive_pairs: list,
-    positive_pairs_normalized_set: set,
-    dl2index: dict,
-    prot2index: dict,
-    config: DictConfig,
-    output_path: Path,
-):
-    print(
-        f"    -> Generating labeled set with {len(positive_pairs)} positive pairs for: {output_path.name}..."
-    )
-
-    negative_pairs = []
-    all_molecule_ids = list(dl2index.values())
-    all_protein_ids = list(prot2index.values())
-
-    # Get the strategy from config
-    sampling_strategy = config.params.negative_sampling_strategy
-
-    with tqdm(
-        total=len(positive_pairs),
-        desc=f"Negative Sampling ({sampling_strategy})",
-        leave=False,  # Set leave to False for cleaner logging inside a loop
-    ) as pbar:
-        if sampling_strategy == "popular":
-            # --- Popularity-Biased Strategy ---
-            mol_degrees = {}
-            prot_degrees = {}
-            # [MODIFICATION] Popularity is calculated based on ALL positive pairs for a stable distribution
-            for (
-                u,
-                v,
-            ) in positive_pairs_normalized_set:  # TODO: 目前使用全局popular负采样
-                mol_degrees[u] = mol_degrees.get(u, 0) + 1
-                prot_degrees[v] = prot_degrees.get(v, 0) + 1
-
-            mol_weights = [mol_degrees.get(mol_id, 1) for mol_id in all_molecule_ids]
-            prot_weights = [prot_degrees.get(prot_id, 1) for prot_id in all_protein_ids]
-
-            while len(negative_pairs) < len(positive_pairs):
-                dl_idx = random.choices(all_molecule_ids, weights=mol_weights, k=1)[0]
-                p_idx = random.choices(all_protein_ids, weights=prot_weights, k=1)[0]
-                normalized_candidate = tuple(sorted((dl_idx, p_idx)))
-
-                # Check against the set of ALL positives to prevent generating a known interaction
-                if normalized_candidate not in positive_pairs_normalized_set:
-                    negative_pairs.append((dl_idx, p_idx))
-                    pbar.update(1)
-
-        elif sampling_strategy == "uniform":
-            # --- Uniform Random Strategy ---
-            while len(negative_pairs) < len(positive_pairs):
-                dl_idx = random.choice(all_molecule_ids)
-                p_idx = random.choice(all_protein_ids)
-                normalized_candidate = tuple(sorted((dl_idx, p_idx)))
-
-                if normalized_candidate not in positive_pairs_normalized_set:
-                    negative_pairs.append((dl_idx, p_idx))
-                    pbar.update(1)
-        else:
-            raise ValueError(
-                f"Unknown negative_sampling_strategy: '{sampling_strategy}'"
-            )
-
-    print(f"        -> Generated {len(negative_pairs)} negative samples.")
-
-    # --- [THIS PART IS ALSO MOVED FROM YOUR ORIGINAL CODE] ---
-    # Save the unified, labeled edge file
-    pos_df = pd.DataFrame(positive_pairs, columns=["source", "target"])
-    pos_df["label"] = 1
-    neg_df = pd.DataFrame(negative_pairs, columns=["source", "target"])
-    neg_df["label"] = 0
-    labeled_df = (
-        pd.concat([pos_df, neg_df], ignore_index=True)
-        .sample(frac=1)
-        .reset_index(drop=True)
-    )
-
-    rt.ensure_path_exists(output_path)
-    labeled_df.to_csv(output_path, index=False, header=True)
+from tqdm import tqdm
+from features.feature_extractors import (
+    MoleculeGCN,
+    ProteinGCN,
+    extract_molecule_features,
+    extract_protein_features,
+    canonicalize_smiles,
+)
+from features.similarity_calculators import (
+    calculate_drug_similarity,
+    calculate_protein_similarity,
+)
+from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 
 
 def process_data(config: DictConfig):
-    # region init
-    data_config = config["data"]
-    params_config = config["params"]
-    runtime_config = config["runtime"]
-    device = runtime_config["gpu"]
-    restart_flag = runtime_config.get("force_restart", False)
-
+    restart_flag = config.runtime.get("force_restart", False)
     full_df = pd.read_csv(get_path(config, "raw.dti_interactions"))
-    # endregion
+    (
+        drug2index,
+        ligand2index,
+        prot2index,
+        dl2index,
+        final_smiles_list,
+        final_proteins_list,
+    ) = _stage_1_load_and_index_entities(config, full_df, restart_flag)
 
-    # region list
-    # ===================================================================
-    # --- STAGE 1: Load, Merge, and Index Entities ---
-    # ===================================================================
+    dl_similarity_matrix, prot_similarity_matrix, _ = (
+        _stage_2_generate_features_and_similarities(
+            config,
+            drug2index,
+            ligand2index,
+            prot2index,
+            final_smiles_list,
+            final_proteins_list,
+            restart_flag,
+        )
+    )
+    _stage_3_split_data_and_build_graphs(
+        config,
+        full_df,
+        drug2index=drug2index,
+        prot2index=prot2index,
+        ligand2index=ligand2index,
+        dl2index=dl2index,
+        dl_sim_matrix=dl_similarity_matrix,
+        prot_sim_matrix=prot_similarity_matrix,
+    )
 
+
+def _stage_1_load_and_index_entities(
+    config: DictConfig, full_df: pd.DataFrame, restart_flag: bool = False
+) -> tuple:
     # 1a. 加载基础数据集的实体
+    data_config = config["data"]
     print("--- [Stage 1a] Loading base entities from full_df.csv ---")
     checkpoint_files_dict = {
         "drug": "processed.indexes.drug",
@@ -461,12 +117,9 @@ def process_data(config: DictConfig):
             print(
                 f"DEBUG_1B: Initial unique extra ligands = {len(set(extra_ligands_list))}, extra proteins = {len(set(extra_proteins_list))}"
             )
-        # endregion
 
-        # region index
         # In data_proc.py, replace the entire "region index"
 
-        # region index
         print("\n--- [Stage 2] Creating and saving index files... ---")
 
         # 1. 首先，获取所有 drug 和 ligand 的唯一SMILES集合
@@ -557,13 +210,26 @@ def process_data(config: DictConfig):
         f"DEBUG_3: Total nodes based on final_lists = {len(final_smiles_list) + len(final_proteins_list)}"
     )
     # endregion
+    return (
+        drug2index,
+        ligand2index,
+        prot2index,
+        dl2index,
+        final_smiles_list,
+        final_proteins_list,
+    )
 
-    # ===================================================================
-    # --- STAGE 3: Generate Features, Similarity Matrices, and Edges ---
-    # ===================================================================
 
-    # region features&sim
-
+def _stage_2_generate_features_and_similarities(
+    config: DictConfig,
+    drug2index: dict,
+    ligand2index: dict,
+    prot2index: dict,
+    final_smiles_list,
+    final_proteins_list,
+    restart_flag: bool = False,
+    device="cpu",
+) -> tuple:
     checkpoint_files_dict = {
         "molecule_similarity_matrix": "processed.similarity_matrices.molecule",
         "protein_similarity_matrix": "processed.similarity_matrices.protein",
@@ -596,7 +262,7 @@ def process_data(config: DictConfig):
         dl_similarity_matrix = calculate_drug_similarity(final_smiles_list)
         # notice:用U与C一样的方式计算相似度
         prot_similarity_matrix = calculate_protein_similarity(
-            final_proteins_list, runtime_config["cpus"]
+            final_proteins_list, config.runtime["cpus"]
         )
 
         pkl.dump(
@@ -647,24 +313,607 @@ def process_data(config: DictConfig):
         features_df = pd.read_csv(
             get_path(config, checkpoint_files_dict["node_features"]), header=None
         )
+    return dl_similarity_matrix, prot_similarity_matrix, features_df
 
-    # region positive edges
 
-    # ===================================================================
-    # --- STAGE 4: Generate Labeled Edges and Full Heterogeneous Graph ---
-    # ===================================================================
+def _stage_3_split_data_and_build_graphs(
+    config: DictConfig,
+    full_df: pd.DataFrame,
+    drug2index: dict,
+    ligand2index: dict,
+    prot2index: dict,
+    dl2index: dict,
+    dl_sim_matrix: np.ndarray,
+    prot_sim_matrix: np.ndarray,
+):
+    """
+    调度函数，负责Stage 3的所有工作。
+    它现在只做两件事：收集正样本，然后将其交给总指挥官处理。
+    """
+    # 1. 收集全局的正样本对
+    positive_pairs, positive_pairs_normalized_set = _collect_positive_pairs(
+        config, full_df, dl2index, prot2index
+    )
+
+    # 2. 调用总指挥官，完成所有后续工作
+    _process_all_folds(
+        config=config,
+        positive_pairs=positive_pairs,
+        positive_pairs_normalized_set=positive_pairs_normalized_set,
+        drug2index=drug2index,
+        ligand2index=ligand2index,
+        prot2index=prot2index,
+        dl2index=dl2index,
+        dl_sim_matrix=dl_sim_matrix,
+        prot_sim_matrix=prot_sim_matrix,
+    )
+
+
+def _process_all_folds(
+    config: DictConfig,
+    positive_pairs: list,
+    positive_pairs_normalized_set: set,
+    drug2index: dict,
+    ligand2index: dict,
+    prot2index: dict,
+    dl2index: dict,
+    dl_sim_matrix: np.ndarray,
+    prot_sim_matrix: np.ndarray,
+):
+    """
+    一个【总指挥】函数，负责协调完成所有的分割、标签保存和图谱构建任务。
+    它循环遍历每一折，并为每一折调用专属的处理函数。
+    """
+    print("\n--- [CONTROLLER] Starting data processing for all folds... ---")
+
     eval_config = config.training.evaluation
     split_mode = eval_config.mode
     seed = config.runtime.seed
+    num_folds = eval_config.k_folds
+
+    # --- 1. 准备分割迭代器 ---
+    # 这部分逻辑决定了我们将如何循环（K-Fold或Single Split）
+    if num_folds > 1:
+        entities_to_split = None
+        if split_mode in ["drug", "protein"]:
+            if split_mode == "drug":
+                entities_to_split = sorted(
+                    list(set([p[0] for p in positive_pairs if p[0] < len(drug2index)]))
+                )
+            else:  # protein
+                entities_to_split = sorted(list(set([p[1] for p in positive_pairs])))
+            kf = KFold(n_splits=num_folds, shuffle=True, random_state=seed)
+            split_iterator = kf.split(entities_to_split)
+        elif split_mode == "random":
+            entities_to_split = positive_pairs
+            dummy_y = [
+                p[1] for p in positive_pairs
+            ]  # Stratify by protein to keep distribution
+            skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=seed)
+            split_iterator = skf.split(entities_to_split, dummy_y)
+        else:
+            raise ValueError(f"Unknown split_mode '{split_mode}' in config.")
+    else:
+        # 对于 k=1 的情况，我们创建一个只包含一个None元素的迭代器，以触发一次循环
+        split_iterator = [None]
+        entities_to_split = (
+            positive_pairs  # 占位符，实际在_split_data_for_single_fold中处理
+        )
+
+    # --- 2. 主循环 ---
+    # 遍历每一次分割，并调用下一层处理函数
+    for fold_idx, split_result in enumerate(split_iterator, 1):
+        print("\n" + "=" * 80)
+        print(" " * 25 + f"PROCESSING FOLD {fold_idx} / {num_folds}")
+        print("=" * 80)
+
+        # --- A. 分割数据 ---
+        # 调用只负责“分割”的纯函数
+        train_positive_pairs, test_positive_pairs = _split_data_for_single_fold(
+            split_result=split_result,
+            num_folds=num_folds,
+            split_mode=split_mode,
+            drug2index=drug2index,
+            positive_pairs=positive_pairs,
+            entities_to_split=entities_to_split,
+            config=config,
+        )
+
+        # --- B. 处理这一折的所有后续工作 ---
+        # 调用负责“内部再分割、保存标签、构建图”的函数
+        _process_single_fold(
+            fold_idx=fold_idx,
+            train_positive_pairs=train_positive_pairs,
+            test_positive_pairs=test_positive_pairs,
+            positive_pairs_normalized_set=positive_pairs_normalized_set,
+            config=config,
+            drug2index=drug2index,
+            ligand2index=ligand2index,
+            prot2index=prot2index,
+            dl2index=dl2index,
+            dl_sim_matrix=dl_sim_matrix,
+            prot_sim_matrix=prot_sim_matrix,
+        )
+
+
+def _split_data_for_single_fold(
+    split_result: tuple,
+    num_folds: int,
+    split_mode: str,
+    positive_pairs: list,
+    entities_to_split: list,
+    config: DictConfig,
+    drug2index: dict,  # 需要 drug2index 来区分药物和配体
+) -> tuple[list, list]:
+    """
+    一个只负责【数据分割】的纯函数。
+
+    根据传入的策略（K-Fold/Single Split, Cold/Warm Start），为单一一折
+    返回训练集和测试集的正样本对列表。
+
+    Args:
+        split_result (tuple or None): KFold迭代器返回的结果。对于k=1，它为None。
+        num_folds (int): 总折数 (k)。
+        split_mode (str): 分割模式 ('drug', 'protein', 'random')。
+        positive_pairs (list): 全局的、所有正样本对的列表。
+        entities_to_split (list): 用于分割的实体列表（在冷启动时）或边列表（在热启动时）。
+        config (DictConfig): 全局配置对象，用于获取seed和test_fraction。
+        drug2index (dict): 药物索引，用于在冷启动时精确识别药物实体。
+
+    Returns:
+        tuple[list, list]: (train_positive_pairs, test_positive_pairs)
+    """
+    train_positive_pairs, test_positive_pairs = [], []
+    seed = config.runtime.seed
     test_fraction = config.training.evaluation.test_fraction
+
+    if num_folds > 1:
+        # --- 路径 1: K-Fold (k > 1) 逻辑 ---
+        train_indices, test_indices = split_result
+        if split_mode in ["drug", "protein"]:
+            # 冷启动：根据实体索引来划分边
+            test_entity_ids = set([entities_to_split[i] for i in test_indices])
+            entity_idx = 0 if split_mode == "drug" else 1
+            train_positive_pairs = [
+                p for p in positive_pairs if p[entity_idx] not in test_entity_ids
+            ]
+            test_positive_pairs = [
+                p for p in positive_pairs if p[entity_idx] in test_entity_ids
+            ]
+        else:  # random (热启动)
+            # 热启动：直接根据边的索引来划分
+            train_positive_pairs = [entities_to_split[i] for i in train_indices]
+            test_positive_pairs = [entities_to_split[i] for i in test_indices]
+    else:
+        # --- 路径 2: Single Split (k = 1) 逻辑 ---
+        if split_mode in ["drug", "protein"]:
+            # 冷启动：先分割实体，再划分边
+            entity_idx = 0 if split_mode == "drug" else 1
+
+            # [优化] 确保实体列表的提取是正确的
+            if split_mode == "drug":
+                # 只分割那些被定义为“药物”的实体
+                entity_list = sorted(
+                    list(set([p[0] for p in positive_pairs if p[0] < len(drug2index)]))
+                )
+            else:  # protein
+                entity_list = sorted(list(set([p[1] for p in positive_pairs])))
+
+            train_entities, test_entities = train_test_split(
+                entity_list, test_size=test_fraction, random_state=seed
+            )
+            test_entity_ids = set(test_entities)
+            train_positive_pairs = [
+                p for p in positive_pairs if p[entity_idx] not in test_entity_ids
+            ]
+            test_positive_pairs = [
+                p for p in positive_pairs if p[entity_idx] in test_entity_ids
+            ]
+        else:  # random (热启动)
+            # 热启动：直接用train_test_split分割边
+            # stratify可以保证训练集和测试集中的蛋白质分布大致相同，让评估更稳定
+            labels = [p[1] for p in positive_pairs]  # 使用 protein_id 作为分层依据
+            train_positive_pairs, test_positive_pairs = train_test_split(
+                positive_pairs,
+                test_size=test_fraction,
+                random_state=seed,
+                stratify=labels,
+            )
+
+    print(
+        f"    -> Split complete: {len(train_positive_pairs)} TRAIN positives, {len(test_positive_pairs)} TEST positives."
+    )
+    return train_positive_pairs, test_positive_pairs
+
+
+def _process_single_fold(
+    fold_idx: int,
+    train_positive_pairs: list,
+    test_positive_pairs: list,
+    positive_pairs_normalized_set: set,
+    config: DictConfig,
+    drug2index: dict,
+    ligand2index: dict,
+    prot2index: dict,
+    dl2index: dict,
+    dl_sim_matrix: np.ndarray,
+    prot_sim_matrix: np.ndarray,
+):
+    """
+    一个负责【处理单折所有后续工作】的函数。
+
+    它接收分割好的训练/测试正样本对，然后执行：
+    1. 对训练集进行内部的“背景/监督”二次分割。
+    2. 为“监督集”和“测试集”生成并保存带标签的CSV文件。
+    3. 使用“背景集”和相似性矩阵，构建并保存训练图谱。
+    """
+    print(
+        f"    -> Fold {fold_idx}: Received {len(train_positive_pairs)} train and {len(test_positive_pairs)} test positives."
+    )
+
+    # --- 1. 对训练集，进行第二次“内部”分割 (Inductive Link Prediction) ---
+    supervision_ratio = config.params.get("supervision_ratio", 0.2)
+
+    # 确保即使训练集很小，也能分出至少一个监督样本
+    if len(train_positive_pairs) > 1:
+        train_graph_edges, train_supervision_edges = train_test_split(
+            train_positive_pairs,
+            test_size=supervision_ratio,
+            random_state=config.runtime.seed,
+        )
+    else:  # 如果训练集只有一个样本，则无法分割
+        train_graph_edges = train_positive_pairs
+        train_supervision_edges = []  # 没有监督边，模型将只从重构损失中学习
+        print("    -> WARNING: Too few training samples to create a supervision set.")
+
+    print(
+        f"    -> Internal split: {len(train_graph_edges)} edges for graph topology, "
+        f"{len(train_supervision_edges)} edges for supervision."
+    )
+
+    # --- 2. 为【监督边】和【测试边】生成并保存带标签的文件 ---
     labels_template_key = "processed.link_prediction_labels_template"
-    graph_template_key = "processed.typed_edge_list_template"
+    eval_config = config.training.evaluation
+
+    # a. 训练标签文件 (基于监督边)
     train_labels_path = rt.get_path(
-        config, labels_template_key, split_suffix=eval_config.train_file_suffix
+        config,
+        labels_template_key,
+        split_suffix=f"_fold{fold_idx}{eval_config.train_file_suffix}",
     )
+    _generate_and_save_labeled_set(
+        positive_pairs=train_supervision_edges,
+        positive_pairs_normalized_set=positive_pairs_normalized_set,
+        dl2index=dl2index,
+        prot2index=prot2index,
+        config=config,
+        output_path=train_labels_path,
+    )
+
+    # b. 测试标签文件 (基于测试边)
     test_labels_path = rt.get_path(
-        config, labels_template_key, split_suffix=eval_config.test_file_suffix
+        config,
+        labels_template_key,
+        split_suffix=f"_fold{fold_idx}{eval_config.test_file_suffix}",
     )
+    _generate_and_save_labeled_set(
+        positive_pairs=test_positive_pairs,
+        positive_pairs_normalized_set=positive_pairs_normalized_set,
+        dl2index=dl2index,
+        prot2index=prot2index,
+        config=config,
+        output_path=test_labels_path,
+    )
+    print(f"    -> Saved labeled edges for Fold {fold_idx} successfully.")
+
+    # --- 3. 使用【背景边】和【相似性矩阵】，构建并保存训练图谱 ---
+    _build_graph_for_fold(
+        fold_idx=fold_idx,
+        train_graph_edges=train_graph_edges,  # <-- 使用分割出的背景边
+        config=config,
+        drug2index=drug2index,
+        ligand2index=ligand2index,
+        prot2index=prot2index,
+        dl2index=dl2index,
+        dl_sim_matrix=dl_sim_matrix,
+        prot_sim_matrix=prot_sim_matrix,
+    )
+
+
+def _generate_and_save_labeled_set(
+    positive_pairs: list,
+    positive_pairs_normalized_set: set,
+    dl2index: dict,
+    prot2index: dict,
+    config: DictConfig,
+    output_path: Path,
+):
+    print(
+        f"    -> Generating labeled set with {len(positive_pairs)} positive pairs for: {output_path.name}..."
+    )
+
+    negative_pairs = []
+    all_molecule_ids = list(dl2index.values())
+    all_protein_ids = list(prot2index.values())
+
+    # Get the strategy from config
+    sampling_strategy = config.params.negative_sampling_strategy
+
+    with tqdm(
+        total=len(positive_pairs),
+        desc=f"Negative Sampling ({sampling_strategy})",
+        leave=False,  # Set leave to False for cleaner logging inside a loop
+    ) as pbar:
+        if sampling_strategy == "popular":
+            # --- Popularity-Biased Strategy ---
+            mol_degrees = {}
+            prot_degrees = {}
+            # [MODIFICATION] Popularity is calculated based on ALL positive pairs for a stable distribution
+            for (
+                u,
+                v,
+            ) in positive_pairs_normalized_set:  # TODO: 目前使用全局popular负采样
+                mol_degrees[u] = mol_degrees.get(u, 0) + 1
+                prot_degrees[v] = prot_degrees.get(v, 0) + 1
+
+            mol_weights = [mol_degrees.get(mol_id, 1) for mol_id in all_molecule_ids]
+            prot_weights = [prot_degrees.get(prot_id, 1) for prot_id in all_protein_ids]
+
+            while len(negative_pairs) < len(positive_pairs):
+                dl_idx = random.choices(all_molecule_ids, weights=mol_weights, k=1)[0]
+                p_idx = random.choices(all_protein_ids, weights=prot_weights, k=1)[0]
+                normalized_candidate = tuple(sorted((dl_idx, p_idx)))
+
+                # Check against the set of ALL positives to prevent generating a known interaction
+                if normalized_candidate not in positive_pairs_normalized_set:
+                    negative_pairs.append((dl_idx, p_idx))
+                    pbar.update(1)
+
+        elif sampling_strategy == "uniform":
+            # --- Uniform Random Strategy ---
+            while len(negative_pairs) < len(positive_pairs):
+                dl_idx = random.choice(all_molecule_ids)
+                p_idx = random.choice(all_protein_ids)
+                normalized_candidate = tuple(sorted((dl_idx, p_idx)))
+
+                if normalized_candidate not in positive_pairs_normalized_set:
+                    negative_pairs.append((dl_idx, p_idx))
+                    pbar.update(1)
+        else:
+            raise ValueError(
+                f"Unknown negative_sampling_strategy: '{sampling_strategy}'"
+            )
+
+    print(f"        -> Generated {len(negative_pairs)} negative samples.")
+
+    # --- [THIS PART IS ALSO MOVED FROM YOUR ORIGINAL CODE] ---
+    # Save the unified, labeled edge file
+    pos_df = pd.DataFrame(positive_pairs, columns=["source", "target"])
+    pos_df["label"] = 1
+    neg_df = pd.DataFrame(negative_pairs, columns=["source", "target"])
+    neg_df["label"] = 0
+    labeled_df = (
+        pd.concat([pos_df, neg_df], ignore_index=True)
+        .sample(frac=1)
+        .reset_index(drop=True)
+    )
+
+    rt.ensure_path_exists(output_path)
+    labeled_df.to_csv(output_path, index=False, header=True)
+
+
+def _build_graph_for_fold(
+    fold_idx: int,
+    train_graph_edges: list,  # <-- [关键] 现在接收的是“背景知识”交互边
+    config: DictConfig,
+    drug2index: dict,
+    ligand2index: dict,
+    prot2index: dict,
+    dl2index: dict,
+    dl_sim_matrix: np.ndarray,
+    prot_sim_matrix: np.ndarray,
+):
+    """
+    为一个特定的Fold，构建并保存其专属的、用于GNN编码器训练的图谱文件。
+
+    这个图谱将包含：
+    1. 一部分训练集中的D-P/L-P交互，作为“背景知识”。
+    2. 所有与训练集节点相关的“背景知识”相似性边。
+    它【绝对不会】包含任何将用于【监督】的交互边。
+    """
+    print(f"\n--- [GRAPH] Building training graph for Fold {fold_idx}... ---")
+
+    eval_config = config.training.evaluation
+    split_mode = eval_config.mode
+    params_config = config.params
+    relations_config = config.relations.flags
+    graph_template_key = "processed.typed_edge_list_template"
+
+    # --- 1. 定义当前Fold的训练节点 ---
+    # 这个定义现在是基于传入的 train_graph_edges，因为它们定义了图的“骨架”
+    train_node_ids = set()
+    if split_mode == "drug":
+        # 在药物冷启动中，训练节点 = 所有蛋白 + 所有配体 + 【只在背景知识中出现的】药物
+        train_drug_ids = set([p[0] for p in train_graph_edges])
+        train_node_ids = (
+            set(prot2index.values())
+            .union(set(ligand2index.values()))
+            .union(train_drug_ids)
+        )
+    elif split_mode == "protein":
+        # 在蛋白冷启动中，训练节点 = 所有药物 + 所有配体 + 【只在背景知识中出现的】蛋白
+        train_protein_ids = set([p[1] for p in train_graph_edges])
+        train_node_ids = set(dl2index.values()).union(train_protein_ids)
+    else:  # random (热启动)
+        # 在热启动中，所有节点都可以被认为是训练节点
+        train_node_ids = set(dl2index.values()).union(set(prot2index.values()))
+
+    print(
+        f"    -> This training graph will be built upon {len(train_node_ids)} allowed nodes."
+    )
+
+    typed_edges_list = []
+
+    # --- 2. [核心修改] 将“背景知识交互边”加入图谱 ---
+    dp_added_as_background = 0
+    lp_added_as_background = 0
+    for u, v in train_graph_edges:
+        is_drug = u < len(drug2index)
+        if is_drug:
+            if relations_config.get("dp_interaction", True):
+                typed_edges_list.append([u, v, "drug_protein_interaction"])
+                dp_added_as_background += 1
+        else:  # is_ligand
+            if relations_config.get("lp_interaction", True):
+                typed_edges_list.append([u, v, "ligand_protein_interaction"])
+                lp_added_as_background += 1
+
+    print(
+        f"    -> Added {dp_added_as_background} D-P and {lp_added_as_background} L-P interactions as background knowledge."
+    )
+
+    # --- 3. 添加相似性边 (这部分现在是增量，而不是全部) ---
+
+    # a. 为蛋白质相似性做准备
+    prot_local_id_to_type = {i: "protein" for i in range(len(prot2index))}
+    prot_relation_rules = {
+        ("protein", "protein"): {"edge_type": "protein_protein_similarity"}
+    }
+
+    _add_similarity_edges(
+        typed_edges_list=typed_edges_list,
+        sim_matrix=prot_sim_matrix,
+        train_node_ids=train_node_ids,
+        id_to_type_map=prot_local_id_to_type,
+        relation_rules=prot_relation_rules,
+        config=config,
+        id_offset=len(dl2index),
+    )
+
+    # b. 为小分子相似性做准备
+    mol_local_id_to_type = {i: "drug" for i, smi in enumerate(drug2index.keys())}
+    mol_local_id_to_type.update(
+        {i + len(drug2index): "ligand" for i, smi in enumerate(ligand2index.keys())}
+    )
+    mol_relation_rules = {
+        ("drug", "drug"): {"edge_type": "drug_drug_similarity"},
+        ("ligand", "ligand"): {"edge_type": "ligand_ligand_similarity"},
+        ("drug", "ligand"): {
+            "edge_type": "drug_ligand_similarity",
+            "source_priority": "drug",
+        },
+    }
+
+    _add_similarity_edges(
+        typed_edges_list=typed_edges_list,
+        sim_matrix=dl_sim_matrix,
+        train_node_ids=train_node_ids,
+        id_to_type_map=mol_local_id_to_type,
+        relation_rules=mol_relation_rules,
+        config=config,
+        id_offset=0,
+    )
+
+    # --- 4. 保存最终的图文件 ---
+    graph_output_path = rt.get_path(
+        config, graph_template_key, split_suffix=f"_fold{fold_idx}"
+    )
+    print(
+        f"\n--> Saving final graph structure for Fold {fold_idx} to: {graph_output_path}"
+    )
+
+    typed_edges_df = pd.DataFrame(
+        typed_edges_list, columns=["source", "target", "edge_type"]
+    )
+    typed_edges_df.to_csv(graph_output_path, index=False, header=True)
+
+    print(f"-> Total edges in the final training graph: {len(typed_edges_df)}")
+
+
+def _add_similarity_edges(
+    typed_edges_list: list,
+    sim_matrix: np.ndarray,
+    train_node_ids: set,
+    id_to_type_map: dict,
+    relation_rules: dict,
+    config: DictConfig,
+    id_offset: int = 0,  # [核心新增] ID偏移量，默认为0
+):
+    """
+    一个【最终版】的、通用的、可扩展的辅助函数，用于从一个相似度矩阵中添加多种类型的边。
+    它现在可以动态地为每种关系查找专属的阈值。
+    """
+    print(f"--> Processing similarity matrix of shape {sim_matrix.shape}...")
+
+    counts = {rule["edge_type"]: 0 for rule in relation_rules.values()}
+
+    # --- [核心逻辑] 现在我们遍历规则，而不是遍历矩阵中的所有边 ---
+    # 这使得我们可以为每个规则（即每种边类型）应用不同的阈值
+    for rule_key, rule in relation_rules.items():
+        edge_type = rule["edge_type"]
+        relation_flag = edge_type.replace("_similarity", "")
+
+        # 1. 检查配置开关
+        if not config.relations.flags.get(relation_flag, True):
+            continue
+
+        # 2. [核心修改] 动态构造阈值参数的键名，并从配置中读取
+        threshold_key = (
+            f"{rule_key[0]}_{rule_key[1]}"  # e.g., 'drug_drug', 'drug_ligand'
+        )
+        try:
+            threshold = config.params.similarity_thresholds[threshold_key]
+        except Exception:
+            print(
+                f"    - WARNING: Threshold key 'params.similarity_thresholds.{threshold_key}' not found. Skipping '{edge_type}'."
+            )
+            continue
+
+        print(f"    -> Processing '{edge_type}' with threshold > {threshold}...")
+
+        # 3. 寻找超过阈值的边
+        rows, cols = np.where(sim_matrix > threshold)
+
+        # 4. 添加边
+        for i, j in zip(rows, cols):
+            if i >= j:
+                continue
+            global_id_i = i + id_offset
+            global_id_j = j + id_offset
+
+            # [关键] 过滤步骤现在使用全局ID
+            if global_id_i not in train_node_ids or global_id_j not in train_node_ids:
+                continue
+
+            # 查询类型（现在使用局部索引）
+            type1 = id_to_type_map.get(i)
+            type2 = id_to_type_map.get(j)
+
+            if not type1 or not type2:
+                continue
+
+            if tuple(sorted((type1, type2))) != rule_key:
+                continue  # 这条边不属于当前规则处理的范畴
+
+            # 根据规则决定边的方向
+            source, target = (
+                (i, j) if type1 == rule.get("source_priority", type1) else (j, i)
+            )
+
+            typed_edges_list.append([source, target, edge_type])
+            counts[edge_type] += 1
+
+    for edge_type, count in counts.items():
+        if count > 0:
+            print(f"    - Added {count} '{edge_type}' edges.")
+
+
+def _collect_positive_pairs(
+    config: DictConfig, full_df: pd.DataFrame, dl2index: dict, prot2index: dict
+) -> list:
+    data_config = config["data"]
+    eval_config = config.training.evaluation
+    split_mode = eval_config.mode
     print(f"--> Preparing and splitting positive pairs with mode: '{split_mode}'...")
     print(
         "--> Labeled train/test files not found or restart forced. Generating new splits..."
@@ -715,290 +964,4 @@ def process_data(config: DictConfig):
     print(
         f"-> Found {len(positive_pairs)} unique, normalized positive pairs after cleaning."
     )
-    from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
-
-    num_folds = eval_config.k_folds
-    # --- [新增逻辑] 根据 k_folds 的值选择不同的执行路径 ---
-    if num_folds > 1:
-        # --- 路径 A: K-Fold Cross-Validation (k > 1) ---
-        print(f"--- [SETUP] Initializing {num_folds}-Fold Cross-Validation ---")
-        # 1. 确定要进行K-Fold分割的对象 (实体ID 或 交互边)
-        # -------------------------------------------------------------------
-        entities_to_split = None
-        if split_mode in ["drug", "protein"]:
-            print(
-                f"--> Preparing entities for COLD-START split on: {split_mode.upper()}"
-            )
-            if split_mode == "drug":
-                entities_to_split = sorted(
-                    list(set([p[0] for p in positive_pairs if p[0] < len(drug2index)]))
-                )
-            else:  # protein
-                entities_to_split = sorted(list(set([p[1] for p in positive_pairs])))
-            print(f"    - Found {len(entities_to_split)} unique entities to split.")
-
-            # 对于实体级别的冷启动，我们通常使用标准的KFold
-            kf = KFold(n_splits=eval_config.k_folds, shuffle=True, random_state=seed)
-            split_iterator = kf.split(entities_to_split)
-
-        elif split_mode == "random":
-            print("--> Preparing edges for WARM-START split...")
-            entities_to_split = positive_pairs
-            # 对于warm-start，我们可以直接分割边。为了保持标签比例，使用StratifiedKFold更好
-            # (需要一个虚拟的y标签来进行分层，这里我们用0和1交替)
-            dummy_y = [i % 2 for i in range(len(entities_to_split))]
-            skf = StratifiedKFold(
-                n_splits=eval_config.k_folds, shuffle=True, random_state=seed
-            )
-            split_iterator = skf.split(entities_to_split, dummy_y)
-
-        else:
-            raise ValueError(f"Unknown split_mode '{split_mode}' in config.")
-    else:
-        print(
-            f"--- [SETUP] Initializing Single Validation Split (k=1) with test_fraction={test_fraction} ---"
-        )
-        # 在这种模式下，我们不使用 KFold，split_iterator 将是一个只包含一次分割的列表
-        split_iterator = [None]  # 创建一个只循环一次的迭代器
-        entities_to_split = (
-            positive_pairs  # 对于单次分割，我们总是基于所有边来创建训练/测试集
-        )
-
-    # 2. 遍历 K-Fold 的每一次分割，生成并保存对应的数据
-    # -------------------------------------------------------------------
-    # [关键] 这个循环将取代之前的所有分割逻辑
-    for fold_idx, split_result in enumerate(split_iterator, 1):
-        print(
-            f"\n--- [K-FOLD] Generating data for Fold {fold_idx}/{eval_config.k_folds} ---"
-        )
-
-        train_positive_pairs, test_positive_pairs = [], []
-
-        if num_folds > 1:
-            # K-Fold 逻辑 (与之前相同)
-            train_indices, test_indices = split_result
-            if split_mode in ["drug", "protein"]:
-                test_entity_ids = set([entities_to_split[i] for i in test_indices])
-                entity_idx = 0 if split_mode == "drug" else 1
-                train_positive_pairs = [
-                    p for p in positive_pairs if p[entity_idx] not in test_entity_ids
-                ]
-                test_positive_pairs = [
-                    p for p in positive_pairs if p[entity_idx] in test_entity_ids
-                ]
-            else:  # random
-                train_positive_pairs = [entities_to_split[i] for i in train_indices]
-                test_positive_pairs = [entities_to_split[i] for i in test_indices]
-        else:
-            # Single Split 逻辑 (使用 train_test_split)
-            if split_mode in ["drug", "protein"]:
-                # 冷启动的单次分割
-                entity_list = sorted(
-                    list(
-                        set(
-                            [
-                                p[0] if split_mode == "drug" else p[1]
-                                for p in positive_pairs
-                            ]
-                        )
-                    )
-                )
-                train_entities, test_entities = train_test_split(
-                    entity_list,
-                    test_size=config.training.evaluation.test_fraction,
-                    random_state=seed,
-                )
-                test_entity_ids = set(test_entities)
-                entity_idx = 0 if split_mode == "drug" else 1
-                train_positive_pairs = [
-                    p for p in positive_pairs if p[entity_idx] not in test_entity_ids
-                ]
-                test_positive_pairs = [
-                    p for p in positive_pairs if p[entity_idx] in test_entity_ids
-                ]
-            else:  # random
-                # 热启动的单次分割
-                train_positive_pairs, test_positive_pairs = train_test_split(
-                    positive_pairs,
-                    test_size=test_fraction,
-                    random_state=seed,
-                    stratify=[p[1] for p in positive_pairs],
-                )
-
-        print(
-            f"    -> Split complete: {len(train_positive_pairs)} TRAIN positives, {len(test_positive_pairs)} TEST positives."
-        )
-
-        # 3. 为当前Fold生成并保存带标签的边集文件 (文件名包含fold_idx)
-        # -------------------------------------------------------------------
-        train_labels_path = rt.get_path(
-            config,
-            labels_template_key,
-            split_suffix=f"_fold{fold_idx}{eval_config.train_file_suffix}",
-        )
-        _generate_and_save_labeled_set(
-            positive_pairs=train_positive_pairs,
-            positive_pairs_normalized_set=positive_pairs_normalized_set,
-            dl2index=dl2index,
-            prot2index=prot2index,
-            config=config,
-            output_path=train_labels_path,
-        )
-
-        test_labels_path = rt.get_path(
-            config,
-            labels_template_key,
-            split_suffix=f"_fold{fold_idx}{eval_config.test_file_suffix}",
-        )
-        _generate_and_save_labeled_set(
-            positive_pairs=test_positive_pairs,
-            positive_pairs_normalized_set=positive_pairs_normalized_set,
-            dl2index=dl2index,
-            prot2index=prot2index,
-            config=config,
-            output_path=test_labels_path,
-        )
-        print(f"    -> Saved labeled edges for Fold {fold_idx} successfully.")
-    # endregion
-
-    # region sim edges
-    num_folds = eval_config.k_folds
-    for fold_idx in range(1, num_folds + 1):
-        # In the future, we would re-split data for each fold here.
-        # For now, we just use the single split we've already created.
-
-        print(f"\n--- Processing Graph for Fold {fold_idx}/{num_folds} ---")
-        graph_output_path = rt.get_path(
-            config, graph_template_key, split_suffix=str(fold_idx)
-        )
-
-        relations_config = config.relations.flags
-        typed_edges_list = []
-        # coldsplit
-        train_node_ids = set()
-        if split_mode == "drug":
-            train_drug_ids = set([p[0] for p in train_positive_pairs])
-            train_node_ids = (
-                set(prot2index.values())
-                .union(set(ligand2index.values()))
-                .union(train_drug_ids)
-            )
-        elif split_mode == "protein":
-            train_protein_ids = set([p[1] for p in train_positive_pairs])
-            train_node_ids = set(dl2index.values()).union(train_protein_ids)
-        else:  # random
-            train_node_ids = set(dl2index.values()).union(set(prot2index.values()))
-
-        print(
-            f"--> Constructing training graph with a total of {len(train_node_ids)} allowed nodes."
-        )
-
-        # --- Add Interaction Edges based on switches ---
-        dp_added, lp_added = 0, 0
-        # The `positive_pairs` list contains all unique (Molecule_ID, Protein_ID) tuples.
-        for u, v in train_positive_pairs:
-            # We need to re-check the type of the molecule node `u`.
-            is_drug = u < len(drug2index)
-            if is_drug and relations_config.get("dp_interaction", True):
-                typed_edges_list.append([u, v, "drug_protein_interaction"])
-                dp_added += 1
-            elif not is_drug and relations_config.get("lp_interaction", True):
-                typed_edges_list.append([u, v, "ligand_protein_interaction"])
-                lp_added += 1
-        print(
-            f"--> Added {dp_added} DP and {lp_added} LP interactions based on config."
-        )
-
-        # --- Conditionally add PP similarity edges ---
-        if relations_config.get("pp_similarity", True):
-            print("--> Adding Protein-Protein similarity edges...")
-            prot_start_index = len(drug2index) + len(ligand2index)
-            p_sim_threshold = params_config["protein_similarity_threshold"]
-            max_pp_edges_to_sample = params_config.get("max_pp_edges", -1)
-
-            p_rows, p_cols = np.where(prot_similarity_matrix > p_sim_threshold)
-            potential_edges = [(i, j) for i, j in zip(p_rows, p_cols) if i < j]
-
-            print(
-                f"    - Found {len(potential_edges)} potential P-P edges with similarity > {p_sim_threshold}."
-            )
-
-            final_pp_edges_indices = potential_edges
-            if max_pp_edges_to_sample and 0 < max_pp_edges_to_sample < len(
-                potential_edges
-            ):
-                print(
-                    f"    - Sampling {max_pp_edges_to_sample} edges from the potential pool..."
-                )
-                sampled_indices = random.sample(
-                    range(len(potential_edges)), max_pp_edges_to_sample
-                )
-                final_pp_edges_indices = [potential_edges[i] for i in sampled_indices]
-
-            for i, j in final_pp_edges_indices:
-                # Convert local protein indices to global IDs
-                global_id_i = i + prot_start_index
-                global_id_j = j + prot_start_index
-
-                # [CRITICAL FILTER] Only add the edge if BOTH nodes are in the training set
-                if global_id_i in train_node_ids and global_id_j in train_node_ids:
-                    typed_edges_list.append(
-                        [global_id_i, global_id_j, "protein_protein_similarity"]
-                    )
-
-            print(f"    - Added {len(final_pp_edges_indices)} P-P edges to the graph.")
-
-        # --- Conditionally add Molecule similarity edges ---
-        dd_added, dl_added, ll_added = 0, 0, 0
-        if any(
-            [
-                relations_config.get(k)
-                for k in ["dd_similarity", "dl_similarity", "ll_similarity"]
-            ]
-        ):
-            print("--> Adding Molecule similarity edges...")
-            mol_rows, mol_cols = np.where(
-                dl_similarity_matrix > params_config["molecule_similarity_threshold"]
-            )
-            id_to_type_map = {idx: "drug" for idx in drug2index.values()}
-            id_to_type_map.update({idx: "ligand" for idx in ligand2index.values()})
-
-            for i, j in zip(mol_rows, mol_cols):
-                if i < j and i in train_node_ids and j in train_node_ids:
-                    type1, type2 = id_to_type_map[i], id_to_type_map[j]
-
-                    if (
-                        type1 == "drug"
-                        and type2 == "drug"
-                        and relations_config.get("dd_similarity", True)
-                    ):
-                        typed_edges_list.append([i, j, "drug_drug_similarity"])
-                        dd_added += 1
-                    elif (
-                        type1 == "ligand"
-                        and type2 == "ligand"
-                        and relations_config.get("ll_similarity", True)
-                    ):
-                        typed_edges_list.append([i, j, "ligand_ligand_similarity"])
-                        ll_added += 1
-                    elif type1 != type2 and relations_config.get("dl_similarity", True):
-                        u, v = (i, j) if type1 == "drug" else (j, i)
-                        typed_edges_list.append([u, v, "drug_ligand_similarity"])
-                        dl_added += 1
-            print(
-                f"    - Added {dd_added} D-D, {dl_added} D-L, and {ll_added} L-L edges based on config."
-            )
-        # endregion
-        # --- Finalize and Save using the dynamic path ---
-        print(f"\n--> Saving final graph structure to: {graph_output_path}")
-        rt.ensure_path_exists(graph_output_path)
-
-        typed_edges_df = pd.DataFrame(
-            typed_edges_list, columns=["source", "target", "edge_type"]
-        )
-        typed_edges_df.to_csv(graph_output_path, index=False, header=True)
-
-        print(f"-> Total edges in the final heterogeneous graph: {len(typed_edges_df)}")
-
-    # This is the final print of the script
-    print("\nData processing pipeline finished successfully!")
+    return positive_pairs, positive_pairs_normalized_set

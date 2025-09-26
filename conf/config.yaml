@@ -51,7 +51,7 @@ data:
 # --- 2. Global Parameters (that don't belong to a specific component) ---
 # These are mostly parameters for data processing and evaluation
 training:
-    learning_rate: 0.1
+    learning_rate: 0.01
     epochs: 200
     batch_size: 32
 
