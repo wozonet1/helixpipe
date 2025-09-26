@@ -725,7 +725,6 @@ def _build_graph_for_fold(
 
     eval_config = config.training.evaluation
     split_mode = eval_config.mode
-    params_config = config.params
     relations_config = config.relations.flags
     graph_template_key = "processed.typed_edge_list_template"
 
@@ -897,7 +896,9 @@ def _add_similarity_edges(
 
             # 根据规则决定边的方向
             source, target = (
-                (i, j) if type1 == rule.get("source_priority", type1) else (j, i)
+                (global_id_i, global_id_j)
+                if type1 == rule.get("source_priority", type1)
+                else (global_id_j, global_id_i)
             )
 
             typed_edges_list.append([source, target, edge_type])
