@@ -223,8 +223,12 @@ def train(config: DictConfig):
             global_to_local_maps = create_global_to_local_maps(config)
             # 1. Load data specific to the current fold
             hetero_data = load_graph_data_for_fold(
+<<<<<<< HEAD
                 config,
                 fold_idx,
+=======
+                config, fold_idx, global_to_local_maps
+>>>>>>> 5b499c6 (data_proc采用了辅助函数,以及归纳式训练,现在又是0.5了)
             )
             train_df, test_df = load_labels_for_fold(config, fold_idx)
 
