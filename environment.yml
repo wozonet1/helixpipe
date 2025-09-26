@@ -1,47 +1,60 @@
 # ===================================================================
-# Conda Environment for DTI Heterogeneous Graph Research (CUDA 11.7)
+# Conda Environment for DTI System Pharmacology Project (GNN-Ready)
 #
-# Lowering the CUDA version to a highly stable alternative (11.7)
-# to resolve dependency conflicts. Optimized for NVIDIA A100.
+# To create the environment:
+#   $ mamba env create -f environment.yml
 #
-# To create: mamba env create -f environment.yml
-# To activate: conda activate nasnet-dti-gpu-cu117-env
+# To update the environment:
+#   $ mamba env update -f environment.yml --prune
 # ===================================================================
 
-name: nasnet
+name: nasnet-gnn # A new, clean name for our GNN-ready environment
 
 channels:
-  - pyg
   - pytorch
-  - conda-forge
-  - bioconda
   - nvidia
+  - rdkit
+  - bioconda
   - conda-forge
   - defaults
 
 dependencies:
-  # A modern Python version
+  # --- Core Infrastructure ---
   - python=3.9
   - pip
-
-  # Modern PyTorch stack supporting RTX A6000.
-  # We install a PyTorch 2.x version compatible with CUDA 11.8.
-  - pytorch  # Pinning a specific stable version is good practice
-  - torchvision
-  - torchaudio
-  - pytorch-cuda=11.8
-  - torch-geometric
-
-
-  # --- 生物与化学信息学 ---
-  - rdkit
-  - biopython
-
-  # --- 科学计算与数据处理 ---
-  - numpy
-  - pandas
-  - scipy
-  - scikit-learn
-  - networkx
-  - nivtop
   
+  # --- PyTorch Stack (Golden Combination) ---
+  # We lock the exact versions for maximum stability.
+  - pytorch=2.2.1
+  - torchvision=0.17.1
+  - torchaudio=2.2.1
+  - pytorch-cuda=11.8
+  
+  # --- Key Scientific Libraries (handled by Conda for robust binary builds) ---
+  - numpy=1.26.4 # Explicitly lock numpy to a stable 1.x version
+  - pandas
+  - scikit-learn
+  - rdkit # RDKit is best installed from its own conda channel
+  - biopython
+  - matplotlib
+  - seaborn
+  - tqdm
+  - joblib
+  
+  # --- Project Management & Configuration ---
+  - hydra-core
+  - hydra-joblib-launcher
+  - mlflow
+  
+  # --- Pip dependencies ---
+  # These will be installed by Conda via pip AFTER all conda packages are installed.
+  - pip:
+    # --- PyG Stack ---
+    # We MUST use pip here to install the pre-compiled wheels from PyG's official source,
+    # ensuring perfect compatibility with our PyTorch+CUDA version.
+    - pyg-lib --find-links https://data.pyg.org/whl/torch-2.2.0+cu118.html
+    - torch-scatter --find-links https://data.pyg.org/whl/torch-2.2.0+cu118.html
+    - torch-sparse --find-links https://data.pyg.org/whl/torch-2.2.0+cu118.html
+    - torch-cluster --find-links https://data.pyg.org/whl/torch-2.2.0+cu118.html
+    - torch-spline-conv --find-links https://data.pyg.org/whl/torch-2.2.0+cu118.html
+    - torch-geometric

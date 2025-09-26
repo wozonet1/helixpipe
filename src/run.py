@@ -4,7 +4,7 @@ import research_template as rt
 
 # Import all your core logic building blocks
 # (We need to refactor data_proc.py and main.py into functions)
-from data_proc import process_data
+from nasnet.src.data_processor.main_processor import process_data
 from train import train
 
 

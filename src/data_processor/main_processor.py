@@ -335,7 +335,10 @@ def _generate_and_save_labeled_set(
             mol_degrees = {}
             prot_degrees = {}
             # [MODIFICATION] Popularity is calculated based on ALL positive pairs for a stable distribution
-            for u, v in positive_pairs_normalized_set:
+            for (
+                u,
+                v,
+            ) in positive_pairs_normalized_set:  # TODO: 目前使用全局popular负采样
                 mol_degrees[u] = mol_degrees.get(u, 0) + 1
                 prot_degrees[v] = prot_degrees.get(v, 0) + 1
 
@@ -650,338 +653,352 @@ def process_data(config: DictConfig):
     # ===================================================================
     # --- STAGE 4: Generate Labeled Edges and Full Heterogeneous Graph ---
     # ===================================================================
-    split_config = config.params.split_config
-    split_mode = split_config.mode
-    test_fraction = split_config.test_fraction
+    eval_config = config.training.evaluation
+    split_mode = eval_config.mode
     seed = config.runtime.seed
-
+    test_fraction = config.training.evaluation.test_fraction
     labels_template_key = "processed.link_prediction_labels_template"
     graph_template_key = "processed.typed_edge_list_template"
     train_labels_path = rt.get_path(
-        config, labels_template_key, split_suffix=split_config.train_file_suffix
+        config, labels_template_key, split_suffix=eval_config.train_file_suffix
     )
     test_labels_path = rt.get_path(
-        config, labels_template_key, split_suffix=split_config.test_file_suffix
+        config, labels_template_key, split_suffix=eval_config.test_file_suffix
     )
     print(f"--> Preparing and splitting positive pairs with mode: '{split_mode}'...")
-    if (
-        not (train_labels_path.exists() and test_labels_path.exists())
-        or config.runtime.force_restart
+    print(
+        "--> Labeled train/test files not found or restart forced. Generating new splits..."
+    )
+    positive_pairs_normalized_set = set()
+
+    # Filter the DataFrame for positive labels first
+    positive_interactions_df = full_df[full_df["Y"] == 1].copy()
+
+    # Pre-compute a mapping from raw to canonical SMILES to avoid re-computation
+    raw_smiles_in_pos = positive_interactions_df["SMILES"].dropna().unique()
+    canonical_map = {s: canonicalize_smiles(s) for s in raw_smiles_in_pos}
+    positive_interactions_df["canonical_smiles"] = positive_interactions_df[
+        "SMILES"
+    ].map(canonical_map)
+
+    for _, row in tqdm(
+        positive_interactions_df.iterrows(),
+        total=len(positive_interactions_df),
+        desc="Processing Interaction Pairs",
     ):
-        print(
-            "--> Labeled train/test files not found or restart forced. Generating new splits..."
+        canonical_s, protein = row["canonical_smiles"], row["Protein"]
+        if pd.notna(canonical_s) and canonical_s in dl2index and protein in prot2index:
+            d_idx, p_idx = dl2index[canonical_s], prot2index[protein]
+            normalized_pair = tuple(sorted((d_idx, p_idx)))
+            positive_pairs_normalized_set.add(normalized_pair)
+
+    # Scan interactions from GtoPdb if enabled
+    if data_config["use_gtopdb"]:
+        print("--> Scanning positive interactions from GtoPdb...")
+        gtopdb_edges_df = pd.read_csv(
+            rt.get_path(config, "gtopdb.processed.interactions"),
+            header=None,
+            names=["Sequence", "SMILES", "Affinity"],
         )
-        positive_pairs_normalized_set = set()
-
-        # Filter the DataFrame for positive labels first
-        positive_interactions_df = full_df[full_df["Y"] == 1].copy()
-
-        # Pre-compute a mapping from raw to canonical SMILES to avoid re-computation
-        raw_smiles_in_pos = positive_interactions_df["SMILES"].dropna().unique()
-        canonical_map = {s: canonicalize_smiles(s) for s in raw_smiles_in_pos}
-        positive_interactions_df["canonical_smiles"] = positive_interactions_df[
-            "SMILES"
-        ].map(canonical_map)
-
         for _, row in tqdm(
-            positive_interactions_df.iterrows(),
-            total=len(positive_interactions_df),
-            desc="Processing Interaction Pairs",
+            gtopdb_edges_df.iterrows(),
+            total=len(gtopdb_edges_df),
+            desc="GtoPdb Pairs",
         ):
-            canonical_s, protein = row["canonical_smiles"], row["Protein"]
-            if (
-                pd.notna(canonical_s)
-                and canonical_s in dl2index
-                and protein in prot2index
-            ):
-                d_idx, p_idx = dl2index[canonical_s], prot2index[protein]
-                normalized_pair = tuple(sorted((d_idx, p_idx)))
+            smiles, sequence = row["SMILES"], row["Sequence"]
+            if smiles in dl2index and sequence in prot2index:
+                l_idx, p_idx = dl2index[smiles], prot2index[sequence]
+                normalized_pair = tuple(sorted((l_idx, p_idx)))
                 positive_pairs_normalized_set.add(normalized_pair)
 
-        # Scan interactions from GtoPdb if enabled
-        if data_config["use_gtopdb"]:
-            print("--> Scanning positive interactions from GtoPdb...")
-            gtopdb_edges_df = pd.read_csv(
-                rt.get_path(config, "gtopdb.processed.interactions"),
-                header=None,
-                names=["Sequence", "SMILES", "Affinity"],
+    positive_pairs = list(positive_pairs_normalized_set)
+    print(
+        f"-> Found {len(positive_pairs)} unique, normalized positive pairs after cleaning."
+    )
+    from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
+
+    num_folds = eval_config.k_folds
+    # --- [新增逻辑] 根据 k_folds 的值选择不同的执行路径 ---
+    if num_folds > 1:
+        # --- 路径 A: K-Fold Cross-Validation (k > 1) ---
+        print(f"--- [SETUP] Initializing {num_folds}-Fold Cross-Validation ---")
+        # 1. 确定要进行K-Fold分割的对象 (实体ID 或 交互边)
+        # -------------------------------------------------------------------
+        entities_to_split = None
+        if split_mode in ["drug", "protein"]:
+            print(
+                f"--> Preparing entities for COLD-START split on: {split_mode.upper()}"
             )
-            for _, row in tqdm(
-                gtopdb_edges_df.iterrows(),
-                total=len(gtopdb_edges_df),
-                desc="GtoPdb Pairs",
-            ):
-                smiles, sequence = row["SMILES"], row["Sequence"]
-                if smiles in dl2index and sequence in prot2index:
-                    l_idx, p_idx = dl2index[smiles], prot2index[sequence]
-                    normalized_pair = tuple(sorted((l_idx, p_idx)))
-                    positive_pairs_normalized_set.add(normalized_pair)
+            if split_mode == "drug":
+                entities_to_split = sorted(
+                    list(set([p[0] for p in positive_pairs if p[0] < len(drug2index)]))
+                )
+            else:  # protein
+                entities_to_split = sorted(list(set([p[1] for p in positive_pairs])))
+            print(f"    - Found {len(entities_to_split)} unique entities to split.")
 
-        positive_pairs = list(positive_pairs_normalized_set)
-        print(
-            f"-> Found {len(positive_pairs)} unique, normalized positive pairs after cleaning."
-        )
-        train_positive_pairs = []
-        test_positive_pairs = []
+            # 对于实体级别的冷启动，我们通常使用标准的KFold
+            kf = KFold(n_splits=eval_config.k_folds, shuffle=True, random_state=seed)
+            split_iterator = kf.split(entities_to_split)
 
-        # Ensure the 'random' module is imported for shuffling
-        import random
-
-        random.seed(seed)
-
-        if split_mode == "random":
-            print("    -> Performing random (warm-start) edge split...")
-            from sklearn.model_selection import train_test_split
-
-            train_positive_pairs, test_positive_pairs = train_test_split(
-                positive_pairs, test_size=test_fraction, random_state=seed
+        elif split_mode == "random":
+            print("--> Preparing edges for WARM-START split...")
+            entities_to_split = positive_pairs
+            # 对于warm-start，我们可以直接分割边。为了保持标签比例，使用StratifiedKFold更好
+            # (需要一个虚拟的y标签来进行分层，这里我们用0和1交替)
+            dummy_y = [i % 2 for i in range(len(entities_to_split))]
+            skf = StratifiedKFold(
+                n_splits=eval_config.k_folds, shuffle=True, random_state=seed
             )
+            split_iterator = skf.split(entities_to_split, dummy_y)
 
-        elif split_mode == "drug":
-            print("    -> Performing cold-start split on DRUGS...")
-            # Note: drug IDs are smaller than protein IDs in our indexing scheme
-            drug_ids_in_pairs = sorted(
-                list(set([p[0] for p in positive_pairs if p[0] < len(drug2index)]))
-            )
-
-            num_test_drugs = int(len(drug_ids_in_pairs) * test_fraction)
-            random.shuffle(drug_ids_in_pairs)
-            test_drug_ids = set(drug_ids_in_pairs[:num_test_drugs])
-
-            train_positive_pairs = [
-                p for p in positive_pairs if p[0] not in test_drug_ids
-            ]
-            test_positive_pairs = [p for p in positive_pairs if p[0] in test_drug_ids]
-
-        elif split_mode == "protein":
-            print("    -> Performing cold-start split on PROTEINS...")
-            protein_ids_in_pairs = sorted(list(set([p[1] for p in positive_pairs])))
-
-            num_test_proteins = int(len(protein_ids_in_pairs) * test_fraction)
-            random.shuffle(protein_ids_in_pairs)
-            test_protein_ids = set(protein_ids_in_pairs[:num_test_proteins])
-
-            train_positive_pairs = [
-                p for p in positive_pairs if p[1] not in test_protein_ids
-            ]
-            test_positive_pairs = [
-                p for p in positive_pairs if p[1] in test_protein_ids
-            ]
-
-        elif split_mode == "pair":
-            # This is the most complex split and can be implemented later.
-            # It requires splitting both drugs and proteins simultaneously.
-            print("    -> Cold-start 'pair' split is not implemented yet. Skipping.")
-            # For now, we'll just treat it like a random split to avoid errors
-            from sklearn.model_selection import train_test_split
-
-            train_positive_pairs, test_positive_pairs = train_test_split(
-                positive_pairs, test_size=test_fraction, random_state=seed
-            )
         else:
             raise ValueError(f"Unknown split_mode '{split_mode}' in config.")
+    else:
+        print(
+            f"--- [SETUP] Initializing Single Validation Split (k=1) with test_fraction={test_fraction} ---"
+        )
+        # 在这种模式下，我们不使用 KFold，split_iterator 将是一个只包含一次分割的列表
+        split_iterator = [None]  # 创建一个只循环一次的迭代器
+        entities_to_split = (
+            positive_pairs  # 对于单次分割，我们总是基于所有边来创建训练/测试集
+        )
+
+    # 2. 遍历 K-Fold 的每一次分割，生成并保存对应的数据
+    # -------------------------------------------------------------------
+    # [关键] 这个循环将取代之前的所有分割逻辑
+    for fold_idx, split_result in enumerate(split_iterator, 1):
+        print(
+            f"\n--- [K-FOLD] Generating data for Fold {fold_idx}/{eval_config.k_folds} ---"
+        )
+
+        train_positive_pairs, test_positive_pairs = [], []
+
+        if num_folds > 1:
+            # K-Fold 逻辑 (与之前相同)
+            train_indices, test_indices = split_result
+            if split_mode in ["drug", "protein"]:
+                test_entity_ids = set([entities_to_split[i] for i in test_indices])
+                entity_idx = 0 if split_mode == "drug" else 1
+                train_positive_pairs = [
+                    p for p in positive_pairs if p[entity_idx] not in test_entity_ids
+                ]
+                test_positive_pairs = [
+                    p for p in positive_pairs if p[entity_idx] in test_entity_ids
+                ]
+            else:  # random
+                train_positive_pairs = [entities_to_split[i] for i in train_indices]
+                test_positive_pairs = [entities_to_split[i] for i in test_indices]
+        else:
+            # Single Split 逻辑 (使用 train_test_split)
+            if split_mode in ["drug", "protein"]:
+                # 冷启动的单次分割
+                entity_list = sorted(
+                    list(
+                        set(
+                            [
+                                p[0] if split_mode == "drug" else p[1]
+                                for p in positive_pairs
+                            ]
+                        )
+                    )
+                )
+                train_entities, test_entities = train_test_split(
+                    entity_list,
+                    test_size=config.training.evaluation.test_fraction,
+                    random_state=seed,
+                )
+                test_entity_ids = set(test_entities)
+                entity_idx = 0 if split_mode == "drug" else 1
+                train_positive_pairs = [
+                    p for p in positive_pairs if p[entity_idx] not in test_entity_ids
+                ]
+                test_positive_pairs = [
+                    p for p in positive_pairs if p[entity_idx] in test_entity_ids
+                ]
+            else:  # random
+                # 热启动的单次分割
+                train_positive_pairs, test_positive_pairs = train_test_split(
+                    positive_pairs,
+                    test_size=test_fraction,
+                    random_state=seed,
+                    stratify=[p[1] for p in positive_pairs],
+                )
 
         print(
-            f"--> Split complete: {len(train_positive_pairs)} positive pairs for TRAIN, "
-            f"{len(test_positive_pairs)} positive pairs for TEST."
+            f"    -> Split complete: {len(train_positive_pairs)} TRAIN positives, {len(test_positive_pairs)} TEST positives."
         )
-        # endregion
 
+        # 3. 为当前Fold生成并保存带标签的边集文件 (文件名包含fold_idx)
+        # -------------------------------------------------------------------
+        train_labels_path = rt.get_path(
+            config,
+            labels_template_key,
+            split_suffix=f"_fold{fold_idx}{eval_config.train_file_suffix}",
+        )
         _generate_and_save_labeled_set(
             positive_pairs=train_positive_pairs,
             positive_pairs_normalized_set=positive_pairs_normalized_set,
             dl2index=dl2index,
             prot2index=prot2index,
             config=config,
-            output_path=train_labels_path,  # This path was defined in the cache check block
+            output_path=train_labels_path,
         )
 
+        test_labels_path = rt.get_path(
+            config,
+            labels_template_key,
+            split_suffix=f"_fold{fold_idx}{eval_config.test_file_suffix}",
+        )
         _generate_and_save_labeled_set(
             positive_pairs=test_positive_pairs,
             positive_pairs_normalized_set=positive_pairs_normalized_set,
             dl2index=dl2index,
             prot2index=prot2index,
             config=config,
-            output_path=test_labels_path,  # This path was also defined earlier
+            output_path=test_labels_path,
         )
-        print(
-            f"-> Saved link prediction labels as {train_labels_path} and {test_labels_path}"
-        )
-    else:
-        print("--> Found existing labeled train/test files. Loading from cache...")
-        print("--> Loading TRAINING positive pairs for graph construction...")
-        train_labels_df = pd.read_csv(train_labels_path)
-        train_positive_df = train_labels_df[train_labels_df["label"] == 1]
-        train_positive_pairs = list(
-            zip(train_positive_df["source"], train_positive_df["target"])
-        )
-        print(f"    -> Loaded {len(train_positive_pairs)} training positive pairs.")
+        print(f"    -> Saved labeled edges for Fold {fold_idx} successfully.")
     # endregion
 
     # region sim edges
-    num_folds = split_config.k_folds_cold
+    num_folds = eval_config.k_folds
     for fold_idx in range(1, num_folds + 1):
         # In the future, we would re-split data for each fold here.
         # For now, we just use the single split we've already created.
 
         print(f"\n--- Processing Graph for Fold {fold_idx}/{num_folds} ---")
-        graph_output_path = rt.get_path(config, graph_template_key)
-        sim_restart_flag = config.runtime.get("sim_restart", False)
+        graph_output_path = rt.get_path(
+            config, graph_template_key, split_suffix=str(fold_idx)
+        )
 
-        if not graph_output_path.exists() or restart_flag or sim_restart_flag:
-            if sim_restart_flag:
-                print(
-                    f"\n--- [SIM_RESTART] Re-assembling graph with new settings at {graph_output_path.name} ---"
-                )
-            else:
-                print(
-                    f"\n--- Assembling full heterogeneous graph for TRAINING at {graph_output_path.name} ---"
-                )
-            relations_config = config.relations.flags
-            typed_edges_list = []
-            # coldsplit
-            train_node_ids = set(prot2index.values())
-            if split_mode == "drug":
-                # Get drug IDs from the training positive pairs
-                train_drug_ids = set(
-                    [p[0] for p in train_positive_pairs if p[0] < len(drug2index)]
-                )
-                train_node_ids.update(train_drug_ids)
-            elif split_mode == "protein":
-                # Get protein IDs from the training positive pairs
-                # This is technically redundant but good for clarity
-                train_protein_ids = set([p[1] for p in train_positive_pairs])
-                # The training nodes are all drugs + only the training proteins
-                train_node_ids = set(dl2index.values()).union(train_protein_ids)
-            else:  # 'random' mode
-                # In random split, all nodes are part of the training graph's universe
-                train_node_ids.update(dl2index.values())
+        relations_config = config.relations.flags
+        typed_edges_list = []
+        # coldsplit
+        train_node_ids = set()
+        if split_mode == "drug":
+            train_drug_ids = set([p[0] for p in train_positive_pairs])
+            train_node_ids = (
+                set(prot2index.values())
+                .union(set(ligand2index.values()))
+                .union(train_drug_ids)
+            )
+        elif split_mode == "protein":
+            train_protein_ids = set([p[1] for p in train_positive_pairs])
+            train_node_ids = set(dl2index.values()).union(train_protein_ids)
+        else:  # random
+            train_node_ids = set(dl2index.values()).union(set(prot2index.values()))
+
+        print(
+            f"--> Constructing training graph with a total of {len(train_node_ids)} allowed nodes."
+        )
+
+        # --- Add Interaction Edges based on switches ---
+        dp_added, lp_added = 0, 0
+        # The `positive_pairs` list contains all unique (Molecule_ID, Protein_ID) tuples.
+        for u, v in train_positive_pairs:
+            # We need to re-check the type of the molecule node `u`.
+            is_drug = u < len(drug2index)
+            if is_drug and relations_config.get("dp_interaction", True):
+                typed_edges_list.append([u, v, "drug_protein_interaction"])
+                dp_added += 1
+            elif not is_drug and relations_config.get("lp_interaction", True):
+                typed_edges_list.append([u, v, "ligand_protein_interaction"])
+                lp_added += 1
+        print(
+            f"--> Added {dp_added} DP and {lp_added} LP interactions based on config."
+        )
+
+        # --- Conditionally add PP similarity edges ---
+        if relations_config.get("pp_similarity", True):
+            print("--> Adding Protein-Protein similarity edges...")
+            prot_start_index = len(drug2index) + len(ligand2index)
+            p_sim_threshold = params_config["protein_similarity_threshold"]
+            max_pp_edges_to_sample = params_config.get("max_pp_edges", -1)
+
+            p_rows, p_cols = np.where(prot_similarity_matrix > p_sim_threshold)
+            potential_edges = [(i, j) for i, j in zip(p_rows, p_cols) if i < j]
 
             print(
-                f"--> Constructing training graph with a total of {len(train_node_ids)} allowed nodes."
+                f"    - Found {len(potential_edges)} potential P-P edges with similarity > {p_sim_threshold}."
             )
 
-            # --- Add Interaction Edges based on switches ---
-            dp_added, lp_added = 0, 0
-            # The `positive_pairs` list contains all unique (Molecule_ID, Protein_ID) tuples.
-            for u, v in train_positive_pairs:
-                # We need to re-check the type of the molecule node `u`.
-                is_drug = u < len(drug2index)
-                if is_drug and relations_config.get("dp_interaction", True):
-                    typed_edges_list.append([u, v, "drug_protein_interaction"])
-                    dp_added += 1
-                elif not is_drug and relations_config.get("lp_interaction", True):
-                    typed_edges_list.append([u, v, "ligand_protein_interaction"])
-                    lp_added += 1
-            print(
-                f"--> Added {dp_added} DP and {lp_added} LP interactions based on config."
-            )
-
-            # --- Conditionally add PP similarity edges ---
-            if relations_config.get("pp_similarity", True):
-                print("--> Adding Protein-Protein similarity edges...")
-                prot_start_index = len(drug2index) + len(ligand2index)
-                p_sim_threshold = params_config["protein_similarity_threshold"]
-                max_pp_edges_to_sample = params_config.get("max_pp_edges", -1)
-
-                p_rows, p_cols = np.where(prot_similarity_matrix > p_sim_threshold)
-                potential_edges = [(i, j) for i, j in zip(p_rows, p_cols) if i < j]
-
-                print(
-                    f"    - Found {len(potential_edges)} potential P-P edges with similarity > {p_sim_threshold}."
-                )
-
-                final_pp_edges_indices = potential_edges
-                if max_pp_edges_to_sample and 0 < max_pp_edges_to_sample < len(
-                    potential_edges
-                ):
-                    print(
-                        f"    - Sampling {max_pp_edges_to_sample} edges from the potential pool..."
-                    )
-                    sampled_indices = random.sample(
-                        range(len(potential_edges)), max_pp_edges_to_sample
-                    )
-                    final_pp_edges_indices = [
-                        potential_edges[i] for i in sampled_indices
-                    ]
-
-                for i, j in final_pp_edges_indices:
-                    # Convert local protein indices to global IDs
-                    global_id_i = i + prot_start_index
-                    global_id_j = j + prot_start_index
-
-                    # [CRITICAL FILTER] Only add the edge if BOTH nodes are in the training set
-                    if global_id_i in train_node_ids and global_id_j in train_node_ids:
-                        typed_edges_list.append(
-                            [global_id_i, global_id_j, "protein_protein_similarity"]
-                        )
-
-                print(
-                    f"    - Added {len(final_pp_edges_indices)} P-P edges to the graph."
-                )
-
-            # --- Conditionally add Molecule similarity edges ---
-            dd_added, dl_added, ll_added = 0, 0, 0
-            if any(
-                [
-                    relations_config.get(k)
-                    for k in ["dd_similarity", "dl_similarity", "ll_similarity"]
-                ]
+            final_pp_edges_indices = potential_edges
+            if max_pp_edges_to_sample and 0 < max_pp_edges_to_sample < len(
+                potential_edges
             ):
-                print("--> Adding Molecule similarity edges...")
-                mol_rows, mol_cols = np.where(
-                    dl_similarity_matrix
-                    > params_config["molecule_similarity_threshold"]
-                )
-                id_to_type_map = {idx: "drug" for idx in drug2index.values()}
-                id_to_type_map.update({idx: "ligand" for idx in ligand2index.values()})
-
-                for i, j in zip(mol_rows, mol_cols):
-                    if i < j and i in train_node_ids and j in train_node_ids:
-                        type1, type2 = id_to_type_map[i], id_to_type_map[j]
-
-                        if (
-                            type1 == "drug"
-                            and type2 == "drug"
-                            and relations_config.get("dd_similarity", True)
-                        ):
-                            typed_edges_list.append([i, j, "drug_drug_similarity"])
-                            dd_added += 1
-                        elif (
-                            type1 == "ligand"
-                            and type2 == "ligand"
-                            and relations_config.get("ll_similarity", True)
-                        ):
-                            typed_edges_list.append([i, j, "ligand_ligand_similarity"])
-                            ll_added += 1
-                        elif type1 != type2 and relations_config.get(
-                            "dl_similarity", True
-                        ):
-                            u, v = (i, j) if type1 == "drug" else (j, i)
-                            typed_edges_list.append([u, v, "drug_ligand_similarity"])
-                            dl_added += 1
                 print(
-                    f"    - Added {dd_added} D-D, {dl_added} D-L, and {ll_added} L-L edges based on config."
+                    f"    - Sampling {max_pp_edges_to_sample} edges from the potential pool..."
                 )
-            # endregion
-            # --- Finalize and Save using the dynamic path ---
-            print(f"\n--> Saving final graph structure to: {graph_output_path}")
-            rt.ensure_path_exists(graph_output_path)
+                sampled_indices = random.sample(
+                    range(len(potential_edges)), max_pp_edges_to_sample
+                )
+                final_pp_edges_indices = [potential_edges[i] for i in sampled_indices]
 
-            typed_edges_df = pd.DataFrame(
-                typed_edges_list, columns=["source", "target", "edge_type"]
+            for i, j in final_pp_edges_indices:
+                # Convert local protein indices to global IDs
+                global_id_i = i + prot_start_index
+                global_id_j = j + prot_start_index
+
+                # [CRITICAL FILTER] Only add the edge if BOTH nodes are in the training set
+                if global_id_i in train_node_ids and global_id_j in train_node_ids:
+                    typed_edges_list.append(
+                        [global_id_i, global_id_j, "protein_protein_similarity"]
+                    )
+
+            print(f"    - Added {len(final_pp_edges_indices)} P-P edges to the graph.")
+
+        # --- Conditionally add Molecule similarity edges ---
+        dd_added, dl_added, ll_added = 0, 0, 0
+        if any(
+            [
+                relations_config.get(k)
+                for k in ["dd_similarity", "dl_similarity", "ll_similarity"]
+            ]
+        ):
+            print("--> Adding Molecule similarity edges...")
+            mol_rows, mol_cols = np.where(
+                dl_similarity_matrix > params_config["molecule_similarity_threshold"]
             )
-            typed_edges_df.to_csv(graph_output_path, index=False, header=True)
+            id_to_type_map = {idx: "drug" for idx in drug2index.values()}
+            id_to_type_map.update({idx: "ligand" for idx in ligand2index.values()})
 
+            for i, j in zip(mol_rows, mol_cols):
+                if i < j and i in train_node_ids and j in train_node_ids:
+                    type1, type2 = id_to_type_map[i], id_to_type_map[j]
+
+                    if (
+                        type1 == "drug"
+                        and type2 == "drug"
+                        and relations_config.get("dd_similarity", True)
+                    ):
+                        typed_edges_list.append([i, j, "drug_drug_similarity"])
+                        dd_added += 1
+                    elif (
+                        type1 == "ligand"
+                        and type2 == "ligand"
+                        and relations_config.get("ll_similarity", True)
+                    ):
+                        typed_edges_list.append([i, j, "ligand_ligand_similarity"])
+                        ll_added += 1
+                    elif type1 != type2 and relations_config.get("dl_similarity", True):
+                        u, v = (i, j) if type1 == "drug" else (j, i)
+                        typed_edges_list.append([u, v, "drug_ligand_similarity"])
+                        dl_added += 1
             print(
-                f"-> Total edges in the final heterogeneous graph: {len(typed_edges_df)}"
+                f"    - Added {dd_added} D-D, {dl_added} D-L, and {ll_added} L-L edges based on config."
             )
+        # endregion
+        # --- Finalize and Save using the dynamic path ---
+        print(f"\n--> Saving final graph structure to: {graph_output_path}")
+        rt.ensure_path_exists(graph_output_path)
 
-        else:
-            print(
-                f"\n--> Found existing training graph file for Fold {fold_idx}. Skipping construction."
-            )
-            print(f"    - Existing file: {graph_output_path.name}")
+        typed_edges_df = pd.DataFrame(
+            typed_edges_list, columns=["source", "target", "edge_type"]
+        )
+        typed_edges_df.to_csv(graph_output_path, index=False, header=True)
+
+        print(f"-> Total edges in the final heterogeneous graph: {len(typed_edges_df)}")
 
     # This is the final print of the script
     print("\nData processing pipeline finished successfully!")

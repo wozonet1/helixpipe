@@ -1,0 +1,9 @@
+name: "homo-colddrug"
+paradigm: "two_stage" # Or can be inferred. Let's keep it simple for now.
+
+evaluation:
+    mode: "drug"
+    test_fraction: 0.2
+    k_folds: 1
+    train_file_suffix: "_train"
+    test_file_suffix: "_test"

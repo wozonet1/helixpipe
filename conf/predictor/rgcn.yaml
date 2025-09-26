@@ -1,0 +1,8 @@
+name: rgcn
+params: 
+  _target_: predictors.rgcn_link_predictor.RGCNLinkPredictor
+  # --- 模型超参数 ---
+  hidden_channels: 128
+  out_channels: 64
+  num_layers: 2
+  dropout: 0.5

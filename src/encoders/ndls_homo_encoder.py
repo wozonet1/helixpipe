@@ -172,4 +172,4 @@ class NDLS_Homo_Encoder:
             raise RuntimeError(
                 "Embeddings have not been computed yet. Please call .fit() first."
             )
-        return self.embeddings
+        return self.embeddings.values

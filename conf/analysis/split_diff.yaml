@@ -1,0 +1,7 @@
+
+# 你可以在这里添加未来可能需要的、此脚本专属的参数
+plot_settings:
+  width: 12
+  height: 8
+  palette: "viridis"
+  

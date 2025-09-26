@@ -5,10 +5,3 @@ molecule_similarity_threshold: 0.988 # Used for D-D, L-L
 drug_ligand_similarity_threshold: 0.7 # A separate, more lenient threshold
 gtopdb_max_affinity_nM: 10000
 negative_sampling_strategy: "popular" # Options: "uniform", "popular"
-cold_start: 'drug'
-split_config:
-    mode: 'random'
-    test_fraction: 0.2
-    k_folds_cold: 1
-    train_file_suffix: "_train"
-    test_file_suffix: "_test"

@@ -2,9 +2,11 @@
 defaults:
   - data: DrugBank # Default dataset to use
   - encoder: ndls_homo
-  - predictor: gbdt
+  - predictor: rgcn
   - relations: DP_sim
   - params: default
+  - training: rgcn-colddrug
+  - analysis: split_diff # [核心新增] 添加这一行
   - _self_  # This line is important, it tells Hydra to also load the rest of this file.
 
 
@@ -26,7 +28,7 @@ data:
           dd_similarity: dd
           dl_similarity: dl
           ll_similarity: ll
-        link_prediction_labels: "dl_p_edges{split_suffix}.csv"
+        link_prediction_labels_template: "dl_p_edges{split_suffix}.csv"
         nodes_metadata: "nodes.csv"
         node_features: "features.csv"
         similarity_matrices:
@@ -45,16 +47,13 @@ data:
         ligands: "gtopdb_ligands.csv"
         proteins: "gtopdb_proteins.csv"
         interactions: "gtopdb_p-l_edges.csv"
+
 # --- 2. Global Parameters (that don't belong to a specific component) ---
 # These are mostly parameters for data processing and evaluation
 training:
-  paradigm: "two_stage" # Or can be inferred. Let's keep it simple for now.
-  warm_start_cv:
-    k_folds: 10
-  cold_start_eval:
-    # This block is now a placeholder for future cold-start specific eval params.
-    # The main logic is driven by the 'params.split_config' block.
-    enabled: true 
+    learning_rate: 0.1
+    epochs: 200
+    batch_size: 32
 
 runtime:
   seed: 514
@@ -64,6 +63,14 @@ runtime:
   sim_restart: false
 
 mlflow:
-  tracking_uri: "mlruns"
+  tracking_uri: "logs/mlruns" #TODO: logs
   experiment_name: "DTI_Prediction_Hydra_on_${data.primary_dataset}"
 
+hydra:
+  run:
+    dir: logs/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S} #相当于前面自动有${hydra.runtime.cwd}
+
+  # 您也可以在这里配置 multirun 的输出目录
+  sweep:
+    dir: logs/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num} # 每个子任务的文件夹名
