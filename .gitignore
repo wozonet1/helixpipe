@@ -11,3 +11,4 @@ data/
 mlruns/
 .idea/
 multirun/
+*.txt
