@@ -1,0 +1,232 @@
+
+# 你可以在这里添加未来可能需要的、此脚本专属的参数
+plot_settings:
+  width: 12
+  height: 8
+  palette: "viridis"
+  
+defaults:
+  - data: DrugBank # Default dataset to use
+  - encoder: ndls_homo
+  - predictor: rgcn
+  - relations: DP_sim
+  - params: default
+  - training: rgcn-colddrug
+  - analysis: split_diff # [核心新增] 添加这一行
+  - _self_  # This line is important, it tells Hydra to also load the rest of this file.
+
+
+
+data:
+  subfolders:
+    raw: "raw"
+    processed: "processed"
+  use_gtopdb: false
+  files:
+    raw:
+      dti_interactions: "full.csv"
+    processed:
+        typed_edge_list_template: "typed_edges-{relations_suffix}.csv"
+        abbr: 
+          dp_interaction: dp
+          lp_interaction: lp
+          pp_similarity: pp
+          dd_similarity: dd
+          dl_similarity: dl
+          ll_similarity: ll
+        link_prediction_labels_template: "dl_p_edges{split_suffix}.csv"
+        nodes_metadata: "nodes.csv"
+        node_features: "features.csv"
+        similarity_matrices:
+          molecule: "sim_matrixes/dl_similarity_matrix.pkl"
+          protein: "sim_matrixes/prot_similarity_matrix.pkl"
+        indexes:
+          drug: "indexes/drug2index.pkl"
+          ligand: "indexes/ligand2index.pkl"
+          protein: "indexes/prot2index.pkl"
+    gtopdb:
+      raw:
+        interactions: "interactions.csv"
+        ligands: "ligands.csv"
+        targets: "targets_and_families.csv"
+      processed:
+        ligands: "gtopdb_ligands.csv"
+        proteins: "gtopdb_proteins.csv"
+        interactions: "gtopdb_p-l_edges.csv"
+
+# --- 2. Global Parameters (that don't belong to a specific component) ---
+# These are mostly parameters for data processing and evaluation
+training:
+    learning_rate: 0.01
+    epochs: 200
+    batch_size: 32
+
+runtime:
+  seed: 514
+  cpus: 100
+  gpu: "cuda:1"
+  force_restart: false
+  sim_restart: false
+
+mlflow:
+  tracking_uri: "logs/mlruns" #TODO: logs
+  experiment_name: "DTI_Prediction_Hydra_on_${data.primary_dataset}"
+
+hydra:
+  run:
+    dir: logs/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S} #相当于前面自动有${hydra.runtime.cwd}
+
+  # 您也可以在这里配置 multirun 的输出目录
+  sweep:
+    dir: logs/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num} # 每个子任务的文件夹名# Configuration specific to the 'DrugBank' dataset
+name: DrugBank
+root: "data"
+primary_dataset: "DrugBank"
+# conf/dataset/drugbank_legacy.yaml
+
+primary_dataset: DrugBank_Legacy # This will be the subfolder name in data/
+legacy_mode: true
+name: DrugBank_Legacy
+root: "data"
+# We add paths to the legacy files here, so our code remains clean
+# This makes our config the single source of truth for file names
+files:
+  raw:
+    all_nodes: "Allnode_DrPr.csv"
+    all_node_attributes: "AllNodeAttribute_DrPr.csv"
+    all_edges_combined: "drug_prot_edge.csv"
+    positive_interactions: "DrPrNum_DrPr.csv"
+    all_negative_samples: "AllNegative_DrPr.csv"
+    num_info: "num.pkl"# Configuration specific to the 'davis' dataset
+name: biosnap
+root: data
+primary_dataset: "biosnap"
+# Configuration specific to the 'davis' dataset
+name: davis
+root: "data"
+primary_dataset: "davis"
+# Hyperparameters for the ndls_homo encoder
+name: ndls_homo
+smoothing_mode: 'lookup'
+smoothing_alpha: 0.15
+k1: 200
+epsilon1: 0.03
+refiner:
+  # To enable the refiner, set 'enabled' to true.
+  enabled: false  # <--- The master switch! Set to false to disable.
+
+  # Hyperparameters for the DNN refiner module
+  hidden_channels: 64
+  out_channels: 64
+  dropout: 0.8# conf/experiment/data_ablation_parallel.yaml
+# This experiment is designed to run different data source combinations in parallel.
+
+defaults:
+  - _self_
+  - dataset: davis        # Specify the dataset for this experiment series
+  - data: default         # Start with the baseline data config
+  - encoder: ndls_homo
+  - predictor: gbdt
+  - relations: DP_sim     # Choose a default relation for this sweep
+  
+  # --- 核心指令：告诉Hydra使用Joblib启动器 ---
+  - override hydra/launcher: joblib
+
+# 全局Hydra设置
+hydra:
+  # 对joblib启动器进行精细化配置
+  launcher:
+    joblib:
+      # -1 表示使用所有可用的CPU核心。
+      # 您的服务器有80核，可以设置为 80，或者-1让它自动决定。
+      # 设置为-2表示使用除一个核心外的所有核心，这通常是个好主意，可以避免服务器卡死。
+      n_jobs: 100
+
+# 实验系列的其他元数据
+# ...name: default
+
+# --- [核心修改] 创建一个专门的 'similarity_thresholds' 配置块 ---
+similarity_thresholds:
+  protein_protein: 0.8  # 对应 protein_protein_similarity
+  drug_drug: 0.988      # 对应 drug_drug_similarity
+  ligand_ligand: 0.988  # 对应 ligand_ligand_similarity, 复用同一个严格阈值
+  drug_ligand: 0.7      # 对应 drug_ligand_similarity, 使用一个更宽松的阈值
+
+# --- 其他参数保持不变 ---
+max_pp_edges: 500
+gtopdb_max_affinity_nM: 10000
+negative_sampling_strategy: "popular"
+name: gbdt
+params:
+  n_estimators: 500
+  max_depth: 7
+  # Training hyperparameters
+  learning_rate: 0.1
+  subsample: 1.0
+name: rgcn
+params: 
+  _target_: predictors.rgcn_link_predictor.RGCNLinkPredictor
+  # --- 模型超参数 ---
+  hidden_channels: 128
+  out_channels: 64
+  num_layers: 2
+  dropout: 0.5# This component defines the 'pure_interactions' configuration
+name: DPL_no_sim
+flags:
+      dp_interaction: true
+      lp_interaction: true
+      pp_similarity: false
+      dd_similarity: false
+      dl_similarity: false
+      ll_similarity: false#仅仅开启dl与一般的interaction,用来说明dl边价值
+name: DPL_only_dl
+
+flags:
+      dp_interaction: true
+      lp_interaction: true
+      pp_similarity: false
+      dd_similarity: false
+      dl_similarity: true
+      ll_similarity: falsename: DPL_sim
+
+flags:
+      dp_interaction: true
+      lp_interaction: true
+      pp_similarity: true
+      dd_similarity: true
+      dl_similarity: true
+      ll_similarity: truename: DP_no_sim
+flags:
+        dp_interaction: true
+        lp_interaction: false
+        pp_similarity: false
+        dd_similarity: false
+        dl_similarity: false
+        ll_similarity: false# This component defines the 'pure_interactions' configuration
+name: DP_sim
+
+flags:
+      dp_interaction: true
+      lp_interaction: false
+      pp_similarity: true
+      dd_similarity: true
+      dl_similarity: false
+      ll_similarity: falsename: "homo-colddrug"
+paradigm: "two_stage" # Or can be inferred. Let's keep it simple for now.
+
+evaluation:
+    mode: "drug"
+    test_fraction: 0.2
+    k_folds: 1
+    train_file_suffix: "_train"
+    test_file_suffix: "_test"name: "rgcn-colddrug"
+paradigm: "end_to_end" # Or can be inferred. Let's keep it simple for now.
+
+evaluation:
+    mode: "drug"
+    test_fraction: 0.2
+    supervision_ratio: 0.2
+    k_folds: 1
+    train_file_suffix: "_train"
+    test_file_suffix: "_test"

@@ -2,7 +2,7 @@
 
 import pandas as pd
 import torch
-from torch_geometric.data import HeteroData, Data
+from torch_geometric.data import HeteroData
 from omegaconf import DictConfig
 import torch_geometric.transforms as T
 
