@@ -61,6 +61,8 @@ runtime:
   gpu: "cuda:1"
   force_restart: false
   sim_restart: false
+  debug: true
+
 
 mlflow:
   tracking_uri: "logs/mlruns" #TODO: logs

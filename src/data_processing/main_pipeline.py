@@ -420,7 +420,6 @@ def _process_all_folds(
         )
 
         # --- B. 处理这一折的所有后续工作 ---
-        # 调用负责“内部再分割、保存标签、构建图”的函数
         _process_single_fold(
             fold_idx=fold_idx,
             train_positive_pairs=train_positive_pairs,
@@ -542,53 +541,29 @@ def _process_single_fold(
     """
     一个负责【处理单折所有后续工作】的函数。
 
-    它接收分割好的训练/测试正样本对，然后执行：
-    1. 对训练集进行内部的“背景/监督”二次分割。
-    2. 为“监督集”和“测试集”生成并保存带标签的CSV文件。
-    3. 使用“背景集”和相似性矩阵，构建并保存训练图谱。
     """
     print(
         f"    -> Fold {fold_idx}: Received {len(train_positive_pairs)} train and {len(test_positive_pairs)} test positives."
     )
 
-    # --- 1. 对训练集，进行第二次“内部”分割 (Inductive Link Prediction) ---
-    supervision_ratio = config.params.get("supervision_ratio", 0.2)
-
-    # 确保即使训练集很小，也能分出至少一个监督样本
-    if len(train_positive_pairs) > 1:
-        train_graph_edges, train_supervision_edges = train_test_split(
-            train_positive_pairs,
-            test_size=supervision_ratio,
-            random_state=config.runtime.seed,
-        )
-    else:  # 如果训练集只有一个样本，则无法分割
-        train_graph_edges = train_positive_pairs
-        train_supervision_edges = []  # 没有监督边，模型将只从重构损失中学习
-        print("    -> WARNING: Too few training samples to create a supervision set.")
-
-    print(
-        f"    -> Internal split: {len(train_graph_edges)} edges for graph topology, "
-        f"{len(train_supervision_edges)} edges for supervision."
-    )
-
-    # --- 2. 为【监督边】和【测试边】生成并保存带标签的文件 ---
     labels_template_key = "processed.link_prediction_labels_template"
     eval_config = config.training.evaluation
 
-    # a. 训练标签文件 (基于监督边)
+    # a. 训练标签文件
     train_labels_path = rt.get_path(
         config,
         labels_template_key,
         split_suffix=f"_fold{fold_idx}{eval_config.train_file_suffix}",
     )
-    _generate_and_save_labeled_set(
-        positive_pairs=train_supervision_edges,
-        positive_pairs_normalized_set=positive_pairs_normalized_set,
-        dl2index=dl2index,
-        prot2index=prot2index,
-        config=config,
-        output_path=train_labels_path,
+    print(
+        f"    -> Saving {len(train_positive_pairs)} positive pairs for supervision to: {train_labels_path.name}..."
     )
+    #    直接将正样本列表转换为DataFrame,不需要采样负样本
+    #    我们不再需要 'label' 列，因为LinkNeighborLoader知道我们给它的都是正样本。
+    pos_df = pd.DataFrame(train_positive_pairs, columns=["source", "target"])
+    # 2. 确保路径存在并保存
+    rt.ensure_path_exists(train_labels_path)
+    pos_df.to_csv(train_labels_path, index=False, header=True)
 
     # b. 测试标签文件 (基于测试边)
     test_labels_path = rt.get_path(
@@ -596,7 +571,8 @@ def _process_single_fold(
         labels_template_key,
         split_suffix=f"_fold{fold_idx}{eval_config.test_file_suffix}",
     )
-    _generate_and_save_labeled_set(
+    # 测试集需要负采样
+    _generate_and_save_labeled_set_for_test(
         positive_pairs=test_positive_pairs,
         positive_pairs_normalized_set=positive_pairs_normalized_set,
         dl2index=dl2index,
@@ -609,7 +585,7 @@ def _process_single_fold(
     # --- 3. 使用【背景边】和【相似性矩阵】，构建并保存训练图谱 ---
     _build_graph_for_fold(
         fold_idx=fold_idx,
-        train_graph_edges=train_graph_edges,  # <-- 使用分割出的背景边
+        train_positive_pairs=train_positive_pairs,  # <-- 使用分割出的背景边
         config=config,
         drug2index=drug2index,
         ligand2index=ligand2index,
@@ -620,7 +596,7 @@ def _process_single_fold(
     )
 
 
-def _generate_and_save_labeled_set(
+def _generate_and_save_labeled_set_for_test(
     positive_pairs: list,
     positive_pairs_normalized_set: set,
     dl2index: dict,
@@ -652,7 +628,7 @@ def _generate_and_save_labeled_set(
             for (
                 u,
                 v,
-            ) in positive_pairs_normalized_set:  # TODO: 目前使用全局popular负采样
+            ) in positive_pairs_normalized_set:
                 mol_degrees[u] = mol_degrees.get(u, 0) + 1
                 prot_degrees[v] = prot_degrees.get(v, 0) + 1
 
@@ -704,7 +680,7 @@ def _generate_and_save_labeled_set(
 
 def _build_graph_for_fold(
     fold_idx: int,
-    train_graph_edges: list,  # <-- [关键] 现在接收的是“背景知识”交互边
+    train_positive_pairs: list,
     config: DictConfig,
     drug2index: dict,
     ligand2index: dict,
@@ -721,42 +697,16 @@ def _build_graph_for_fold(
     2. 所有与训练集节点相关的“背景知识”相似性边。
     它【绝对不会】包含任何将用于【监督】的交互边。
     """
-    print(f"\n--- [GRAPH] Building training graph for Fold {fold_idx}... ---")
-
-    eval_config = config.training.evaluation
-    split_mode = eval_config.mode
+    print(f"\n--- [GRAPH] Building FULL training graph for Fold {fold_idx}... ---")
     relations_config = config.relations.flags
     graph_template_key = "processed.typed_edge_list_template"
-
-    # --- 1. 定义当前Fold的训练节点 ---
-    # 这个定义现在是基于传入的 train_graph_edges，因为它们定义了图的“骨架”
-    train_node_ids = set()
-    if split_mode == "drug":
-        # 在药物冷启动中，训练节点 = 所有蛋白 + 所有配体 + 【只在背景知识中出现的】药物
-        train_drug_ids = set([p[0] for p in train_graph_edges])
-        train_node_ids = (
-            set(prot2index.values())
-            .union(set(ligand2index.values()))
-            .union(train_drug_ids)
-        )
-    elif split_mode == "protein":
-        # 在蛋白冷启动中，训练节点 = 所有药物 + 所有配体 + 【只在背景知识中出现的】蛋白
-        train_protein_ids = set([p[1] for p in train_graph_edges])
-        train_node_ids = set(dl2index.values()).union(train_protein_ids)
-    else:  # random (热启动)
-        # 在热启动中，所有节点都可以被认为是训练节点
-        train_node_ids = set(dl2index.values()).union(set(prot2index.values()))
-
-    print(
-        f"    -> This training graph will be built upon {len(train_node_ids)} allowed nodes."
-    )
 
     typed_edges_list = []
 
     # --- 2. [核心修改] 将“背景知识交互边”加入图谱 ---
     dp_added_as_background = 0
     lp_added_as_background = 0
-    for u, v in train_graph_edges:
+    for u, v in train_positive_pairs:
         is_drug = u < len(drug2index)
         if is_drug:
             if relations_config.get("dp_interaction", True):
@@ -768,7 +718,7 @@ def _build_graph_for_fold(
                 lp_added_as_background += 1
 
     print(
-        f"    -> Added {dp_added_as_background} D-P and {lp_added_as_background} L-P interactions as background knowledge."
+        f"    -> Added {dp_added_as_background} D-P and {lp_added_as_background} L-P interactions."
     )
 
     # --- 3. 添加相似性边 (这部分现在是增量，而不是全部) ---
@@ -782,7 +732,6 @@ def _build_graph_for_fold(
     _add_similarity_edges(
         typed_edges_list=typed_edges_list,
         sim_matrix=prot_sim_matrix,
-        train_node_ids=train_node_ids,
         id_to_type_map=prot_local_id_to_type,
         relation_rules=prot_relation_rules,
         config=config,
@@ -806,7 +755,6 @@ def _build_graph_for_fold(
     _add_similarity_edges(
         typed_edges_list=typed_edges_list,
         sim_matrix=dl_sim_matrix,
-        train_node_ids=train_node_ids,
         id_to_type_map=mol_local_id_to_type,
         relation_rules=mol_relation_rules,
         config=config,
@@ -832,7 +780,6 @@ def _build_graph_for_fold(
 def _add_similarity_edges(
     typed_edges_list: list,
     sim_matrix: np.ndarray,
-    train_node_ids: set,
     id_to_type_map: dict,
     relation_rules: dict,
     config: DictConfig,
@@ -879,10 +826,6 @@ def _add_similarity_edges(
                 continue
             global_id_i = i + id_offset
             global_id_j = j + id_offset
-
-            # [关键] 过滤步骤现在使用全局ID
-            if global_id_i not in train_node_ids or global_id_j not in train_node_ids:
-                continue
 
             # 查询类型（现在使用局部索引）
             type1 = id_to_type_map.get(i)
