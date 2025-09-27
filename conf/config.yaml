@@ -4,7 +4,7 @@ defaults:
   - predictor: rgcn
   - relations: DP_sim
   - params: default
-  - training: rgcn-colddrug
+  - training: rgcn-random
   - analysis: split_diff # [核心新增] 添加这一行
   - _self_  # This line is important, it tells Hydra to also load the rest of this file.
 
@@ -40,6 +40,9 @@ data:
           drug: "indexes/drug2index.pkl"
           ligand: "indexes/ligand2index.pkl"
           protein: "indexes/prot2index.pkl"
+        suffix:
+          train: "_train"
+          test: "_test"
     gtopdb:
       raw:
         interactions: "interactions.csv"
@@ -63,26 +66,26 @@ data:
 # --- 2. Global Parameters (that don't belong to a specific component) ---
 # These are mostly parameters for data processing and evaluation
 training:
-    learning_rate: 0.001
-    epochs: 200
-    batch_size: 128
-    validate_every_n_epochs: 10
-    trian_loader_cpus: 16
-    test_loader_cpus: 8
+    learning_rate: 0.005
+    epochs: 150
+    batch_size: 2048
     negative_sampling_ratio: 1
+    weight_decay: 1e-5
 
 runtime:
   seed: 514
   cpus: 100
-  gpu: "cuda:1"
+  gpu: "cuda:2"
   force_restart: false
   sim_restart: false
   debug: true
-
+  trian_loader_cpus: 16
+  test_loader_cpus: 8
+  validate_every_n_epochs: 10
 
 mlflow:
-  tracking_uri: "logs/mlruns" #TODO: logs
-  experiment_name: "DTI_Prediction_Hydra_on_${data.primary_dataset}"
+  tracking_uri: "logs/mlruns" 
+  experiment_name: "Het-DTI_Prediction_Hydra_on_${data.primary_dataset}"
 
 hydra:
   run:

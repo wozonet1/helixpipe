@@ -48,6 +48,7 @@ def evaluate(
     else:
         auc = roc_auc_score(labels, preds)
         aupr = average_precision_score(labels, preds)
+        print(f"Evaluation Results - AUC: {auc:.4f}, AUPR: {aupr:.4f}")
         return auc, aupr
 
 
@@ -59,6 +60,7 @@ def run_end_to_end_workflow(
     test_labels: torch.Tensor,
     device: torch.device,
     tracker: rt.MLflowTracker,
+    fold_idx: int,
 ):
     """
     【新版】执行端到端工作流。
@@ -74,7 +76,12 @@ def run_end_to_end_workflow(
     # --- 1. 模型实例化 ---
     # 我们继续使用手动实例化，因为它最清晰、最可控
     print("--> Instantiating model...")
+    in_channels_dict = {
+        node_type: hetero_graph[node_type].x.shape[1]
+        for node_type in hetero_graph.node_types
+    }
     model = RGCNLinkPredictor(
+        in_channels_dict=in_channels_dict,
         hidden_channels=config.predictor.params.hidden_channels,
         out_channels=config.predictor.params.out_channels,
         num_layers=config.predictor.params.num_layers,
@@ -82,7 +89,11 @@ def run_end_to_end_workflow(
         metadata=hetero_graph.metadata(),
     ).to(device)
     print("--> Model instantiation successful!")
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.training.learning_rate)
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=config.training.learning_rate,
+        weight_decay=config.training.weight_decay,
+    )
 
     # --- 2. 实例化数据加载器 ---
     print("--> Initializing LinkNeighborLoader in single-process mode...")
@@ -93,7 +104,7 @@ def run_end_to_end_workflow(
         batch_size=config.training.get("batch_size", 512),  # TODO:确定合适
         shuffle=True,
         neg_sampling_ratio=1.0,
-        num_workers=config.training.get("trian_loader_cpus", 8),
+        num_workers=config.runtime.get("trian_loader_cpus", 8),
     )
     test_loader = LinkNeighborLoader(
         data=hetero_graph,
@@ -106,14 +117,14 @@ def run_end_to_end_workflow(
         batch_size=config.training.get("batch_size", 512),
         shuffle=False,
         neg_sampling_ratio=0.0,
-        num_workers=config.training.get("test_loader_cpus", 4),
+        num_workers=config.runtime.get("test_loader_cpus", 4),
     )
     # --- 6. 训练循环 ---
     print("--> Starting mini-batch model training...")
     best_val_aupr = 0
     best_epoch_results = {}
     epoch_pbar = tqdm(range(config.training.epochs), desc="Starting Training")
-    validation_freq = config.training.get("validate_every_n_epochs", 10)
+    validation_freq = config.runtime.get("validate_every_n_epochs", 10)
     for epoch in epoch_pbar:
         model.train()
         total_loss = 0
@@ -132,14 +143,16 @@ def run_end_to_end_workflow(
 
             total_loss += loss.item() * scores.size(0)
         avg_loss = total_loss / len(train_loader.dataset)
-        tracker.log_training_metric(epoch=epoch, loss=avg_loss)
+        tracker.log_training_metric(epoch=epoch, loss=avg_loss, fold_idx=fold_idx)
         epoch_pbar.set_description(f"Epoch {epoch:03d} | Avg Loss: {avg_loss:.4f}")
 
         # --- 7. 评估 ---
         if (epoch + 1) % validation_freq == 0:
             # 调用我们新建的评估函数
             val_auc, val_aupr = evaluate(model, test_loader, device, target_edge_type)
-            tracker.log_validation_metrics(epoch=epoch, auc=val_auc, aupr=val_aupr)
+            tracker.log_validation_metrics(
+                epoch=epoch, auc=val_auc, aupr=val_aupr, fold_idx=fold_idx
+            )
             # 更新进度条，现在包含验证集分数
             epoch_pbar.set_description(
                 f"Epoch {epoch:03d} | Avg Loss: {avg_loss:.4f} | Val AUC: {val_auc:.4f} | Val AUPR: {val_aupr:.4f}"
@@ -172,10 +185,7 @@ def train(config: DictConfig):
     tracker = rt.MLflowTracker(config)
     # --- Start of protected block for MLflow ---
     try:
-        # ===================================================================
-        # 2. Setup: Start MLflow Run, Set Environment, and Get Config
-        # ===================================================================
-        tracker.start_run()  # This also logs all relevant parameters
+        tracker.start_run()
         device = torch.device(
             config["runtime"]["gpu"] if torch.cuda.is_available() else "cpu"
         )
@@ -197,8 +207,6 @@ def train(config: DictConfig):
         print("=" * 80 + "\n")
 
         k_folds = config.training.evaluation.k_folds
-        all_fold_aucs = []
-        all_fold_auprs = []
 
         for fold_idx in range(1, k_folds + 1):
             print("\n" + "#" * 80)
@@ -226,23 +234,9 @@ def train(config: DictConfig):
                 test_labels=test_labels,
                 device=device,
                 tracker=tracker,
+                fold_idx=fold_idx,
             )
-
-            if fold_results:
-                all_fold_aucs.append(fold_results["auc"])
-                all_fold_auprs.append(fold_results["aupr"])
-
-        if all_fold_aucs and all_fold_auprs:
-            print("\n" + "=" * 80)
-            print(" " * 25 + "Cross-Validation Summary")
-            print("=" * 80)
-            print(
-                f"  - Mean AUC:  {np.mean(all_fold_aucs):.4f} +/- {np.std(all_fold_aucs):.4f}"
-            )
-            print(
-                f"  - Mean AUPR: {np.mean(all_fold_auprs):.4f} +/- {np.std(all_fold_auprs):.4f}"
-            )
-            tracker.log_cv_results(all_fold_aucs, all_fold_auprs)
+            tracker.log_best_fold_result(fold_results, fold_idx)
 
     except Exception as e:
         # ... (error handling remains the same) ...
@@ -252,13 +246,4 @@ def train(config: DictConfig):
             mlflow.log_text(traceback.format_exc(), "error_traceback.txt")
         raise
     finally:
-        # ===================================================================
-        # 7. Teardown: Always end the MLflow run
-        # ===================================================================
         tracker.end_run()
-        print("\n" + "=" * 80)
-        print(" " * 27 + "Experiment Run Finished")
-        print("=" * 80 + "\n")
-
-
-# end region

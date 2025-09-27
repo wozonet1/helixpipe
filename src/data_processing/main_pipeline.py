@@ -671,13 +671,12 @@ def _process_single_fold(
     )
 
     labels_template_key = "processed.link_prediction_labels_template"
-    eval_config = config.training.evaluation
-
+    file_suffixes = config.data.files.processed.suffix
     # a. 训练标签文件
     train_labels_path = rt.get_path(
         config,
         labels_template_key,
-        split_suffix=f"_fold{fold_idx}{eval_config.train_file_suffix}",
+        split_suffix=f"_fold{fold_idx}{file_suffixes.train}",
     )
     print(
         f"    -> Saving {len(train_positive_pairs)} positive pairs for supervision to: {train_labels_path.name}..."
@@ -693,7 +692,7 @@ def _process_single_fold(
     test_labels_path = rt.get_path(
         config,
         labels_template_key,
-        split_suffix=f"_fold{fold_idx}{eval_config.test_file_suffix}",
+        split_suffix=f"_fold{fold_idx}{file_suffixes.test}",
     )
     # 测试集需要负采样
     _generate_and_save_labeled_set_for_test(

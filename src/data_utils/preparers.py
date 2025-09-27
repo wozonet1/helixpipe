@@ -8,6 +8,7 @@ from .loaders import (
     load_graph_structure_from_files,
     load_supervision_labels_for_fold,
     create_global_to_local_maps,
+    create_global_id_to_type_map,
 )
 
 
@@ -21,7 +22,8 @@ def prepare_e2e_data(config: DictConfig, fold_idx: int) -> tuple:
     hetero_graph_global = load_graph_structure_from_files(config, fold_idx)
     train_df, test_df = load_supervision_labels_for_fold(config, fold_idx)
     maps = create_global_to_local_maps(config)
-    print("Step 1/3: Raw data loaded from disk.")
+    id_to_type_map = create_global_id_to_type_map(config)
+    print("Step 1/4: Raw data loaded from disk.")
 
     # 2. 将图中的全局ID转换为局部ID
     hetero_graph_local = HeteroData()
@@ -41,7 +43,7 @@ def prepare_e2e_data(config: DictConfig, fold_idx: int) -> tuple:
         )
 
         hetero_graph_local[edge_type].edge_index = torch.stack([src_local, dst_local])
-    print("Step 2/3: Graph converted to use local node IDs.")
+    print("Step 2/4: Graph converted to use local node IDs.")
 
     # 3. 执行所有必要的净化和转换
     # a. Purify dtypes and move to CPU (idempotent)
@@ -51,29 +53,27 @@ def prepare_e2e_data(config: DictConfig, fold_idx: int) -> tuple:
                 store[key] = value.cpu().contiguous()
     # b. Force undirectedness
     hetero_graph_local = T.ToUndirected()(hetero_graph_local)
-    print("Step 3/3: Graph purified (device, memory) and made undirected.")
+    print("Step 3/4: Graph purified (device, memory) and made undirected.")
 
+    hetero_graph_local = T.AddSelfLoops()(hetero_graph_local)
+    print("Step 4/4: Self-loops added to all node types.")  # 更新步骤编号
     # 4. 准备监督边 (同样转换为局部ID)
-    target_edge_type = (
-        "drug",
-        "drug_protein_interaction",
-        "protein",
-    )  # 这应该从config读取
-    src_type, _, dst_type = target_edge_type
-
+    # a. 转换训练监督边
     train_src_local = torch.tensor(
-        [maps[src_type][gid] for gid in train_df["source"]], dtype=torch.long
+        [maps[id_to_type_map[gid]][gid] for gid in train_df["source"]], dtype=torch.long
     )
+    # 目标节点通常都是蛋白质，但为了健壮性，我们同样使用动态查找
     train_dst_local = torch.tensor(
-        [maps[dst_type][gid] for gid in train_df["target"]], dtype=torch.long
+        [maps[id_to_type_map[gid]][gid] for gid in train_df["target"]], dtype=torch.long
     )
     train_edge_label_index_local = torch.stack([train_src_local, train_dst_local])
 
+    # b. 转换测试监督边
     test_src_local = torch.tensor(
-        [maps[src_type][gid] for gid in test_df["source"]], dtype=torch.long
+        [maps[id_to_type_map[gid]][gid] for gid in test_df["source"]], dtype=torch.long
     )
     test_dst_local = torch.tensor(
-        [maps[dst_type][gid] for gid in test_df["target"]], dtype=torch.long
+        [maps[id_to_type_map[gid]][gid] for gid in test_df["target"]], dtype=torch.long
     )
     test_edge_label_index_local = torch.stack([test_src_local, test_dst_local])
     test_labels = torch.from_numpy(test_df["label"].values).float()

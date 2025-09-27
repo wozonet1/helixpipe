@@ -5,4 +5,4 @@ params:
   hidden_channels: 128
   out_channels: 64
   num_layers: 2
-  dropout: 0.5
+  dropout: 0.6

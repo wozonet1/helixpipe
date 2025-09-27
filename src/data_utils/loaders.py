@@ -27,6 +27,15 @@ def create_global_to_local_maps(config: DictConfig) -> dict:
     return maps
 
 
+def create_global_id_to_type_map(config: DictConfig) -> dict:
+    """
+    【新增】从nodes.csv创建一个全局ID到节点类型的反向映射字典。
+    """
+    nodes_df = pd.read_csv(rt.get_path(config, "processed.nodes_metadata"))
+    # 使用pandas的高效功能，直接将两列转换为字典
+    return pd.Series(nodes_df.node_type.values, index=nodes_df.node_id).to_dict()
+
+
 def load_graph_structure_from_files(config: DictConfig, fold_idx: int) -> HeteroData:
     """
     【底层】加载指定fold的图结构和节点特征，组装成一个原始的HeteroData对象。
@@ -61,10 +70,10 @@ def load_graph_structure_from_files(config: DictConfig, fold_idx: int) -> Hetero
         target_type = id_to_type_str[targets[0]]
 
         # 注意：这里的edge_index仍然是全局ID
-        data[source_type, edge_type_str, target_type].edge_index = torch.tensor(
-            [sources, targets], dtype=torch.long
-        )
-
+        edge_index_np = np.stack([sources, targets])
+        data[source_type, edge_type_str, target_type].edge_index = torch.from_numpy(
+            edge_index_np
+        ).long()
     return data
 
 
@@ -78,8 +87,9 @@ def load_supervision_labels_for_fold(
     print(f"--- [Loader] Loading labeled edges for Fold {fold_idx}... ---")
 
     lp_labels_key = "processed.link_prediction_labels_template"
-    train_suffix = config.training.evaluation.train_file_suffix
-    test_suffix = config.training.evaluation.test_file_suffix
+    suffix = config.data.files.processed.suffix
+    train_suffix = suffix.train
+    test_suffix = suffix.test
 
     train_path = rt.get_path(
         config, lp_labels_key, split_suffix=f"_fold{fold_idx}{train_suffix}"

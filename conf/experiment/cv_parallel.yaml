@@ -1,0 +1,24 @@
+# 这个文件定义了一个名为“交叉验证并行”的完整实验方案
+
+defaults:
+  - _self_
+  - override hydra/launcher: joblib # <-- [核心] 告诉Hydra使用Joblib启动器
+
+# --- 全局Hydra设置 ---
+hydra:
+  # 对Joblib启动器进行精细化配置
+  launcher:
+    joblib:
+      # n_jobs 控制并行进程的数量
+      # -1 表示使用所有可用的CPU核心。
+      # -2 表示使用除一个核心外的所有核心，这通常是个好主意，可以避免服务器卡死。
+      # 对于您的服务器，可以设置为一个合理的数字，比如 5 或 10，取决于您想同时跑多少个fold。
+      n_jobs: 5 
+
+  # --- [核心] 定义多任务扫描的参数 ---
+  sweeper:
+    params:
+      # 告诉Hydra，我们想对 training.fold_idx 这个参数进行扫描
+      # range(1, 6) 会生成 1, 2, 3, 4, 5
+      # 这意味着Hydra会自动启动5个任务，每个任务的 fold_idx 分别是 1, 2, 3, 4, 5
+      training.fold_idx: range(1, 6) # 假设我们进行5折交叉验证

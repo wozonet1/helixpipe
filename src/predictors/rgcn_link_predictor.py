@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from torch_geometric.nn import SAGEConv, HeteroConv
+from torch_geometric.nn import HeteroConv, GATv2Conv
 from torch_geometric.data import HeteroData
 
 
@@ -17,6 +17,7 @@ class RGCNLinkPredictor(torch.nn.Module):
 
     def __init__(
         self,
+        in_channels_dict: dict,  # <-- [新增] 需要知道原始输入的维度
         hidden_channels: int,
         out_channels: int,
         num_layers: int,
@@ -36,7 +37,13 @@ class RGCNLinkPredictor(torch.nn.Module):
             target_edge_type (tuple): 需要预测的链接类型.
         """
         super().__init__()
-
+        self.proj = torch.nn.ModuleDict()
+        for node_type, in_channels in in_channels_dict.items():
+            # 将该节点类型的原始维度 in_channels，投影到我们模型内部的
+            # 隐藏维度 hidden_channels * num_heads
+            # 我们需要确保第二层GNN的输入维度也是这个
+            target_dim = hidden_channels * 4  # 假设num_heads在__init__中可访问
+            self.proj[node_type] = torch.nn.Linear(in_channels, target_dim)
         self.hidden_channels = hidden_channels
         self.out_channels = out_channels
         self.target_edge_type = target_edge_type
@@ -50,18 +57,27 @@ class RGCNLinkPredictor(torch.nn.Module):
         # HeteroConv 为每种边类型创建一个 SAGEConv 实例
         conv = HeteroConv(
             {
-                edge_type: SAGEConv((-1, -1), hidden_channels)
+                edge_type: GATv2Conv(
+                    in_channels=-1,
+                    out_channels=hidden_channels,
+                    add_self_loops=False,
+                    heads=4,
+                )
                 for edge_type in edge_types
             },
             aggr="sum",
         )
         self.convs.append(conv)
-
         # 中间层：隐藏层到隐藏层
         for _ in range(num_layers - 2):
             conv = HeteroConv(
                 {
-                    edge_type: SAGEConv((-1, -1), hidden_channels)
+                    edge_type: GATv2Conv(
+                        in_channels=-1,
+                        out_channels=hidden_channels,
+                        add_self_loops=False,
+                        # heads=4 # [可选] 可以引入多头注意力，增加模型容量
+                    )
                     for edge_type in edge_types
                 },
                 aggr="sum",
@@ -70,7 +86,15 @@ class RGCNLinkPredictor(torch.nn.Module):
 
         # 最后一层：隐藏层到输出维度 (out_channels)
         conv = HeteroConv(
-            {edge_type: SAGEConv((-1, -1), out_channels) for edge_type in edge_types},
+            {
+                edge_type: GATv2Conv(
+                    in_channels=-1,
+                    out_channels=hidden_channels,
+                    add_self_loops=False,
+                    heads=1,
+                )
+                for edge_type in edge_types
+            },
             aggr="sum",
         )
         self.convs.append(conv)
@@ -93,19 +117,14 @@ class RGCNLinkPredictor(torch.nn.Module):
         Returns:
             dict: 更新后的节点嵌入字典 {node_type: Tensor}.
         """
-        if self.training and getattr(self, "_debug_probe_2_done", False) is False:
-            print("\n" + "=" * 50)
-            print(" " * 15 + "DEBUG PROBE 2: GNN ENCODER INPUT")
-            print("=" * 50)
-            print("Shapes of node features received by the first GNN layer:")
-            for node_type, features in x_dict.items():
-                print(f"  - '{node_type}': {features.shape}")
-            print("=" * 50 + "\n")
-            self._debug_probe_2_done = True  # 设置一个标志，确保只打印一次
-
+        x_dict = {node_type: self.proj[node_type](x) for node_type, x in x_dict.items()}
+        x_dict_initial_projected = x_dict
         for conv in self.convs[:-1]:
             x_dict = conv(x_dict, edge_index_dict)
             x_dict = {key: F.relu(x) for key, x in x_dict.items()}
+            x_dict = {
+                key: x + x_dict_initial_projected[key] for key, x in x_dict.items()
+            }
             x_dict = {
                 key: F.dropout(x, p=self.dropout, training=self.training)
                 for key, x in x_dict.items()
