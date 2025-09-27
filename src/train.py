@@ -20,7 +20,9 @@ from data_utils import loaders, debug_utils, preparers, transforms
 target_edge_type = ("drug", "drug_protein_interaction", "protein")
 
 
-def run_workflow_for_fold(config, hetero_graph, train_df, test_df, device, maps):
+def run_workflow_for_fold(
+    config, hetero_graph, train_df, test_df, device, maps, tracker
+):
     """根据配置分派并执行相应的工作流"""
     paradigm = config.training.paradigm
 
@@ -28,7 +30,7 @@ def run_workflow_for_fold(config, hetero_graph, train_df, test_df, device, maps)
         return run_two_stage_workflow(config, hetero_graph, train_df, test_df, device)
     elif paradigm == "end_to_end":
         return run_end_to_end_workflow(
-            config, hetero_graph, train_df, test_df, device, maps
+            config, hetero_graph, train_df, test_df, device, maps, tracker
         )
     else:
         raise ValueError(f"Unknown paradigm: {paradigm}")
@@ -62,6 +64,44 @@ def run_two_stage_workflow(config, hetero_graph, train_df, test_df, device):
 
 
 # region e2e
+
+
+@torch.no_grad()  # 使用装饰器，确保函数内所有操作不计算梯度
+def evaluate(
+    model,
+    loader,
+    device,
+    target_edge_type,
+):
+    """
+    Performs evaluation on a given data loader and returns performance metrics.
+    """
+    model.eval()  # 切换到评估模式
+    all_preds = []
+    all_labels = []
+
+    for batch in loader:  # 这里可以加一个小的tqdm
+        batch = batch.to(device)
+        z_dict = model.forward(batch.x_dict, batch.edge_index_dict)
+        scores = model.decode(z_dict, batch[target_edge_type].edge_label_index)
+
+        all_preds.append(torch.sigmoid(scores).cpu())
+        all_labels.append(batch[target_edge_type].edge_label.cpu())
+
+    preds = torch.cat(all_preds, dim=0).numpy()
+    labels = torch.cat(all_labels, dim=0).numpy()
+
+    if len(np.unique(labels)) < 2:
+        return 0.0, 0.0  # 返回默认值
+    else:
+        auc = roc_auc_score(labels, preds)
+        aupr = average_precision_score(labels, preds)
+        return auc, aupr
+
+
+PROBE_EXECUTED = False
+
+
 def run_end_to_end_workflow(
     config: DictConfig,
     hetero_graph: HeteroData,
@@ -69,6 +109,7 @@ def run_end_to_end_workflow(
     test_df: pd.DataFrame,
     device: torch.device,
     maps: dict,
+    tracker: rt.MLflowTracker,
 ):
     print("\n--- Running End-to-End (Mini-Batch Inductive) Workflow ---")
     target_edge_type = ("drug", "drug_protein_interaction", "protein")
@@ -104,10 +145,10 @@ def run_end_to_end_workflow(
         data=hetero_graph,
         num_neighbors=[-1] * config.predictor.params.num_layers,
         edge_label_index=(target_edge_type, train_edge_label_index_local),
-        batch_size=config.training.get("batch_size", 512),
+        batch_size=config.training.get("batch_size", 512),  # TODO:确定合适值
         shuffle=True,
         neg_sampling_ratio=1.0,
-        num_workers=config.runtime.cpus,
+        num_workers=config.training.get("trian_loader_cpus", 8),
     )
     test_loader = LinkNeighborLoader(
         data=hetero_graph,
@@ -120,15 +161,36 @@ def run_end_to_end_workflow(
         batch_size=config.training.get("batch_size", 512),
         shuffle=False,
         neg_sampling_ratio=0.0,
-        num_workers=config.runtime.cpus,
+        num_workers=config.training.get("test_loader_cpus", 4),
     )
     # --- 6. 训练循环 ---
     print("--> Starting mini-batch model training...")
-    for epoch in tqdm(range(config.training.epochs), desc="Epochs"):
-        total_loss = 0
-        total_examples = 0
+    best_val_aupr = 0
+    best_epoch_results = {}
+    epoch_pbar = tqdm(range(config.training.epochs), desc="Starting Training")
+    validation_freq = config.training.get("validate_every_n_epochs", 10)
+    for epoch in epoch_pbar:
         model.train()
-        for batch in tqdm(train_loader, desc="Batches", leave=False):
+        total_loss = 0
+        model.train()
+        for batch in train_loader:
+            # --------------------------- [新增的Debug探针] ---------------------------
+            global PROBE_EXECUTED
+            if not PROBE_EXECUTED:
+                print("\n" + "=" * 80)
+                print(" " * 25 + "DEBUG PROBE: BATCH INSPECTOR")
+                print("=" * 80)
+                print("Inspecting the first batch received from the Train Loader...")
+                print("Batch object structure:")
+                print(batch)
+                print("\nEdge Labels Tensor:")
+                labels_in_batch = batch[target_edge_type].edge_label
+                print(labels_in_batch)
+                print("\nUnique labels and their counts in this batch:")
+                print(labels_in_batch.unique(return_counts=True))
+                print("=" * 80 + "\n")
+                PROBE_EXECUTED = True
+            # --------------------------- [探针结束] ---------------------------
             batch = batch.to(device)
             optimizer.zero_grad()
 
@@ -141,42 +203,36 @@ def run_end_to_end_workflow(
             optimizer.step()
 
             total_loss += loss.item() * scores.size(0)
-            total_examples += scores.size(0)
+        avg_loss = total_loss / len(train_loader.dataset)
+        tracker.log_training_metric(epoch=epoch, loss=avg_loss)
+        epoch_pbar.set_description(f"Epoch {epoch:03d} | Avg Loss: {avg_loss:.4f}")
 
-        # [优化] 避免除以零的错误
-        if total_examples > 0:
-            avg_loss = total_loss / total_examples
-            if epoch % 10 == 0:
-                print(f"Epoch {epoch}: Avg Loss = {avg_loss:.4f}")
+        # --- 7. 评估 ---
+        if (epoch + 1) % validation_freq == 0:
+            # 调用我们新建的评估函数
+            val_auc, val_aupr = evaluate(model, test_loader, device, target_edge_type)
+            tracker.log_validation_metrics(epoch=epoch, auc=val_auc, aupr=val_aupr)
+            # 更新进度条，现在包含验证集分数
+            epoch_pbar.set_description(
+                f"Epoch {epoch:03d} | Avg Loss: {avg_loss:.4f} | Val AUC: {val_auc:.4f} | Val AUPR: {val_aupr:.4f}"
+            )
 
-    # --- 7. 评估 ---
-    print("--> Starting model evaluation...")
-    all_preds = []
-    all_labels = []
-    model.eval()
-    with torch.no_grad():
-        for batch in tqdm(test_loader, desc="Evaluating"):
-            batch = batch.to(device)
-            z_dict = model.forward(batch.x_dict, batch.edge_index_dict)
-            scores = model.decode(z_dict, batch[target_edge_type].edge_label_index)
+            # 检查并保存最佳模型的结果
+            if val_aupr > best_val_aupr:
+                best_val_aupr = val_aupr
+                best_epoch_results = {"auc": val_auc, "aupr": val_aupr, "epoch": epoch}
+                # (可选) 在这里可以保存模型权重
+                # torch.save(model.state_dict(), 'best_model.pth')
+        else:
+            # 如果不是验证周期，只更新loss
+            epoch_pbar.set_description(f"Epoch {epoch:03d} | Avg Loss: {avg_loss:.4f}")
+    print("\n--- Training Finished ---")
+    print(
+        f"Best validation AUPR: {best_epoch_results.get('aupr', 0):.4f} at epoch {best_epoch_results.get('epoch', -1)}"
+    )
 
-            all_preds.append(torch.sigmoid(scores).cpu())
-            all_labels.append(batch[target_edge_type].edge_label.cpu())
-
-    preds = torch.cat(all_preds, dim=0).numpy()
-    labels = torch.cat(all_labels, dim=0).numpy()
-
-    # [优化] 增加一个检查，防止在没有正或负样本时AUC计算报错
-    if len(np.unique(labels)) < 2:
-        print(
-            "    -> WARNING: Test set contains only one class. AUC/AUPR cannot be computed."
-        )
-        auc, aupr = 0.0, 0.0
-    else:
-        auc = roc_auc_score(labels, preds)
-        aupr = average_precision_score(labels, preds)
-
-    return {"auc": auc, "aupr": aupr}
+    # 返回在验证集上性能最好的那个epoch的结果
+    return best_epoch_results
 
 
 # end region
@@ -237,7 +293,13 @@ def train(config: DictConfig):
 
             # 2. --- Workflow Dispatcher (based on paradigm) ---
             fold_results = run_workflow_for_fold(
-                config, hetero_data, train_df, test_df, device, global_to_local_maps
+                config,
+                hetero_data,
+                train_df,
+                test_df,
+                device,
+                global_to_local_maps,
+                tracker,
             )
 
             # 3. Store results for the current fold

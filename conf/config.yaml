@@ -30,7 +30,10 @@ data:
           ll_similarity: ll
         link_prediction_labels_template: "dl_p_edges{split_suffix}.csv"
         nodes_metadata: "nodes.csv"
-        node_features: "features.csv"
+        node_features:  "node_features.npy"
+        feature_caches:
+          molecule_embeddings: "feature_caches/molecule_features.pkl"
+          protein_embeddings: "feature_caches/esm_protein_features.pkl"
         similarity_matrices:
           molecule: "sim_matrixes/dl_similarity_matrix.pkl"
           protein: "sim_matrixes/prot_similarity_matrix.pkl"
@@ -47,13 +50,27 @@ data:
         ligands: "gtopdb_ligands.csv"
         proteins: "gtopdb_proteins.csv"
         interactions: "gtopdb_p-l_edges.csv"
+  feature_extractors:
+  protein:
+    # 指定要使用的ESM模型。未来可以轻松切换到更大或更小的模型。
+    model_name: "facebook/esm2_t_30_150M_UR50D" 
+    # 在GPU上进行特征提取时的批处理大小
+    batch_size: 32
+  molecule:
+    # 为未来的SOTA分子特征提取器预留位置
+    model_name: "placeholder_random"
+    embedding_dim: 640 # 确保与蛋白质嵌入维度一致
 
 # --- 2. Global Parameters (that don't belong to a specific component) ---
 # These are mostly parameters for data processing and evaluation
 training:
-    learning_rate: 0.01
+    learning_rate: 0.001
     epochs: 200
-    batch_size: 32
+    batch_size: 128
+    validate_every_n_epochs: 10
+    trian_loader_cpus: 16
+    test_loader_cpus: 8
+    negative_sampling_ratio: 1
 
 runtime:
   seed: 514

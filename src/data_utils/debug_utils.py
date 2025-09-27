@@ -1,6 +1,5 @@
 from torch_geometric.data import HeteroData
 import torch
-import torch_geometric.transforms as T
 
 
 def run_optional_diagnostics(hetero_graph: HeteroData):
@@ -149,3 +148,63 @@ def sanitize_for_loader(data: HeteroData) -> HeteroData:
 
     print("✅ All tensors are now memory-contiguous.")
     return data
+
+
+def validate_entity_list_and_index(
+    entity_list: list, entity_to_index_map: dict, entity_type: str, start_index: int = 0
+) -> bool:
+    """
+    【关键诊断】验证一个实体列表和其索引字典之间的顺序和内容是否严格一致。
+
+    本函数执行两个核心检查：
+    1.  内容一致性：列表中的所有实体，是否与字典的键完全相同。
+    2.  顺序一致性：列表中第 i 个实体，其在字典中对应的ID，是否精确地等于 i + start_index。
+
+    Args:
+        entity_list (list): 实体的有序列表 (例如 final_proteins_list)。
+        entity_to_index_map (dict): 从实体映射到其全局ID的字典 (例如 prot2index)。
+        entity_type (str): 实体的名称，用于打印清晰的日志信息 (例如 "Protein")。
+        start_index (int): 该类型实体的全局ID起始编号。对于drug/ligand是0，
+                           对于protein，是drug+ligand的总数。
+
+    Returns:
+        bool: 如果验证通过，返回True，否则返回False并打印详细错误。
+    """
+    print(f"--> [DIAGNOSTIC] Validating consistency for '{entity_type}' entities...")
+
+    # 1. 内容一致性检查
+    list_set = set(entity_list)
+    dict_keys_set = set(entity_to_index_map.keys())
+
+    if list_set != dict_keys_set:
+        print(f"❌ VALIDATION FAILED for '{entity_type}': Content Mismatch!")
+        missing_in_list = dict_keys_set - list_set
+        missing_in_dict = list_set - dict_keys_set
+        if missing_in_list:
+            print(
+                f"    - {len(missing_in_list)} items are in the dictionary but NOT in the list."
+            )
+        if missing_in_dict:
+            print(
+                f"    - {len(missing_in_dict)} items are in the list but NOT in the dictionary."
+            )
+        return False
+
+    # 2. 顺序一致性检查
+    for i, entity in enumerate(entity_list):
+        expected_id = i + start_index
+        actual_id = entity_to_index_map[entity]
+
+        if actual_id != expected_id:
+            print(f"❌ VALIDATION FAILED for '{entity_type}': Order Mismatch!")
+            print(
+                f"    - At list index {i}, for entity '{str(entity)[:50]}...'"
+            )  # 打印实体的前50个字符
+            print(f"    - Expected global ID: {expected_id}")
+            print(f"    - Actual ID found in dictionary: {actual_id}")
+            return False
+
+    print(
+        f"✅ Validation PASSED for '{entity_type}': Content and order are perfectly consistent."
+    )
+    return True
