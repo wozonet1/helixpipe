@@ -1,7 +1,6 @@
 
 defaults:
   - data: DrugBank # Default dataset to use
-  - encoder: ndls_homo
   - predictor: rgcn
   - relations: DP_sim
   - params: default
@@ -51,15 +50,15 @@ data:
         proteins: "gtopdb_proteins.csv"
         interactions: "gtopdb_p-l_edges.csv"
   feature_extractors:
-  protein:
-    # 指定要使用的ESM模型。未来可以轻松切换到更大或更小的模型。
-    model_name: "facebook/esm2_t_30_150M_UR50D" 
-    # 在GPU上进行特征提取时的批处理大小
-    batch_size: 32
-  molecule:
-    # 为未来的SOTA分子特征提取器预留位置
-    model_name: "placeholder_random"
-    embedding_dim: 640 # 确保与蛋白质嵌入维度一致
+    protein:
+      extractor_function: "extract_esm_protein_embeddings"
+      model_name: "facebook/esm2_t30_150M_UR50D" 
+      # 在GPU上进行特征提取时的批处理大小
+      batch_size: 32
+    molecule:
+      extractor_function: "extract_chemberta_molecule_embeddings"
+      model_name: "seyonec/ChemBERTa-zinc-base-v1"
+      batch_size: 64 # 通常可以比蛋白质的batch size更大
 
 # --- 2. Global Parameters (that don't belong to a specific component) ---
 # These are mostly parameters for data processing and evaluation

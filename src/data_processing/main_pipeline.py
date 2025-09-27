@@ -6,19 +6,11 @@ import research_template as rt
 from omegaconf import DictConfig
 from pathlib import Path
 from tqdm import tqdm
-from features.feature_extractors import (
-    MoleculeGCN,
-    extract_molecule_features,
-    canonicalize_smiles,
-)
-from features.similarity_calculators import (
-    calculate_drug_similarity,
-    calculate_protein_similarity,
-)
+
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
-from features.esm_protein_extractor import extract_esm_protein_embeddings
+from features import extractors, sim_calculators
 import torch
-from data_utils import debug_utils
+from data_utils import debug_utils, canonicalizer
 
 
 def process_data(config: DictConfig):
@@ -31,18 +23,34 @@ def process_data(config: DictConfig):
         dl2index,
         final_smiles_list,
         final_proteins_list,
-    ) = _stage_1_load_and_index_entities(config, full_df, restart_flag)
-    _stage_2_generate_features(
+    ) = _stage_1_load_and_index_entities(
+        config, full_df=full_df, restart_flag=restart_flag
+    )
+    debug_utils.validate_data_pipeline_integrity(
+        final_smiles_list=final_smiles_list,
+        final_proteins_list=final_proteins_list,
+        dl2index=dl2index,
+        prot2index=prot2index,
+    )
+    molecule_embeddings, protein_embeddings = _stage_2_generate_features(
         config,
-        dl2index,
-        prot2index,
-        final_smiles_list,
-        final_proteins_list,
-        restart_flag,
+        final_smiles_list=final_smiles_list,
+        final_proteins_list=final_proteins_list,
+        restart_flag=restart_flag,
+    )
+    debug_utils.validate_data_pipeline_integrity(
+        final_smiles_list=final_smiles_list,
+        final_proteins_list=final_proteins_list,
+        dl2index=dl2index,
+        prot2index=prot2index,
+        molecule_embeddings=molecule_embeddings,
+        protein_embeddings=protein_embeddings,
     )
     dl_similarity_matrix, prot_similarity_matrix = (
         _stage_3_calculate_similarity_matrices(
             config,
+            molecule_embeddings=molecule_embeddings,
+            protein_embeddings=protein_embeddings,
             final_smiles_list=final_smiles_list,
             final_proteins_list=final_proteins_list,
             restart_flag=restart_flag,
@@ -79,7 +87,7 @@ def _stage_1_load_and_index_entities(
         # 使用 .unique().tolist() 更高效
         unique_smiles = full_df["SMILES"].dropna().unique()
         base_drugs_list = [
-            canonicalize_smiles(s)
+            canonicalizer.canonicalize_smiles(s)
             for s in tqdm(unique_smiles, desc="Canonicalizing Drug SMILES", leave=False)
         ]
         base_drugs_list = [s for s in base_drugs_list if s is not None]
@@ -233,31 +241,10 @@ def _stage_1_load_and_index_entities(
 
 def _stage_2_generate_features(
     config: DictConfig,
-    dl2index: dict,
-    prot2index: dict,
     final_smiles_list,
     final_proteins_list,
     restart_flag: bool = False,
-    device="cpu",
-) -> None:
-    is_molecule_ok = debug_utils.validate_entity_list_and_index(
-        entity_list=final_smiles_list,
-        entity_to_index_map=dl2index,
-        entity_type="Molecule (Drug/Ligand)",
-        start_index=0,
-    )
-    protein_start_index = len(dl2index)
-    is_protein_ok = debug_utils.validate_entity_list_and_index(
-        entity_list=final_proteins_list,
-        entity_to_index_map=prot2index,
-        entity_type="Protein",
-        start_index=protein_start_index,
-    )
-    if not (is_molecule_ok and is_protein_ok):
-        raise ValueError(
-            "Data consistency validation failed. Aborting feature generation."
-        )
-
+) -> tuple:
     final_features_path = rt.get_path(config, "processed.node_features")
 
     if not final_features_path.exists() or restart_flag:
@@ -270,45 +257,36 @@ def _stage_2_generate_features(
                 f"\n--- [Stage 2] Feature file not found at {final_features_path}. Generating... ---"
             )
 
-        device = torch.device(
-            config.runtime.gpu if torch.cuda.is_available() else "cpu"
-        )
-        molecule_feature_extractor = MoleculeGCN(5, 128).to(device).eval()
-
-        molecule_embeddings = []
-        # Use the new function signature in the loop
-        for d in tqdm(
-            final_smiles_list, desc="Extracting Molecule Features", leave=False
-        ):
-            embedding = extract_molecule_features(d, molecule_feature_extractor, device)
-            molecule_embeddings.append(embedding)
-
-        # a. 提取蛋白质特征 (现在完全由config驱动)
-        protein_cfg = config.feature_extractors.protein
-        protein_cache_path = rt.get_path(
-            config, "processed.feature_caches.protein_embeddings"
+        protein_embeddings = _generate_or_load_embeddings(
+            config=config,
+            entity_type="protein",
+            entity_list=final_proteins_list,
+            restart_flag=restart_flag,
         )
 
-        protein_embeddings = extract_esm_protein_embeddings(
-            sequences=final_proteins_list,
-            cache_path=protein_cache_path,
-            model_name=protein_cfg.model_name,
-            batch_size=protein_cfg.batch_size,
-            device=device,
-            force_regenerate=restart_flag,  # <-- [关键连接] restart_flag 控制是否强制刷新
+        molecule_embeddings = _generate_or_load_embeddings(
+            config=config,
+            entity_type="molecule",
+            entity_list=final_smiles_list,
+            restart_flag=restart_flag,
         )
 
         if molecule_embeddings.shape[1] != protein_embeddings.shape[1]:
             print(
-                f"Warning: Molecule ({molecule_embeddings.shape[1]}) and protein ({protein_embeddings.shape[1]}) embedding dims differ."
+                f"Warning: Molecule ({molecule_embeddings.shape[1]}) and \
+                    protein ({protein_embeddings.shape[1]}) embedding dims differ."
             )
             # 简单的线性投影作为临时解决方案
             proj = torch.nn.Linear(
                 molecule_embeddings.shape[1], protein_embeddings.shape[1]
-            ).to(device)
+            ).to(molecule_embeddings.device)
             molecule_embeddings = proj(molecule_embeddings)
+
         all_feature_embeddings = (
-            torch.cat([molecule_embeddings, protein_embeddings], dim=0).cpu().numpy()
+            torch.cat([molecule_embeddings, protein_embeddings], dim=0)
+            .cpu()
+            .detach()
+            .numpy()
         )
         final_features_path = rt.get_path(config, "processed.node_features")
 
@@ -318,13 +296,96 @@ def _stage_2_generate_features(
             f"--> Final SOTA features saved to: {final_features_path}. Shape: {all_feature_embeddings.shape}"
         )
     else:
-        print("\nFound existing features. Skipping generation.")
+        print("\nFound existing features. Loading from cache...")
+        features_np = np.load(final_features_path)
+
+        # 根据list的长度进行拆分
+        num_molecules = len(final_smiles_list)
+        molecule_embeddings_np = features_np[:num_molecules]
+        protein_embeddings_np = features_np[num_molecules:]
+
+        molecule_embeddings = torch.from_numpy(molecule_embeddings_np)
+        protein_embeddings = torch.from_numpy(protein_embeddings_np)
+
+    return molecule_embeddings, protein_embeddings
+
+
+def _generate_or_load_embeddings(
+    config: DictConfig,
+    entity_type: str,
+    entity_list: list,
+    restart_flag: bool,
+) -> torch.Tensor:
+    """
+    【高阶辅助函数】一个通用的工作流，用于为指定实体类型生成或加载SOTA嵌入。
+
+    它会自动：
+    1. 从config中读取该实体类型的专属配置 (如模型名称, batch_size)。
+    2. 从config中获取该实体类型的缓存文件路径。
+    3. 动态地从`features.extractors`模块中，获取并调用正确的提取器函数。
+    4. 将所有必要的参数传递给提取器。
+
+    Args:
+        config (DictConfig): 完整的Hydra配置对象。
+        entity_type (str): 实体类型，必须与config中的键匹配 (例如 "protein", "molecule")。
+        entity_list (list): 包含实体数据（序列或SMILES）的列表。
+        restart_flag (bool): 是否强制重新生成。
+        device (str): 计算设备。
+
+    Returns:
+        torch.Tensor: 最终的嵌入张量。
+    """
+    print(f"\n--> Processing '{entity_type}' features...")
+
+    # 1. 读取配置
+    try:
+        entity_cfg = config.data.feature_extractors[entity_type]
+        device = torch.device(
+            config.runtime.gpu if torch.cuda.is_available() else "cpu"
+        )
+        cache_key = f"processed.feature_caches.{entity_type}_embeddings"
+        extractor_func_name = (
+            entity_cfg.extractor_function
+        )  # <-- [关键] 从配置读取函数名
+    except KeyError as e:
+        print(
+            f"❌ FATAL: Configuration error for entity_type '{entity_type}'. Missing key: {e}"
+        )
+        raise
+
+    # 2. 获取路径
+    cache_path = rt.get_path(config, cache_key)
+
+    # 3. 动态获取提取器函数
+    try:
+        extractor_function = getattr(extractors, extractor_func_name)
+    except AttributeError:
+        print(
+            f"❌ FATAL: Extractor function '{extractor_func_name}' not found in 'features.extractors' module."
+        )
+        raise
+
+    # 4. 统一调用
+    embeddings = extractor_function(
+        # 根据提取器函数的参数名，传递正确的实体列表
+        # 这里我们假设蛋白质提取器接收'sequences'，分子提取器接收'smiles_list'
+        entity_list,
+        cache_path=cache_path,
+        model_name=entity_cfg.model_name,
+        batch_size=entity_cfg.batch_size,
+        device=device,
+        force_regenerate=restart_flag,
+    )
+
+    return embeddings.to(device)
 
 
 def _stage_3_calculate_similarity_matrices(
     config: DictConfig,
-    final_smiles_list: list,
-    final_proteins_list: list,
+    molecule_embeddings: torch.Tensor,
+    protein_embeddings: torch.Tensor,
+    final_smiles_list: list,  # 使用LLM时不需要list,先传着
+    final_proteins_list: list,  # 同上
     restart_flag: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     checkpoint_files_dict = {
@@ -336,11 +397,11 @@ def _stage_3_calculate_similarity_matrices(
         or restart_flag
     ):
         print("\n--- [Stage 3b] Calculating similarity matrices... ---")
-        dl_similarity_matrix = calculate_drug_similarity(
-            final_smiles_list, cpus=config.runtime.cpus
+        dl_similarity_matrix = sim_calculators.calculate_embedding_similarity(
+            embeddings=molecule_embeddings, batch_size=1024
         )
-        prot_similarity_matrix = calculate_protein_similarity(
-            final_proteins_list, cpus=config.runtime.cpus
+        prot_similarity_matrix = sim_calculators.calculate_embedding_similarity(
+            embeddings=protein_embeddings, batch_size=1024
         )
         # --- 保存相似度矩阵 ---
         pkl.dump(
@@ -613,7 +674,7 @@ def _process_single_fold(
     eval_config = config.training.evaluation
 
     # a. 训练标签文件
-    train_labels_path = rt.rt.get_path(
+    train_labels_path = rt.get_path(
         config,
         labels_template_key,
         split_suffix=f"_fold{fold_idx}{eval_config.train_file_suffix}",
@@ -629,7 +690,7 @@ def _process_single_fold(
     pos_df.to_csv(train_labels_path, index=False, header=True)
 
     # b. 测试标签文件 (基于测试边)
-    test_labels_path = rt.rt.get_path(
+    test_labels_path = rt.get_path(
         config,
         labels_template_key,
         split_suffix=f"_fold{fold_idx}{eval_config.test_file_suffix}",
@@ -825,7 +886,7 @@ def _build_graph_for_fold(
     )
 
     # --- 4. 保存最终的图文件 ---
-    graph_output_path = rt.rt.get_path(
+    graph_output_path = rt.get_path(
         config, graph_template_key, split_suffix=f"_fold{fold_idx}"
     )
     print(
@@ -932,7 +993,7 @@ def _collect_positive_pairs(
 
     # Pre-compute a mapping from raw to canonical SMILES to avoid re-computation
     raw_smiles_in_pos = positive_interactions_df["SMILES"].dropna().unique()
-    canonical_map = {s: canonicalize_smiles(s) for s in raw_smiles_in_pos}
+    canonical_map = {s: canonicalizer.canonicalize_smiles(s) for s in raw_smiles_in_pos}
     positive_interactions_df["canonical_smiles"] = positive_interactions_df[
         "SMILES"
     ].map(canonical_map)
@@ -952,7 +1013,7 @@ def _collect_positive_pairs(
     if data_config["use_gtopdb"]:
         print("--> Scanning positive interactions from GtoPdb...")
         gtopdb_edges_df = pd.read_csv(
-            rt.rt.get_path(config, "gtopdb.processed.interactions"),
+            rt.get_path(config, "gtopdb.processed.interactions"),
             header=None,
             names=["Sequence", "SMILES", "Affinity"],
         )

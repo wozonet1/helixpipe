@@ -1,38 +1,66 @@
 import torch
+from torch_geometric.data import HeteroData
 import torch_geometric.transforms as T
+from omegaconf import DictConfig
+
+# 从同一包内的兄弟模块导入底层函数
+from .loaders import (
+    load_graph_structure_from_files,
+    load_supervision_labels_for_fold,
+    create_global_to_local_maps,
+)
 
 
-def prepare_e2e_data(hetero_graph, train_df, test_df, maps, target_edge_type):
+def prepare_e2e_data(config: DictConfig, fold_idx: int) -> tuple:
     """
-    A master function to perform all ESSENTIAL data preparation steps for the E2E workflow.
-
-    This includes:
-    1. Purifying tensor dtypes and device placement.
-    2. Converting supervision edge IDs from global to local.
-    3. Validating local ID bounds.
-    4. Forcing the graph to be undirected.
-    5. Ensuring all tensors have a contiguous memory layout.
-
-    Returns a tuple of fully prepared and sanitized data objects ready for the model and loader.
+    【总准备函数】为E2E工作流，执行所有的数据加载、转换和净化步骤。
     """
-    print("\n--- [ESSENTIAL PREP] Preparing all data for the E2E workflow ---")
+    print(f"\n--- [Data Prep] Starting full data preparation for Fold {fold_idx} ---")
 
-    # Step 1: Purify graph object
-    for store in hetero_graph.stores:
+    # 1. 调用底层加载器，获取原始数据对象
+    hetero_graph_global = load_graph_structure_from_files(config, fold_idx)
+    train_df, test_df = load_supervision_labels_for_fold(config, fold_idx)
+    maps = create_global_to_local_maps(config)
+    print("Step 1/3: Raw data loaded from disk.")
+
+    # 2. 将图中的全局ID转换为局部ID
+    hetero_graph_local = HeteroData()
+    for node_type in hetero_graph_global.node_types:
+        hetero_graph_local[node_type].x = hetero_graph_global[node_type].x
+
+    for edge_type in hetero_graph_global.edge_types:
+        src_type, _, dst_type = edge_type
+        src_global = hetero_graph_global[edge_type].edge_index[0]
+        dst_global = hetero_graph_global[edge_type].edge_index[1]
+
+        src_local = torch.tensor(
+            [maps[src_type][gid.item()] for gid in src_global], dtype=torch.long
+        )
+        dst_local = torch.tensor(
+            [maps[dst_type][gid.item()] for gid in dst_global], dtype=torch.long
+        )
+
+        hetero_graph_local[edge_type].edge_index = torch.stack([src_local, dst_local])
+    print("Step 2/3: Graph converted to use local node IDs.")
+
+    # 3. 执行所有必要的净化和转换
+    # a. Purify dtypes and move to CPU (idempotent)
+    for store in hetero_graph_local.stores:
         for key, value in store.items():
             if torch.is_tensor(value):
-                store[key] = value.to("cpu").contiguous()
-    for edge_type in hetero_graph.edge_types:
-        hetero_graph[edge_type].edge_index = hetero_graph[edge_type].edge_index.long()
+                store[key] = value.cpu().contiguous()
+    # b. Force undirectedness
+    hetero_graph_local = T.ToUndirected()(hetero_graph_local)
+    print("Step 3/3: Graph purified (device, memory) and made undirected.")
 
-    # Step 2: Force undirectedness
-    hetero_graph = T.ToUndirected()(hetero_graph)
-    print("Step 1/2: Graph purified (types, device, memory) and made undirected.")
-
-    # Step 3: Prepare supervision edges with local IDs
+    # 4. 准备监督边 (同样转换为局部ID)
+    target_edge_type = (
+        "drug",
+        "drug_protein_interaction",
+        "protein",
+    )  # 这应该从config读取
     src_type, _, dst_type = target_edge_type
 
-    # Train edges
     train_src_local = torch.tensor(
         [maps[src_type][gid] for gid in train_df["source"]], dtype=torch.long
     )
@@ -41,7 +69,6 @@ def prepare_e2e_data(hetero_graph, train_df, test_df, maps, target_edge_type):
     )
     train_edge_label_index_local = torch.stack([train_src_local, train_dst_local])
 
-    # Test edges
     test_src_local = torch.tensor(
         [maps[src_type][gid] for gid in test_df["source"]], dtype=torch.long
     )
@@ -51,15 +78,12 @@ def prepare_e2e_data(hetero_graph, train_df, test_df, maps, target_edge_type):
     test_edge_label_index_local = torch.stack([test_src_local, test_dst_local])
     test_labels = torch.from_numpy(test_df["label"].values).float()
 
-    # Final validation assert is essential
-    assert train_src_local.max() < hetero_graph[src_type].num_nodes
-    assert test_src_local.max() < hetero_graph[src_type].num_nodes
-    print("Step 2/2: Supervision edges converted to local IDs and validated.")
-    print("--- [ESSENTIAL PREP] Data is ready for the model and loader. ---\n")
+    print("--- [Data Prep] All data prepared and ready for training. ---")
 
     return (
-        hetero_graph,
+        hetero_graph_local,
         train_edge_label_index_local,
         test_edge_label_index_local,
         test_labels,
+        maps,
     )

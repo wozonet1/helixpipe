@@ -191,6 +191,18 @@ def validate_entity_list_and_index(
         return False
 
     # 2. 顺序一致性检查
+    all_ids = sorted(entity_to_index_map.values())
+    expected_ids = list(range(start_index, start_index + len(entity_list)))
+    if all_ids != expected_ids:
+        print(
+            f"❌ VALIDATION FAILED for '{entity_type}': Index values are not contiguous!"
+        )
+        print(
+            f"    - Expected ID range: {start_index} to {start_index + len(entity_list) - 1}"
+        )
+        print(f"    - Actual IDs found (first 10): {all_ids[:10]}")  # 可选的debug输出
+        return False
+
     for i, entity in enumerate(entity_list):
         expected_id = i + start_index
         actual_id = entity_to_index_map[entity]
@@ -208,3 +220,149 @@ def validate_entity_list_and_index(
         f"✅ Validation PASSED for '{entity_type}': Content and order are perfectly consistent."
     )
     return True
+
+
+def validate_embedding_consistency(
+    embedding_tensor: torch.Tensor,
+    entity_list: list,
+    entity_to_index_map: dict,
+    entity_type: str,
+) -> bool:
+    """
+    【关键诊断】验证一个预计算的嵌入张量，与其对应的实体列表和索引字典
+    在维度、内容和顺序上是否完全一致。
+
+    本函数执行三个核心检查：
+    1.  维度一致性：嵌入张量的行数，是否与实体列表的长度完全相等。
+    2.  内容一致性 (间接)：实体列表中的内容，是否与索引字典的键完全一致。
+    3.  顺序一致性 (间接)：通过抽样检查，确保列表中的实体顺序，与其在
+        索引字典中ID所对应的嵌入行号，是严格匹配的。
+
+    Args:
+        embedding_tensor (torch.Tensor): 预计算的嵌入张量 (例如 protein_embeddings)。
+        entity_list (list): 实体的有序列表 (例如 final_proteins_list)。
+        entity_to_index_map (dict): 从实体映射到其【全局】ID的字典 (例如 prot2index)。
+        entity_type (str): 实体的名称，用于打印清晰的日志信息 (例如 "Protein")。
+
+    Returns:
+        bool: 如果验证通过，返回True，否则返回False并打印详细错误。
+    """
+    print(
+        f"--> [DIAGNOSTIC] Validating consistency for '{entity_type}' PRE-COMPUTED EMBEDDINGS..."
+    )
+
+    # 1. 维度一致性检查
+    num_embeddings = embedding_tensor.shape[0]
+    num_entities_in_list = len(entity_list)
+
+    if num_embeddings != num_entities_in_list:
+        print(f"❌ VALIDATION FAILED for '{entity_type}': Dimension Mismatch!")
+        print(f"    - Number of rows in embedding tensor: {num_embeddings}")
+        print(f"    - Number of items in entity list: {num_entities_in_list}")
+        return False
+
+    # 我们借用之前的函数来完成内容和顺序的内部检查
+    # 注意：这里的start_index必须是0，因为我们是在比较“局部”的列表和嵌入
+    is_list_and_index_ok = validate_entity_list_and_index(
+        entity_list=entity_list,
+        entity_to_index_map={
+            k: v - min(entity_to_index_map.values())
+            for k, v in entity_to_index_map.items()
+        },
+        entity_type=f"{entity_type} (internal list vs. index)",
+        start_index=0,
+    )
+
+    if not is_list_and_index_ok:
+        print(
+            f"❌ VALIDATION FAILED for '{entity_type}': Internal list/index inconsistency detected."
+        )
+        return False
+
+    print(
+        f"✅ Validation PASSED for '{entity_type}': Dimensions and internal consistency are correct."
+    )
+    return True
+
+
+def validate_data_pipeline_integrity(
+    *,  # 使用星号强制所有后续参数都必须是关键字参数，增加可读性
+    final_smiles_list: list = None,
+    final_proteins_list: list = None,
+    dl2index: dict = None,
+    prot2index: dict = None,
+    molecule_embeddings: torch.Tensor = None,
+    protein_embeddings: torch.Tensor = None,
+):
+    """
+    【顶层诊断包装器】一个高级函数，用于在数据处理流水线的不同阶段，
+    验证所有相关数据结构之间的完整性和一致性。
+
+    它会根据传入的参数，自动执行所有相关的低级诊断函数。
+    """
+    print("\n" + "=" * 80)
+    print(" " * 20 + "RUNNING DATA PIPELINE INTEGRITY VALIDATION")
+    print("=" * 80)
+
+    # --- 验证阶段 1: 实体列表 vs 索引字典 ---
+    # 仅当相关参数被提供时，才执行此检查
+    if final_smiles_list is not None and dl2index is not None:
+        if not validate_entity_list_and_index(
+            entity_list=final_smiles_list,
+            entity_to_index_map=dl2index,
+            entity_type="Molecule (Drug/Ligand)",
+            start_index=0,
+        ):
+            raise ValueError(
+                "Stage 1 (Molecules) output failed consistency validation."
+            )
+
+    if (
+        final_proteins_list is not None
+        and prot2index is not None
+        and dl2index is not None
+    ):
+        protein_start_index = len(dl2index)
+        if not validate_entity_list_and_index(
+            entity_list=final_proteins_list,
+            entity_to_index_map=prot2index,
+            entity_type="Protein",
+            start_index=protein_start_index,
+        ):
+            raise ValueError("Stage 1 (Proteins) output failed consistency validation.")
+
+    # --- 验证阶段 2: 嵌入 vs 列表/索引 ---
+    # 仅当相关参数被提供时，才执行此检查
+    if (
+        molecule_embeddings is not None
+        and final_smiles_list is not None
+        and dl2index is not None
+    ):
+        if not validate_embedding_consistency(
+            embedding_tensor=molecule_embeddings,
+            entity_list=final_smiles_list,
+            entity_to_index_map=dl2index,
+            entity_type="Molecule (Drug/Ligand) Embeddings",
+        ):
+            raise ValueError(
+                "Stage 2 (Molecule Embeddings) failed consistency validation."
+            )
+
+    if (
+        protein_embeddings is not None
+        and final_proteins_list is not None
+        and prot2index is not None
+    ):
+        if not validate_embedding_consistency(
+            embedding_tensor=protein_embeddings,
+            entity_list=final_proteins_list,
+            entity_to_index_map=prot2index,
+            entity_type="Protein Embeddings",
+        ):
+            raise ValueError(
+                "Stage 2 (Protein Embeddings) failed consistency validation."
+            )
+
+    print("=" * 80)
+    print(" " * 22 + "✅ PIPELINE INTEGRITY VALIDATION PASSED ✅")
+    print("=" * 80 + "\n")

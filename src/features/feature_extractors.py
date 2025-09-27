@@ -1,156 +1,263 @@
-from rdkit import Chem
 import torch
-from torch_geometric.data import Data
-import torch.nn.functional as F
-from torch_geometric.nn import GCNConv
+from transformers import AutoTokenizer, AutoModel
+from tqdm import tqdm
+from pathlib import Path
+import pickle as pkl
+import warnings
+from transformers import EsmModel
+
+# 导入您自己的工具包，用于确保路径存在
+from research_template import ensure_path_exists
 
 
-# region d/l feature
-# --- FIXED VERSION of canonicalize_smiles ---
-def canonicalize_smiles(smiles):
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is not None:
-        return Chem.MolToSmiles(mol, canonical=True)
+# ------------------- 模型加载与初始化 -------------------
+
+
+def get_esm_model_and_alphabet(
+    model_name: str = "facebook/esm2_t30_150M_UR50D", device: str = "cpu"
+) -> tuple:
+    """
+    【新版】从Hugging Face Hub加载指定的ESM-2模型和对应的分词器。
+    """
+    print(
+        f"--> [ESM Extractor] Loading ESM model via Hugging Face: {model_name} onto device: {device}"
+    )
+
+    try:
+        # 1. 加载分词器 (Tokenizer)，它等同于旧版的 alphabet
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        # 2. 加载模型本身
+        model = EsmModel.from_pretrained(model_name)
+    except Exception as e:
+        print(
+            f"❌ FATAL: Failed to load ESM model from Hugging Face Hub '{model_name}'."
+        )
+        print(
+            "   Please check your internet connection and if the model name is correct on Hugging Face."
+        )
+        print(f"   Original error: {e}")
+        raise
+
+    model.eval()
+
+    try:
+        model = model.to(device)
+    except Exception as e:
+        print(f"❌ FATAL: Failed to move ESM model to device '{device}'.")
+        print(
+            "   Please check if the specified GPU is available and has enough memory."
+        )
+        print(f"   Original error: {e}")
+        raise
+
+    print(
+        f"--> [ESM Extractor] Model '{model_name}' loaded successfully via Hugging Face."
+    )
+    # 返回 tokenizer 和 model，注意顺序
+    return tokenizer, model
+
+
+# ------------------- 嵌入提取核心逻辑 -------------------
+
+
+def extract_esm_protein_embeddings(
+    sequences: list[str],
+    cache_path: Path,
+    model_name: str = "facebook/esm2_t30_150M_UR50D",
+    batch_size: int = 32,
+    device: str = "cpu",
+    force_regenerate: bool = False,
+) -> torch.Tensor:
+    """
+    【核心接口】智能地提取或加载蛋白质嵌入。
+
+    它首先检查缓存路径。如果缓存文件存在且不强制重新生成，则直接加载。
+    否则，它将执行完整的、耗时的在线提取过程，并在完成后保存结果到缓存。
+
+    Args:
+        sequences (list[str]): 包含待处理蛋白质氨基酸序列的列表。
+        cache_path (Path): 指向缓存文件 (.pkl) 的完整路径对象。
+        model_name (str): 要加载的ESM模型名称。
+        batch_size (int): 每次送入模型进行推理的序列数量。
+        device (str): PyTorch设备字符串。
+        force_regenerate (bool): 如果为True，将忽略现有缓存，强制重新生成嵌入。
+
+    Returns:
+        torch.Tensor: 一个形状为 [num_sequences, embedding_dim] 的张量。
+    """
+    # 1. 检查缓存
+    if cache_path.exists() and not force_regenerate:
+        print(
+            f"--> [ESM Extractor] Loading cached protein embeddings from: {cache_path}"
+        )
+        try:
+            with open(cache_path, "rb") as f:
+                return pkl.load(f)
+        except Exception as e:
+            print(
+                f"⚠️ WARNING: Failed to load cache file '{cache_path}'. Will regenerate. Error: {e}"
+            )
+
+    # 2. 如果缓存不存在或需要强制刷新，则执行在线提取
+    if force_regenerate:
+        print(
+            "--> [ESM Extractor] `force_regenerate` is True. Starting online extraction..."
+        )
     else:
-        print(f"Warning: Invalid SMILES string found and will be ignored: {smiles}")
-        return None  # Return None for invalid SMILES
-
-
-def smiles_to_graph(smiles):
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        raise ValueError("Invalid SMILE string")
-
-    # 提取原子特征
-    atom_features = []
-    for atom in mol.GetAtoms():
-        atom_features.append(
-            [
-                atom.GetAtomicNum(),  # 原子序数
-                atom.GetDegree(),  # 成键数
-                atom.GetTotalNumHs(),  # 附着氢原子数量
-                atom.GetFormalCharge(),  # 价态
-                int(atom.GetIsAromatic()),  # 是否为芳环
-            ]
+        print(
+            f"--> [ESM Extractor] No cache found at '{cache_path}'. Starting online extraction..."
         )
 
-    atom_features = torch.tensor(atom_features, dtype=torch.float)
+    if not sequences:
+        warnings.warn("Input sequence list is empty. Returning an empty tensor.")
+        # 返回一个0行，但维度正确的空张量
+        temp_model, _ = get_esm_model_and_alphabet(model_name, device)
+        embedding_dim = temp_model.embed_dim
+        del temp_model  # 释放内存
+        return torch.empty((0, embedding_dim))
 
-    if mol.GetNumBonds() > 0:
-        edges = []
-        for bond in mol.GetBonds():
-            edges.append((bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()))
-            edges.append((bond.GetEndAtomIdx(), bond.GetBeginAtomIdx()))  # Undirected
+    # a. 加载模型和分词器
+    tokenizer, model = get_esm_model_and_alphabet(model_name, device)
 
-        # This creates a [num_bonds * 2, 2] tensor, then transposes to [2, num_bonds * 2]
-        edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
+    all_embeddings = []
+    progress_bar = tqdm(
+        range(0, len(sequences), batch_size),
+        desc="[ESM Extractor] Online Protein Batches",
+    )
+
+    for i in progress_bar:
+        batch_seqs = sequences[i : i + batch_size]
+
+        # [修改] 使用Hugging Face tokenizer进行编码
+        inputs = tokenizer(
+            batch_seqs, padding=True, truncation=True, return_tensors="pt"
+        )
+        inputs = {key: val.to(device) for key, val in inputs.items()}
+
+        with torch.no_grad():
+            # [修改] Hugging Face模型的输出是一个字典
+            outputs = model(**inputs)
+            # 提取最后一层的隐藏状态
+            token_representations = outputs.last_hidden_state
+
+        # [修改] 后处理逻辑，需要考虑padding
+        for j, seq_string in enumerate(batch_seqs):
+            # 获取attention_mask来确定哪些是真实的token，哪些是padding
+            attention_mask = inputs["attention_mask"][j]
+            true_token_reprs = token_representations[j][attention_mask == 1]
+            # 去掉开头的<cls>和结尾的<eos>
+            true_token_reprs = true_token_reprs[1:-1]
+
+            sequence_level_repr = true_token_reprs.mean(dim=0)
+            all_embeddings.append(sequence_level_repr.cpu())
+
+    embeddings_tensor = torch.stack(all_embeddings)
+    # c. 保存到缓存以备后用
+    print(
+        f"--> [ESM Extractor] Saving newly generated embeddings to cache: {cache_path}"
+    )
+    ensure_path_exists(cache_path)  # 确保父目录存在
+    with open(cache_path, "wb") as f:
+        pkl.dump(embeddings_tensor, f)
+
+    return embeddings_tensor
+
+
+def get_chemberta_model_and_tokenizer(
+    model_name: str = "seyonec/ChemBERTa-zinc-base-v1", device: str = "cpu"
+) -> tuple:
+    """
+    从Hugging Face Hub加载指定的ChemBERTa模型和对应的分词器。
+    """
+    print(
+        f"--> [ChemBERTa Extractor] Loading model via Hugging Face: {model_name} onto device: {device}"
+    )
+
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModel.from_pretrained(model_name, use_safetensors=True)
+    except Exception as e:
+        print(f"❌ FATAL: Failed to load ChemBERTa model '{model_name}'.")
+        print(f"   Original error: {e}")
+        raise
+
+    model.eval()
+    model = model.to(device)
+
+    print(f"--> [ChemBERTa Extractor] Model '{model_name}' loaded successfully.")
+    return tokenizer, model
+
+
+# ------------------- 嵌入提取核心逻辑 -------------------
+
+
+def extract_chemberta_molecule_embeddings(
+    smiles_list: list[str],
+    cache_path: Path,
+    model_name: str = "seyonec/ChemBERTa-zinc-base-v1",
+    batch_size: int = 64,  # 分子通常更短，可以用更大的batch_size
+    device: str = "cpu",
+    force_regenerate: bool = False,
+) -> torch.Tensor:
+    """
+    【核心接口】智能地提取或加载小分子（SMILES）嵌入。
+    """
+    if cache_path.exists() and not force_regenerate:
+        print(
+            f"--> [ChemBERTa Extractor] Loading cached molecule embeddings from: {cache_path}"
+        )
+        with open(cache_path, "rb") as f:
+            return pkl.load(f)
+
+    if force_regenerate:
+        print(
+            "--> [ChemBERTa Extractor] `force_regenerate` is True. Starting online extraction..."
+        )
     else:
-        # If there are no bonds, create an empty edge_index of the correct shape [2, 0]
-        edge_index = torch.empty((2, 0), dtype=torch.long)
+        print(
+            f"--> [ChemBERTa Extractor] No cache found at '{cache_path}'. Starting online extraction..."
+        )
 
-    # 转换为PyG数据格式
-    x = atom_features
-    data = Data(x=x, edge_index=edge_index)
-    return data
+    if not smiles_list:
+        warnings.warn("Input SMILES list is empty. Returning an empty tensor.")
+        temp_model, _ = get_chemberta_model_and_tokenizer(model_name, device)
+        embedding_dim = temp_model.config.hidden_size
+        del temp_model
+        return torch.empty((0, embedding_dim))
 
+    tokenizer, model = get_chemberta_model_and_tokenizer(model_name, device)
 
-class MoleculeGCN(torch.nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-        self.conv1 = GCNConv(in_channels, 64)
-        self.conv2 = GCNConv(64, out_channels)
+    all_embeddings = []
+    progress_bar = tqdm(
+        range(0, len(smiles_list), batch_size),
+        desc="[ChemBERTa Extractor] Online Molecule Batches",
+    )
 
-    def forward(self, x, edge_index):
-        x = F.relu(self.conv1(x, edge_index))
-        x = self.conv2(x, edge_index)
-        return x
+    for i in progress_bar:
+        batch_smiles = smiles_list[i : i + batch_size]
 
+        inputs = tokenizer(
+            batch_smiles,
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+            max_length=128,
+        )  # 设定一个最大长度
+        inputs = {key: val.to(device) for key, val in inputs.items()}
 
-# 特征提取
-def extract_molecule_features(smiles, model, device):
-    graph_data = smiles_to_graph(smiles)
-    # 在PyG的GCNConv中, x的形状需要是 [num_nodes, in_channels]
-    x, edge_index = graph_data.x.to(device), graph_data.edge_index.to(device)
-    node_embeddings = model(x, edge_index)  # 直接调用模型
-    molecule_embedding = node_embeddings.mean(dim=0)
-    return molecule_embedding
+        with torch.no_grad():
+            outputs = model(**inputs)
+            # 我们使用 [CLS] token 的输出作为整个分子的表示，这是BERT类模型的标准做法
+            batch_embeddings = outputs.last_hidden_state[:, 0, :]
+            all_embeddings.append(batch_embeddings.cpu())
 
+    embeddings_tensor = torch.cat(all_embeddings, dim=0)
 
-# endregion
+    print(
+        f"--> [ChemBERTa Extractor] Saving newly generated embeddings to cache: {cache_path}"
+    )
+    ensure_path_exists(cache_path)
+    with open(cache_path, "wb") as f:
+        pkl.dump(embeddings_tensor, f)
 
-# region p feature
-# 氨基酸编码
-aa_index = {
-    "A": 0,
-    "R": 1,
-    "N": 2,
-    "D": 3,
-    "C": 4,
-    "E": 5,
-    "Q": 6,
-    "G": 7,
-    "H": 8,
-    "I": 9,
-    "L": 10,
-    "K": 11,
-    "M": 12,
-    "F": 13,
-    "P": 14,
-    "S": 15,
-    "T": 16,
-    "W": 17,
-    "Y": 18,
-    "V": 19,
-    "X": 20,
-    "U": 21,
-}
-
-
-# 将氨基酸序列转换为图数据
-def aa_sequence_to_graph(sequence):
-    # 提取氨基酸特征
-    node_features = torch.tensor(
-        [aa_index[aa] for aa in sequence], dtype=torch.float
-    ).unsqueeze(1)
-
-    # 构建邻接矩阵
-    edges = []
-    for i in range(len(sequence) - 1):
-        edges.append((i, i + 1))
-        edges.append((i + 1, i))  # 无向图
-
-    edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
-
-    # 转换为PyG数据格式
-    x = node_features
-    data = Data(x=x, edge_index=edge_index)
-    return data
-
-
-# 定义GCN模型
-class ProteinGCN(
-    torch.nn.Module,
-):
-    def __init__(self):
-        super(ProteinGCN, self).__init__()
-        self.conv1 = GCNConv(1, 64)
-        self.conv2 = GCNConv(64, 128)  # 20为氨基酸种类数
-
-    def forward(self, data):
-        x, edge_index = data.x, data.edge_index
-        x = F.relu(self.conv1(x, edge_index))
-        x = F.dropout(x, training=self.training)
-        x = self.conv2(x, edge_index)
-        return F.log_softmax(x, dim=1)
-
-
-# 特征提取
-def extract_protein_features(sequence: str, model, device):
-    graph_data = aa_sequence_to_graph(sequence)
-    node_embeddings = model(graph_data.to(device))
-    # 使用平均池化作为读出函数
-    protein_embedding = node_embeddings.mean(dim=0)
-    return protein_embedding
-
-
-# endregion
+    return embeddings_tensor

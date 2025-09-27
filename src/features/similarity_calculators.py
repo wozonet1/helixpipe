@@ -6,9 +6,11 @@ from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
 import numpy as np
 from tqdm import tqdm
 from rdkit import Chem
+from sklearn.metrics.pairwise import cosine_similarity
+import torch
 
 
-def calculate_drug_similarity(drug_list):
+def calculate_drug_fingerprint_similarity(drug_list):
     # 将SMILES转换为RDKit分子对象
     molecules = [Chem.MolFromSmiles(smiles) for smiles in drug_list]
     fpgen = GetMorganGenerator(radius=2, fpSize=2048)
@@ -34,6 +36,54 @@ def calculate_drug_similarity(drug_list):
                 # 因为矩阵是对称的，所以同时填充 (i, j) 和 (j, i)
                 similarity_matrix[i, j] = similarity
                 similarity_matrix[j, i] = similarity
+
+    return similarity_matrix
+
+
+def calculate_embedding_similarity(
+    embeddings: torch.Tensor, batch_size: int = 1024
+) -> np.ndarray:
+    """
+    【新版 SOTA 方法】基于预计算的蛋白质嵌入（如ESM），高效地计算余弦相似度矩阵。
+
+    这个方法比传统的序列比对快几个数量级，并且利用了深度学习模型
+    学到的丰富语义信息。
+
+    Args:
+        protein_embeddings (torch.Tensor): 形状为 [num_proteins, embedding_dim] 的
+                                           蛋白质嵌入张量。
+        batch_size (int): 在计算相似性时，为了防止内存溢出而使用的批处理大小。
+                           可以根据您的GPU显存进行调整。
+
+    Returns:
+        np.ndarray: 形状为 [num_proteins, num_proteins] 的相似度矩阵，
+                    其值为0到1之间的余弦相似度。
+    """
+    print(
+        f"--> [Similarity] Calculating cosine similarity for {embeddings.shape[0]} protein embeddings..."
+    )
+
+    # 1. 确保嵌入在CPU上，并转换为Numpy数组，以便使用scikit-learn
+    #    scikit-learn的cosine_similarity针对CPU进行了高度优化。
+    #    如果嵌入数量巨大，也可以考虑使用GPU上的PyTorch实现。
+    embeddings_np = embeddings.cpu().numpy()
+
+    # 2. [核心] 使用 scikit-learn 高效地计算余弦相似度矩阵。
+    #    这个函数内部已经处理了所有并行化和数值稳定性问题。
+    #    输出的值范围在-1到1之间。
+    similarity_matrix = cosine_similarity(embeddings_np)
+
+    # 3. 将相似度从 [-1, 1] 区间，线性地缩放到 [0, 1] 区间。
+    #    这是一个常见的做法，因为在图论中，边的权重通常是非负的。
+    #    公式: new_value = (old_value + 1) / 2
+    similarity_matrix = (similarity_matrix + 1) / 2
+
+    # 4. (可选但推荐) 使用np.clip确保数值稳定性，防止浮点数精度问题
+    similarity_matrix = np.clip(similarity_matrix, 0, 1)
+
+    print(
+        f"--> [Similarity] Protein similarity matrix calculated successfully. Shape: {similarity_matrix.shape}"
+    )
 
     return similarity_matrix
 
@@ -74,7 +124,7 @@ def get_custom_blosum62_with_U():
     return substitution_matrices.Array(data=custom_matrix_dict)
 
 
-def calculate_protein_similarity(sequence_list, cpus: int):
+def calculate_protein_align_similarity(sequence_list, cpus: int):
     # 定义 Aligner 的配置字典，以便传递给并行任务s
     aligner_config = {
         "mode": "local",
