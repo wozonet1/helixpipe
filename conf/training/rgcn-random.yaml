@@ -1,7 +1,0 @@
-name: "rgcn-random"
-
-evaluation:  #TODO: 重构整合
-    mode: "random"
-    test_fraction: 0.2
-    k_folds: 5
-

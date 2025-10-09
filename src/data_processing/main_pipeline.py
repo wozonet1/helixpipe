@@ -493,7 +493,7 @@ def _process_all_folds(
     eval_config = config.training.evaluation
     split_mode = eval_config.mode
     seed = config.runtime.seed
-    num_folds = eval_config.k_folds
+    num_folds = config.training.k_folds
 
     # --- 1. 准备分割迭代器 ---
     # 这部分逻辑决定了我们将如何循环（K-Fold或Single Split）
@@ -676,7 +676,7 @@ def _process_single_fold(
     train_labels_path = rt.get_path(
         config,
         labels_template_key,
-        split_suffix=f"_fold{fold_idx}{file_suffixes.train}",
+        split_suffix=f"fold{fold_idx}{file_suffixes.train}",
     )
     print(
         f"    -> Saving {len(train_positive_pairs)} positive pairs for supervision to: {train_labels_path.name}..."
@@ -692,7 +692,7 @@ def _process_single_fold(
     test_labels_path = rt.get_path(
         config,
         labels_template_key,
-        split_suffix=f"_fold{fold_idx}{file_suffixes.test}",
+        split_suffix=f"fold{fold_idx}{file_suffixes.test}",
     )
     # 测试集需要负采样
     _generate_and_save_labeled_set_for_test(
@@ -886,7 +886,7 @@ def _build_graph_for_fold(
 
     # --- 4. 保存最终的图文件 ---
     graph_output_path = rt.get_path(
-        config, graph_template_key, split_suffix=f"_fold{fold_idx}"
+        config, graph_template_key, split_suffix=f"fold{fold_idx}"
     )
     print(
         f"\n--> Saving final graph structure for Fold {fold_idx} to: {graph_output_path}"

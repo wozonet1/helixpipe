@@ -54,9 +54,9 @@ def evaluate(
 
 def run_end_to_end_workflow(
     config: DictConfig,
-    hetero_graph: HeteroData,  # <-- 已经是净化过的、使用局部ID的图
-    train_edge_label_index: torch.Tensor,  # <-- 已经是局部ID
-    test_edge_label_index: torch.Tensor,  # <-- 已经是局部ID
+    hetero_graph: HeteroData,
+    train_edge_label_index: torch.Tensor,
+    test_edge_label_index: torch.Tensor,
     test_labels: torch.Tensor,
     device: torch.device,
     tracker: rt.MLflowTracker,
@@ -123,7 +123,9 @@ def run_end_to_end_workflow(
     print("--> Starting mini-batch model training...")
     best_val_aupr = 0
     best_epoch_results = {}
-    epoch_pbar = tqdm(range(config.training.epochs), desc="Starting Training")
+    epoch_pbar = tqdm(
+        range(config.training.epochs), desc="Starting Training", leave=False
+    )
     validation_freq = config.runtime.get("validate_every_n_epochs", 10)
     for epoch in epoch_pbar:
         model.train()
@@ -171,9 +173,7 @@ def run_end_to_end_workflow(
     print(
         f"Best validation AUPR: {best_epoch_results.get('aupr', 0):.4f} at epoch {best_epoch_results.get('epoch', -1)}"
     )
-
-    # 返回在验证集上性能最好的那个epoch的结果
-    return best_epoch_results
+    tracker.log_best_fold_result(best_epoch_results, fold_idx)
 
 
 # end region
@@ -189,7 +189,7 @@ def train(config: DictConfig):
         device = torch.device(
             config["runtime"]["gpu"] if torch.cuda.is_available() else "cpu"
         )
-
+        fold_idx = config.runtime.fold_idx
         predictor_name = config.predictor.name
         data_variant = "gtopdb" if config.data.use_gtopdb else "baseline"
 
@@ -203,40 +203,33 @@ def train(config: DictConfig):
         print(f"  - Predictor:           '{predictor_name or 'N/A'}'")
         print(f"  - Use Relations:   '{config.relations.name}'")
         print(f"  - Seed:                {config['runtime']['seed']}")
-        print(f"  - Device:              {device}")
+        print(f"  - Device:              {device}")  # TODO: 加上split
         print("=" * 80 + "\n")
 
-        k_folds = config.training.evaluation.k_folds
+        (
+            hetero_graph,
+            train_edge_label_index,
+            test_edge_label_index,
+            test_labels,
+            maps,  # maps可能不再需要，取决于run_workflow的实现
+        ) = prepare_e2e_data(config, fold_idx)
+        # [修改3] (可选) 一行代码，运行所有诊断
+        if config.runtime.get("run_diagnostics", False):
+            # 假设run_optional_diagnostics现在只需要graph
+            run_optional_diagnostics(hetero_graph)
 
-        for fold_idx in range(1, k_folds + 1):
-            print("\n" + "#" * 80)
-            print(f"#{' ' * 28}PROCESSING FOLD {fold_idx} / {k_folds}{' ' * 28}#")
-            print("#" * 80 + "\n")
-            (
-                hetero_graph,
-                train_edge_label_index,
-                test_edge_label_index,
-                test_labels,
-                maps,  # maps可能不再需要，取决于run_workflow的实现
-            ) = prepare_e2e_data(config, fold_idx)
-            # [修改3] (可选) 一行代码，运行所有诊断
-            if config.runtime.get("run_diagnostics", False):
-                # 假设run_optional_diagnostics现在只需要graph
-                run_optional_diagnostics(hetero_graph)
-
-            # [修改4] 调用工作流函数，传递已经准备好的数据
-            # 注意：我们现在传递的是已经处理好的、可以直接使用的Tensor
-            fold_results = run_end_to_end_workflow(
-                config=config,
-                hetero_graph=hetero_graph,
-                train_edge_label_index=train_edge_label_index,
-                test_edge_label_index=test_edge_label_index,
-                test_labels=test_labels,
-                device=device,
-                tracker=tracker,
-                fold_idx=fold_idx,
-            )
-            tracker.log_best_fold_result(fold_results, fold_idx)
+        # [修改4] 调用工作流函数，传递已经准备好的数据
+        # 注意：我们现在传递的是已经处理好的、可以直接使用的Tensor
+        run_end_to_end_workflow(
+            config=config,
+            hetero_graph=hetero_graph,
+            train_edge_label_index=train_edge_label_index,
+            test_edge_label_index=test_edge_label_index,
+            test_labels=test_labels,
+            device=device,
+            tracker=tracker,
+            fold_idx=fold_idx,
+        )
 
     except Exception as e:
         # ... (error handling remains the same) ...

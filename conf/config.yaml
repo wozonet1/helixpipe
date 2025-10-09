@@ -4,8 +4,8 @@ defaults:
   - predictor: rgcn
   - relations: DP_sim
   - params: default
-  - training: rgcn-random
   - analysis: split_diff # [核心新增] 添加这一行
+
   - _self_  # This line is important, it tells Hydra to also load the rest of this file.
 
 
@@ -19,7 +19,7 @@ data:
     raw:
       dti_interactions: "full.csv"
     processed:
-        typed_edge_list_template: "typed_edges-{relations_suffix}.csv"
+        typed_edge_list_template: "graph.csv"
         abbr: 
           dp_interaction: dp
           lp_interaction: lp
@@ -27,7 +27,7 @@ data:
           dd_similarity: dd
           dl_similarity: dl
           ll_similarity: ll
-        link_prediction_labels_template: "dl_p_edges{split_suffix}.csv"
+        link_prediction_labels_template: "labels_{split_suffix}.csv"
         nodes_metadata: "nodes.csv"
         node_features:  "node_features.npy"
         feature_caches:
@@ -71,6 +71,11 @@ training:
     batch_size: 2048
     negative_sampling_ratio: 1
     weight_decay: 1e-5
+    k_folds: 5
+    evaluation:  
+        mode: "drug"
+        test_fraction: 0.2
+
 
 runtime:
   seed: 514
@@ -82,6 +87,7 @@ runtime:
   trian_loader_cpus: 16
   test_loader_cpus: 8
   validate_every_n_epochs: 10
+  fold_idx: 1  # [核心] 当前折数，由多任务扫描覆盖
 
 mlflow:
   tracking_uri: "logs/mlruns" 

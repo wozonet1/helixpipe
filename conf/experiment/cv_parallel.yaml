@@ -1,8 +1,10 @@
 # 这个文件定义了一个名为“交叉验证并行”的完整实验方案
 
 defaults:
+  - override hydra/launcher: joblib
+  - override hydra/hydra_logging: colorlog
+  - override hydra/job_logging: colorlog
   - _self_
-  - override hydra/launcher: joblib # <-- [核心] 告诉Hydra使用Joblib启动器
 
 # --- 全局Hydra设置 ---
 hydra:
@@ -21,4 +23,4 @@ hydra:
       # 告诉Hydra，我们想对 training.fold_idx 这个参数进行扫描
       # range(1, 6) 会生成 1, 2, 3, 4, 5
       # 这意味着Hydra会自动启动5个任务，每个任务的 fold_idx 分别是 1, 2, 3, 4, 5
-      training.fold_idx: range(1, 6) # 假设我们进行5折交叉验证
+      runtime.fold_idx: range(1, 6) # 假设我们进行5折交叉验证
