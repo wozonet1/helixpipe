@@ -83,8 +83,8 @@ def run_experiment(cfg: DictConfig):
 
     rt.set_seeds(config_dict.runtime.seed)
     rt.setup_dataset_directories(config_dict)  # Handles directory creation and cleaning
-
-    process_data(config_dict)
+    if not config_dict.runtime.get("skip_data_proc", False):
+        process_data(config_dict)
     train(config_dict)
 
 

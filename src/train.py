@@ -14,6 +14,7 @@ from sklearn.metrics import roc_auc_score, average_precision_score
 from torch_geometric.loader import LinkNeighborLoader
 from data_utils.debug_utils import run_optional_diagnostics
 from data_utils.preparers import prepare_e2e_data
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 target_edge_type = ("drug", "drug_protein_interaction", "protein")
 
@@ -94,7 +95,17 @@ def run_end_to_end_workflow(
         lr=config.training.learning_rate,
         weight_decay=config.training.weight_decay,
     )
+    warmup_scheduler = LinearLR(
+        optimizer, start_factor=1e-4, end_factor=1.0, total_iters=5
+    )
 
+    # b. 主调度器：在剩余的 (total_epochs - 5) 个epoch内，按余弦曲线衰减
+    main_scheduler = CosineAnnealingLR(optimizer, T_max=config.training.epochs - 5)
+
+    # c. 将它们组合成一个顺序调度器
+    scheduler = SequentialLR(
+        optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[5]
+    )
     # --- 2. 实例化数据加载器 ---
     print("--> Initializing LinkNeighborLoader in single-process mode...")
     train_loader = LinkNeighborLoader(
@@ -144,8 +155,18 @@ def run_end_to_end_workflow(
             optimizer.step()
 
             total_loss += loss.item() * scores.size(0)
+        scheduler.step()
+        current_lr = scheduler.get_last_lr()[0]
+        tracker.log_training_metric(
+            epoch=epoch,
+            value=current_lr,
+            fold_idx=fold_idx,
+            metric_name="learning_rate",
+        )  # 记录学习率
         avg_loss = total_loss / len(train_loader.dataset)
-        tracker.log_training_metric(epoch=epoch, loss=avg_loss, fold_idx=fold_idx)
+        tracker.log_training_metric(
+            epoch=epoch, value=avg_loss, fold_idx=fold_idx, metric_name="loss"
+        )
         epoch_pbar.set_description(f"Epoch {epoch:03d} | Avg Loss: {avg_loss:.4f}")
 
         # --- 7. 评估 ---

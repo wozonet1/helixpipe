@@ -58,7 +58,7 @@ data:
 # These are mostly parameters for data processing and evaluation
 #会影响性能的参数放在这里
 training:
-  learning_rate: 0.005
+  learning_rate: 0.0005
   epochs: 200
   negative_sampling_ratio: 1
   weight_decay: 1e-5
@@ -75,6 +75,7 @@ runtime:
   gpu: "cuda:2"
   force_restart: false
   sim_restart: false
+  skip_data_proc: true
   debug: true
   trian_loader_cpus: 16
   test_loader_cpus: 8
