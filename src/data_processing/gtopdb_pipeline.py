@@ -2,13 +2,10 @@
 
 import pandas as pd
 import sys
-from tqdm import tqdm
-import time
 from pathlib import Path
-import requests
-import re
 import yaml
 from research_template import get_path
+from data_utils.canonicalizer import fetch_sequences_from_uniprot
 
 
 def load_config(config_path="config.yaml"):
@@ -20,121 +17,6 @@ def load_config(config_path="config.yaml"):
 
 # Load config at the start of the script
 config = load_config()
-
-
-def is_valid_uniprot_accession(accession):
-    """
-    使用正则表达式，快速检查一个ID是否符合UniProt Accession的典型格式。
-    这是一个简化版检查，但能过滤掉大部分非Accession的ID。
-    """
-    # 典型的UniProt Accession格式: e.g., P12345, Q9Y261, A0A024R1R8
-    # 规则: 字母开头，后面跟5个或更多数字/字母
-    # [OPQ][0-9][A-Z0-9]{3}[0-9] | [A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2}
-    # 我们用一个简化的版本
-    pattern = re.compile(
-        r"^[A-NR-Z][0-9][A-Z][A-Z0-9]{2}[0-9]$|^[OPQ][0-9][A-Z0-9]{3}[0-9]$",
-        re.IGNORECASE,
-    )
-    return bool(pattern.match(str(accession)))
-
-
-def fetch_sequences_from_uniprot(uniprot_ids):
-    """
-    【最终版】
-    根据UniProt ID列表，使用requests库直接调用UniProt官方API，批量获取蛋白质序列。
-    这是一个更现代、更健壮的实现。
-    """
-    valid_ids = sorted(
-        [uid for uid in set(uniprot_ids) if is_valid_uniprot_accession(uid)]
-    )
-    invalid_ids = set(uniprot_ids) - set(valid_ids)
-    if invalid_ids:
-        print(
-            f"Warning: Skipped {len(invalid_ids)} IDs with non-standard format. Examples: {list(invalid_ids)[:5]}"
-        )
-
-    print(f"Fetching sequences for {len(valid_ids)} valid UniProt IDs...")
-
-    base_url = "https://rest.uniprot.org/uniprotkb/stream"
-    sequences_map = {}
-    chunk_size = 100
-
-    for i in tqdm(range(0, len(valid_ids), chunk_size), desc="Querying UniProt API"):
-        chunk = valid_ids[i : i + chunk_size]
-
-        params = {
-            "query": " OR ".join(f"(accession:{acc})" for acc in chunk),
-            "format": "fasta",
-        }
-
-        try:
-            response = requests.get(base_url, params=params)
-
-            # 检查请求是否成功
-            if response.status_code == 200:
-                fasta_text = response.text
-
-                # 解析返回的FASTA文本 (这部分逻辑和之前一样)
-                for entry in fasta_text.strip().split(">"):
-                    if not entry.strip():
-                        continue
-                    lines = entry.strip().split("\n")
-                    header = lines[0]
-                    seq = "".join(lines[1:])
-
-                    try:
-                        uid = header.split("|")[1]
-                        sequences_map[uid] = seq
-                    except IndexError:
-                        print(
-                            f"\nWarning: Could not parse UniProt ID from header: '{header}'"
-                        )
-            elif response.status_code == 400 and len(chunk) > 1:
-                print(
-                    f"\nWarning: Batch request failed (400 Bad Request). Switching to individual retry for {len(chunk)} IDs..."
-                )
-                for single_id in tqdm(chunk, desc="Retrying individually", leave=False):
-                    single_params = {
-                        "query": f"(accession:{single_id})",
-                        "format": "fasta",
-                    }
-                    try:
-                        single_response = requests.get(
-                            base_url, params=single_params, timeout=10
-                        )
-                        if single_response.status_code == 200:
-                            s_fasta = single_response.text
-                            if s_fasta and s_fasta.startswith(">"):
-                                s_lines = s_fasta.strip().split("\n")
-                                s_header, s_seq = s_lines[0], "".join(s_lines[1:])
-                                s_uid = s_header.split("|")[1]
-                                sequences_map[s_uid] = s_seq
-                        else:
-                            print(
-                                f"-> Failed for single ID: {single_id} (Status: {single_response.status_code})"
-                            )
-                    except Exception as single_e:
-                        print(
-                            f"-> Network/Parse error for single ID {single_id}: {single_e}"
-                        )
-                    time.sleep(0.2)  # 单个查询之间也稍作等待
-
-            else:
-                # 如果请求失败，打印出错误状态码
-                print(
-                    f"\nWarning: UniProt API request failed for chunk starting with {chunk[0]}. Status code: {response.status_code}"
-                )
-
-        except requests.exceptions.RequestException as e:
-            # 捕获网络层面的错误
-            print("\n--- NETWORK ERROR during UniProt fetch ---")
-            print(f"Error: {e}")
-            print("------------------------------------------")
-
-        time.sleep(1)  # 保持API礼仪
-
-    print(f"-> FINAL: Successfully fetched {len(sequences_map)} sequences.")
-    return sequences_map
 
 
 def process_gtopdb_data():

@@ -6,7 +6,7 @@ import pickle as pkl
 from pathlib import Path
 import pandas as pd
 import requests
-from urllib.parse import urlencode
+import re
 
 
 def canonicalize_smiles(smiles):
@@ -19,95 +19,59 @@ def canonicalize_smiles(smiles):
 
 
 def canonicalize_smiles_to_cid(
-    smiles_list: list[str], cache_path: Path = None
+    smiles_list: list[str],
+    cache_path: Path = None,
+    force_regenerate: bool = False,  # 新增 force_regenerate
 ) -> dict[str, int]:
     """
-    【核心标准化函数】将一个SMILES字符串列表，批量转换为PubChem CID。
-
-    该函数实现了：
-    1. 缓存机制：如果提供了cache_path且文件存在，则直接从缓存加载。
-    2. 批量查询：将SMILES分批次提交给PubChem API，以提高效率。
-    3. 延时与重试：遵守API使用礼仪，并在遇到临时网络问题时自动重试。
-    4. 错误处理：优雅地处理无法被PubChem识别的无效SMILES。
-
-    Args:
-        smiles_list (list[str]): 待转换的SMILES字符串列表。
-        cache_path (Path, optional): 指向缓存文件(.pkl)的路径。
-                                     如果提供，函数会优先使用缓存。 Defaults to None.
-
-    Returns:
-        dict[str, int]: 一个从原始SMILES字符串，映射到其对应PubChem CID（整数）的字典。
-                        无法转换的SMILES将不会出现在字典中。
+    【新版 - 更健壮】将一个SMILES字符串列表，转换为PubChem CID。
+    采用逐个查询的方式，以最大限度地提高成功率和错误隔离。
     """
-    # --- 1. 检查缓存 ---
-    if cache_path and cache_path.exists():
+    if cache_path and cache_path.exists() and not force_regenerate:
         print(f"--> [Canonicalizer] Loading cached SMILES->CID map from: {cache_path}")
         with open(cache_path, "rb") as f:
             return pkl.load(f)
 
     print(
-        "--> [Canonicalizer] No cache found. Starting SMILES to CID conversion via PubChem API..."
+        "--> [Canonicalizer] Starting SMILES to CID conversion (robust, one-by-one mode)..."
     )
 
-    # 获取唯一的、非空的SMILES列表
     unique_smiles = sorted(list(set(s for s in smiles_list if s and pd.notna(s))))
 
     smiles_to_cid_map = {}
     not_found_smiles = []
 
-    # PubChem PUG-REST API对请求频率有限制，批量和延时是必须的
-    batch_size = 100  # 每次查询100个
+    # [核心修改] 不再使用批量API，而是逐个查询
+    progress_bar = tqdm(unique_smiles, desc="[Canonicalizer] Querying PubChem")
 
-    progress_bar = tqdm(
-        range(0, len(unique_smiles), batch_size),
-        desc="[Canonicalizer] Querying PubChem",
-    )
-
-    for i in progress_bar:
-        batch_smiles = unique_smiles[i : i + batch_size]
-
-        # --- 2. 批量查询与重试逻辑 ---
+    for smiles in progress_bar:
         max_retries = 3
+        cid = None
         for attempt in range(max_retries):
             try:
-                # pcp.get_cids() 是一个强大的批量查询函数
-                # 'smiles' 指定查询类型
-                # 'name' 也可以，但'smiles'更精确
-                results = pcp.get_cids(
-                    batch_smiles, namespace="smiles", as_dataframe=True
-                )
-
-                # 处理查询成功的结果
-                for smiles, row in results.iterrows():
-                    # get_cids 返回的DataFrame的index就是原始的SMILES
-                    # 我们取CID列的第一个值（通常也只有一个）
-                    if not pd.isna(row["CID"]):
-                        smiles_to_cid_map[smiles] = int(row["CID"])
-
-                # 记录那些在PubChem中找不到的SMILES
-                found_smiles = set(results.index)
-                for smiles in batch_smiles:
-                    if smiles not in found_smiles:
-                        not_found_smiles.append(smiles)
-
-                break  # 成功，跳出重试循环
-
-            except (pcp.PubChemHTTPError, ConnectionError) as e:
-                print(
-                    f"\n   - WARNING: PubChem API error on attempt {attempt + 1}/{max_retries}: {e}"
-                )
+                # pcp.get_compounds 返回一个Compound对象列表
+                compounds = pcp.get_compounds(smiles, "smiles")
+                if compounds:
+                    # 我们只取第一个结果的CID
+                    cid = compounds[0].cid
+                    break  # 成功，跳出重试循环
+            except (pcp.PubChemHTTPError, requests.exceptions.RequestException) as e:
+                # 增加了对底层requests错误的捕获
                 if attempt < max_retries - 1:
-                    wait_time = 2 ** (attempt + 1)  # 指数退避：2, 4, 8秒
-                    print(f"     Retrying in {wait_time} seconds...")
-                    time.sleep(wait_time)
+                    time.sleep(1 * (attempt + 1))  # 稍作等待再重试
                 else:
+                    # 记录多次重试后仍然失败的错误
                     print(
-                        f"   - FATAL: Failed to query batch after {max_retries} attempts. Skipping this batch."
+                        f"\n   - WARNING: API error for SMILES '{smiles}' after {max_retries} attempts: {e}"
                     )
-                    not_found_smiles.extend(batch_smiles)  # 整个batch都算作未找到
 
-        # 遵守API礼仪，每次批量查询后都稍作等待
-        time.sleep(0.2)
+        if cid:
+            smiles_to_cid_map[smiles] = cid
+        else:
+            not_found_smiles.append(smiles)
+
+        # [修改] 每次查询后都稍作延时，避免过于频繁
+        time.sleep(0.05)  # 50毫秒
 
     print("--> [Canonicalizer] Conversion finished.")
     print(f"    - Successfully converted: {len(smiles_to_cid_map)} SMILES")
@@ -128,141 +92,116 @@ def canonicalize_smiles_to_cid(
     return smiles_to_cid_map
 
 
-# ------------------- 蛋白质标准化核心函数 -------------------
-
-
-def canonicalize_sequences_to_uniprot(
-    sequence_list: list[str], cache_path: Path = None, force_regenerate: bool = False
-) -> dict[str, str]:
+def is_valid_uniprot_accession(accession):
     """
-    【生产版】将蛋白质序列列表，批量转换为权威的UniProt Accession ID。
-
-    该函数实现了：
-    1. 缓存机制：优先从本地缓存加载。
-    2. 批量提交：将序列分批次提交给UniProt ID Mapping API。
-    3. 轮询与结果获取：遵循UniProt API的两阶段异步查询模式。
-    4. 错误处理与API礼仪。
-
-    Args:
-        sequence_list (list[str]): 待转换的蛋白质氨基酸序列列表。
-        cache_path (Path, optional): 指向缓存文件(.pkl)的路径。
-        force_regenerate (bool): 如果为True，将忽略现有缓存，强制重新生成。
-
-    Returns:
-        dict[str, str]: 一个从原始序列，映射到其对应UniProt ID（字符串）的字典。
+    使用正则表达式，快速检查一个ID是否符合UniProt Accession的典型格式。
+    这是一个简化版检查，但能过滤掉大部分非Accession的ID。
     """
-    # --- 1. 检查缓存 ---
-    if cache_path and cache_path.exists() and not force_regenerate:
-        print(
-            f"--> [Canonicalizer] Loading cached Sequence->UniProt map from: {cache_path}"
-        )
-        with open(cache_path, "rb") as f:
-            return pkl.load(f)
-
-    if force_regenerate:
-        print(
-            "--> [Canonicalizer] `force_regenerate` is True. Starting Seq->UniProt conversion..."
-        )
-    else:
-        print(
-            "--> [Canonicalizer] No cache found. Starting Seq->UniProt conversion via UniProt API..."
-        )
-
-    unique_sequences = sorted(list(set(s for s in sequence_list if s and pd.notna(s))))
-
-    seq_to_uniprot_map = {}
-
-    # UniProt API的最佳实践，同样是分批处理
-    batch_size = 100  # UniProt建议的批量大小
-
-    progress_bar = tqdm(
-        range(0, len(unique_sequences), batch_size),
-        desc="[Canonicalizer] Submitting jobs to UniProt",
+    # 典型的UniProt Accession格式: e.g., P12345, Q9Y261, A0A024R1R8
+    # 规则: 字母开头，后面跟5个或更多数字/字母
+    # [OPQ][0-9][A-Z0-9]{3}[0-9] | [A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2}
+    # 我们用一个简化的版本
+    pattern = re.compile(
+        r"^[A-NR-Z][0-9][A-Z][A-Z0-9]{2}[0-9]$|^[OPQ][0-9][A-Z0-9]{3}[0-9]$",
+        re.IGNORECASE,
     )
+    return bool(pattern.match(str(accession)))
 
-    for i in progress_bar:
-        batch_seqs = unique_sequences[i : i + batch_size]
 
-        # --- 2. UniProt API两阶段查询 ---
-        # 阶段 A: 提交查询任务，并获取一个任务ID
-        job_id = _submit_uniprot_id_mapping_job(batch_seqs)
-
-        if job_id:
-            # 阶段 B: 使用任务ID，轮询API直到任务完成，然后获取结果
-            results = _get_uniprot_id_mapping_results(job_id)
-
-            # 3. 解析结果
-            for result in results:
-                original_sequence = result["from"]
-                uniprot_id = result["to"]["primaryAccession"]
-                seq_to_uniprot_map[original_sequence] = uniprot_id
-
-        # 每次任务后等待，以示API礼仪
-        time.sleep(1)
-
-    print(f"--> [Canonicalizer] Conversion finished.")
-    print(f"    - Successfully mapped: {len(seq_to_uniprot_map)} sequences")
-    print(
-        f"    - Could not map: {len(unique_sequences) - len(seq_to_uniprot_map)} sequences"
+def fetch_sequences_from_uniprot(uniprot_ids):
+    """
+    【最终版】
+    根据UniProt ID列表，使用requests库直接调用UniProt官方API，批量获取蛋白质序列。
+    这是一个更现代、更健壮的实现。
+    """
+    valid_ids = sorted(
+        [uid for uid in set(uniprot_ids) if is_valid_uniprot_accession(uid)]
     )
-
-    # --- 4. 保存到缓存 ---
-    if cache_path:
+    invalid_ids = set(uniprot_ids) - set(valid_ids)
+    if invalid_ids:
         print(
-            f"--> [Canonicalizer] Saving new Sequence->UniProt map to cache: {cache_path}"
+            f"Warning: Skipped {len(invalid_ids)} IDs with non-standard format. Examples: {list(invalid_ids)[:5]}"
         )
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_path, "wb") as f:
-            pkl.dump(seq_to_uniprot_map, f)
 
-    return seq_to_uniprot_map
+    print(f"Fetching sequences for {len(valid_ids)} valid UniProt IDs...")
 
+    base_url = "https://rest.uniprot.org/uniprotkb/stream"
+    sequences_map = {}
+    chunk_size = 100
 
-# --- UniProt API的辅助函数 ---
+    for i in tqdm(range(0, len(valid_ids), chunk_size), desc="Querying UniProt API"):
+        chunk = valid_ids[i : i + chunk_size]
 
+        params = {
+            "query": " OR ".join(f"(accession:{acc})" for acc in chunk),
+            "format": "fasta",
+        }
 
-def _submit_uniprot_id_mapping_job(sequence_batch: list[str]) -> str | None:
-    """辅助函数：向UniProt提交ID Mapping任务。"""
-    params = {
-        "from": "Sequence",
-        "to": "UniProtKB",
-        "queries": ",".join(sequence_batch),
-    }
-    try:
-        response = requests.post("https://rest.uniprot.org/idmapping/run", data=params)
-        response.raise_for_status()
-        return response.json().get("jobId")
-    except requests.exceptions.RequestException as e:
-        print(f"\n   - WARNING: Failed to submit UniProt job. Error: {e}")
-        return None
-
-
-def _get_uniprot_id_mapping_results(job_id: str) -> list:
-    """辅助函数：轮询并获取已完成的UniProt ID Mapping任务的结果。"""
-    while True:
         try:
-            status_response = requests.get(
-                f"https://rest.uniprot.org/idmapping/status/{job_id}"
-            )
-            status_response.raise_for_status()
-            status_data = status_response.json()
+            response = requests.get(base_url, params=params)
 
-            if status_data.get("jobStatus") == "FINISHED":
-                # 任务完成，获取最终结果
-                results_response = requests.get(
-                    f"https://rest.uniprot.org/idmapping/details/{job_id}"
-                )
-                results_response.raise_for_status()
-                return results_response.json().get("results", [])
-            elif status_data.get("jobStatus") in ["RUNNING", "NEW"]:
-                # 任务仍在进行，等待
-                time.sleep(2)
-            else:
-                # 任务出现错误
+            # 检查请求是否成功
+            if response.status_code == 200:
+                fasta_text = response.text
+
+                # 解析返回的FASTA文本 (这部分逻辑和之前一样)
+                for entry in fasta_text.strip().split(">"):
+                    if not entry.strip():
+                        continue
+                    lines = entry.strip().split("\n")
+                    header = lines[0]
+                    seq = "".join(lines[1:])
+
+                    try:
+                        uid = header.split("|")[1]
+                        sequences_map[uid] = seq
+                    except IndexError:
+                        print(
+                            f"\nWarning: Could not parse UniProt ID from header: '{header}'"
+                        )
+            elif response.status_code == 400 and len(chunk) > 1:
                 print(
-                    f"\n   - WARNING: UniProt job {job_id} failed with status: {status_data.get('jobStatus')}"
+                    f"\nWarning: Batch request failed (400 Bad Request). Switching to individual retry for {len(chunk)} IDs..."
                 )
-                return []
+                for single_id in tqdm(chunk, desc="Retrying individually", leave=False):
+                    single_params = {
+                        "query": f"(accession:{single_id})",
+                        "format": "fasta",
+                    }
+                    try:
+                        single_response = requests.get(
+                            base_url, params=single_params, timeout=10
+                        )
+                        if single_response.status_code == 200:
+                            s_fasta = single_response.text
+                            if s_fasta and s_fasta.startswith(">"):
+                                s_lines = s_fasta.strip().split("\n")
+                                s_header, s_seq = s_lines[0], "".join(s_lines[1:])
+                                s_uid = s_header.split("|")[1]
+                                sequences_map[s_uid] = s_seq
+                        else:
+                            print(
+                                f"-> Failed for single ID: {single_id} (Status: {single_response.status_code})"
+                            )
+                    except Exception as single_e:
+                        print(
+                            f"-> Network/Parse error for single ID {single_id}: {single_e}"
+                        )
+                    time.sleep(0.2)  # 单个查询之间也稍作等待
+
+            else:
+                # 如果请求失败，打印出错误状态码
+                print(
+                    f"\nWarning: UniProt API request failed for chunk starting with {chunk[0]}. Status code: {response.status_code}"
+                )
+
         except requests.exceptions.RequestException as e:
-            print(f"\n   - WARNING: Failed to check UniProt job status. Error: {e}")
-            return []
+            # 捕获网络层面的错误
+            print("\n--- NETWORK ERROR during UniProt fetch ---")
+            print(f"Error: {e}")
+            print("------------------------------------------")
+
+        time.sleep(1)  # 保持API礼仪
+
+    print(f"-> FINAL: Successfully fetched {len(sequences_map)} sequences.")
+    return sequences_map

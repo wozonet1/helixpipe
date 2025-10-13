@@ -25,7 +25,7 @@ def process_data(config: DictConfig):
         final_proteins_list,
     ) = _stage_1_load_and_index_entities(
         config, full_df=full_df, restart_flag=restart_flag
-    )
+    )  # TODO: 引入class idmapper,动态构建映射
     debug_utils.validate_data_pipeline_integrity(
         final_smiles_list=final_smiles_list,
         final_proteins_list=final_proteins_list,
