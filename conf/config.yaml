@@ -1,15 +1,13 @@
-
 defaults:
   - data: DrugBank # Default dataset to use
   - predictor: rgcn
   - relations: DP_sim
   - params: default
-  - analysis: split_diff # [核心新增] 添加这一行
+  - analysis: split_diff # 仅仅在分析时用到
 
-  - _self_  # This line is important, it tells Hydra to also load the rest of this file.
+  - _self_ # This line is important, it tells Hydra to also load the rest of this file.
 
-
-
+#主要是有关数据处理的,影响结果的参数与文件结构描述
 data:
   subfolders:
     raw: "raw"
@@ -19,17 +17,9 @@ data:
     raw:
       dti_interactions: "full.csv"
     processed:
-        typed_edge_list_template: "graph.csv"
-        abbr: 
-          dp_interaction: dp
-          lp_interaction: lp
-          pp_similarity: pp
-          dd_similarity: dd
-          dl_similarity: dl
-          ll_similarity: ll
-        link_prediction_labels_template: "labels_{split_suffix}.csv"
+      common:
         nodes_metadata: "nodes.csv"
-        node_features:  "node_features.npy"
+        node_features: "node_features.npy"
         feature_caches:
           molecule_embeddings: "feature_caches/molecule_features.pkl"
           protein_embeddings: "feature_caches/esm_protein_features.pkl"
@@ -40,9 +30,10 @@ data:
           drug: "indexes/drug2index.pkl"
           ligand: "indexes/ligand2index.pkl"
           protein: "indexes/prot2index.pkl"
-        suffix:
-          train: "_train"
-          test: "_test"
+
+      specific:
+        graph_template: "{prefix}_graph_{suffix}.csv" #最后是{fold_idx}-train/test
+        labels_template: "{prefix}_labels_{suffix}.csv"
     gtopdb:
       raw:
         interactions: "interactions.csv"
@@ -54,29 +45,30 @@ data:
         interactions: "gtopdb_p-l_edges.csv"
   feature_extractors:
     protein:
-      extractor_function: "extract_esm_protein_embeddings"
-      model_name: "facebook/esm2_t30_150M_UR50D" 
-      # 在GPU上进行特征提取时的批处理大小
-      batch_size: 32
-    molecule:
-      extractor_function: "extract_chemberta_molecule_embeddings"
-      model_name: "seyonec/ChemBERTa-zinc-base-v1"
-      batch_size: 64 # 通常可以比蛋白质的batch size更大
+    extractor_function: "extract_esm_protein_embeddings"
+    model_name: "facebook/esm2_t30_150M_UR50D"
+    # 在GPU上进行特征提取时的批处理大小
+    batch_size: 32
+  molecule:
+    extractor_function: "extract_chemberta_molecule_embeddings"
+    model_name: "seyonec/ChemBERTa-zinc-base-v1"
+    batch_size: 64 # 通常可以比蛋白质的batch size更大
 
 # --- 2. Global Parameters (that don't belong to a specific component) ---
 # These are mostly parameters for data processing and evaluation
+#会影响性能的参数放在这里
 training:
-    learning_rate: 0.005
-    epochs: 150
-    batch_size: 2048
-    negative_sampling_ratio: 1
-    weight_decay: 1e-5
-    k_folds: 5
-    evaluation:  
-        mode: "drug"
-        test_fraction: 0.2
+  learning_rate: 0.005
+  epochs: 200
+  negative_sampling_ratio: 1
+  weight_decay: 1e-5
+  k_folds: 5
+  coldstart:
+    mode: "drug"
+    test_fraction: 0.2
+  batch_size: 512 # TODO: 调优
 
-
+#运行相关,但是不影响数据处理结果或训练性能的参数
 runtime:
   seed: 514
   cpus: 100
@@ -87,10 +79,10 @@ runtime:
   trian_loader_cpus: 16
   test_loader_cpus: 8
   validate_every_n_epochs: 10
-  fold_idx: 1  # [核心] 当前折数，由多任务扫描覆盖
+  fold_idx: 1 # [核心] 当前折数，由多任务扫描覆盖
 
 mlflow:
-  tracking_uri: "logs/mlruns" 
+  tracking_uri: "logs/mlruns"
   experiment_name: "Het-DTI_Prediction_Hydra_on_${data.primary_dataset}"
 
 hydra:

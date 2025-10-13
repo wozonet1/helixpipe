@@ -22,14 +22,14 @@ dependencies:
   # --- Core Infrastructure ---
   - python=3.9
   - pip
-  
+
   # --- PyTorch Stack (Golden Combination) ---
   # We lock the exact versions for maximum stability.
   - pytorch=2.2.1
   - torchvision=0.17.1
   - torchaudio=2.2.1
   - pytorch-cuda=11.8
-  
+
   # --- Key Scientific Libraries (handled by Conda for robust binary builds) ---
   - numpy=1.26.4 # Explicitly lock numpy to a stable 1.x version
   - pandas
@@ -40,21 +40,22 @@ dependencies:
   - seaborn
   - tqdm
   - joblib
-  
+
   # --- Project Management & Configuration ---
   - hydra-core
   - hydra-joblib-launcher
   - mlflow
-  
+
   # --- Pip dependencies ---
   # These will be installed by Conda via pip AFTER all conda packages are installed.
   - pip:
-    # --- PyG Stack ---
-    # We MUST use pip here to install the pre-compiled wheels from PyG's official source,
-    # ensuring perfect compatibility with our PyTorch+CUDA version.
-    - pyg-lib --find-links https://data.pyg.org/whl/torch-2.2.0+cu118.html
-    - torch-scatter --find-links https://data.pyg.org/whl/torch-2.2.0+cu118.html
-    - torch-sparse --find-links https://data.pyg.org/whl/torch-2.2.0+cu118.html
-    - torch-cluster --find-links https://data.pyg.org/whl/torch-2.2.0+cu118.html
-    - torch-spline-conv --find-links https://data.pyg.org/whl/torch-2.2.0+cu118.html
-    - torch-geometric
+      # --- PyG Stack ---
+      # We MUST use pip here to install the pre-compiled wheels from PyG's official source,
+      # ensuring perfect compatibility with our PyTorch+CUDA version.
+      - pyg-lib --find-links https://data.pyg.org/whl/torch-2.2.0+cu118.html
+      - torch-scatter --find-links https://data.pyg.org/whl/torch-2.2.0+cu118.html
+      - torch-sparse --find-links https://data.pyg.org/whl/torch-2.2.0+cu118.html
+      - torch-cluster --find-links https://data.pyg.org/whl/torch-2.2.0+cu118.html
+      - torch-spline-conv --find-links https://data.pyg.org/whl/torch-2.2.0+cu118.html
+      - torch-geometric
+      - research_template @ git+https://github.com/wozonet1/common_utils.git@dcf7931a6b640d3d77e0dbae5e3bb1cad1928c40

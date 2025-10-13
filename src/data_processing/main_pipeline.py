@@ -75,10 +75,10 @@ def _stage_1_load_and_index_entities(
     data_config = config["data"]
     print("--- [Stage 1a] Loading base entities from full_df.csv ---")
     checkpoint_files_dict = {
-        "drug": "processed.indexes.drug",
-        "ligand": "processed.indexes.ligand",
-        "protein": "processed.indexes.protein",
-        "nodes": "processed.nodes_metadata",
+        "drug": "processed.common.indexes.drug",
+        "ligand": "processed.common.indexes.ligand",
+        "protein": "processed.common.indexes.protein",
+        "nodes": "processed.common.nodes_metadata",
     }
     if (
         not rt.check_files_exist(config, *checkpoint_files_dict.values())
@@ -245,7 +245,7 @@ def _stage_2_generate_features(
     final_proteins_list,
     restart_flag: bool = False,
 ) -> tuple:
-    final_features_path = rt.get_path(config, "processed.node_features")
+    final_features_path = rt.get_path(config, "processed.common.node_features")
 
     if not final_features_path.exists() or restart_flag:
         if restart_flag:
@@ -288,8 +288,6 @@ def _stage_2_generate_features(
             .detach()
             .numpy()
         )
-        final_features_path = rt.get_path(config, "processed.node_features")
-
         rt.ensure_path_exists(final_features_path)
         np.save(final_features_path, all_feature_embeddings)
         print(
@@ -343,7 +341,7 @@ def _generate_or_load_embeddings(
         device = torch.device(
             config.runtime.gpu if torch.cuda.is_available() else "cpu"
         )
-        cache_key = f"processed.feature_caches.{entity_type}_embeddings"
+        cache_key = f"processed.common.feature_caches.{entity_type}_embeddings"
         extractor_func_name = (
             entity_cfg.extractor_function
         )  # <-- [关键] 从配置读取函数名
@@ -389,8 +387,8 @@ def _stage_3_calculate_similarity_matrices(
     restart_flag: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     checkpoint_files_dict = {
-        "molecule_similarity_matrix": "processed.similarity_matrices.molecule",
-        "protein_similarity_matrix": "processed.similarity_matrices.protein",
+        "molecule_similarity_matrix": "processed.common.similarity_matrices.molecule",
+        "protein_similarity_matrix": "processed.common.similarity_matrices.protein",
     }
     if (
         not rt.check_files_exist(config, *checkpoint_files_dict.values())
@@ -490,7 +488,7 @@ def _process_all_folds(
     """
     print("\n--- [CONTROLLER] Starting data processing for all folds... ---")
 
-    eval_config = config.training.evaluation
+    eval_config = config.training.coldstart
     split_mode = eval_config.mode
     seed = config.runtime.seed
     num_folds = config.training.k_folds
@@ -588,7 +586,7 @@ def _split_data_for_single_fold(
     """
     train_positive_pairs, test_positive_pairs = [], []
     seed = config.runtime.seed
-    test_fraction = config.training.evaluation.test_fraction
+    test_fraction = config.training.coldstart.test_fraction
 
     if num_folds > 1:
         # --- 路径 1: K-Fold (k > 1) 逻辑 ---
@@ -670,13 +668,13 @@ def _process_single_fold(
         f"    -> Fold {fold_idx}: Received {len(train_positive_pairs)} train and {len(test_positive_pairs)} test positives."
     )
 
-    labels_template_key = "processed.link_prediction_labels_template"
-    file_suffixes = config.data.files.processed.suffix
+    labels_template_key = "processed.specific.labels_template"
     # a. 训练标签文件
     train_labels_path = rt.get_path(
         config,
         labels_template_key,
-        split_suffix=f"fold{fold_idx}{file_suffixes.train}",
+        prefix=f"fold_{fold_idx}",
+        suffix="train",
     )
     print(
         f"    -> Saving {len(train_positive_pairs)} positive pairs for supervision to: {train_labels_path.name}..."
@@ -692,7 +690,8 @@ def _process_single_fold(
     test_labels_path = rt.get_path(
         config,
         labels_template_key,
-        split_suffix=f"fold{fold_idx}{file_suffixes.test}",
+        prefix=f"fold_{fold_idx}",
+        suffix="test",
     )
     # 测试集需要负采样
     _generate_and_save_labeled_set_for_test(
@@ -822,7 +821,7 @@ def _build_graph_for_fold(
     """
     print(f"\n--- [GRAPH] Building FULL training graph for Fold {fold_idx}... ---")
     relations_config = config.relations.flags
-    graph_template_key = "processed.typed_edge_list_template"
+    graph_template_key = "processed.specific.graph_template"
 
     typed_edges_list = []
 
@@ -886,7 +885,7 @@ def _build_graph_for_fold(
 
     # --- 4. 保存最终的图文件 ---
     graph_output_path = rt.get_path(
-        config, graph_template_key, split_suffix=f"fold{fold_idx}"
+        config, graph_template_key, prefix=f"fold_{fold_idx}"
     )
     print(
         f"\n--> Saving final graph structure for Fold {fold_idx} to: {graph_output_path}"
@@ -979,7 +978,7 @@ def _collect_positive_pairs(
     config: DictConfig, full_df: pd.DataFrame, dl2index: dict, prot2index: dict
 ) -> list:
     data_config = config["data"]
-    eval_config = config.training.evaluation
+    eval_config = config.training.coldstart
     split_mode = eval_config.mode
     print(f"--> Preparing and splitting positive pairs with mode: '{split_mode}'...")
     print(

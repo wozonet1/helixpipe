@@ -12,7 +12,7 @@ import research_template as rt
 
 def create_global_to_local_maps(config: DictConfig) -> dict:
     """从nodes.csv创建全局到局部的ID映射字典。"""
-    nodes_df = pd.read_csv(rt.get_path(config, "processed.nodes_metadata"))
+    nodes_df = pd.read_csv(rt.get_path(config, "processed.common.nodes_metadata"))
     maps = {}
     node_type_groups = nodes_df.groupby("node_type")
     for node_type in sorted(node_type_groups.groups.keys()):
@@ -31,7 +31,7 @@ def create_global_id_to_type_map(config: DictConfig) -> dict:
     """
     【新增】从nodes.csv创建一个全局ID到节点类型的反向映射字典。
     """
-    nodes_df = pd.read_csv(rt.get_path(config, "processed.nodes_metadata"))
+    nodes_df = pd.read_csv(rt.get_path(config, "processed.common.nodes_metadata"))
     # 使用pandas的高效功能，直接将两列转换为字典
     return pd.Series(nodes_df.node_type.values, index=nodes_df.node_id).to_dict()
 
@@ -41,8 +41,8 @@ def load_graph_structure_from_files(config: DictConfig, fold_idx: int) -> Hetero
     【底层】加载指定fold的图结构和节点特征，组装成一个原始的HeteroData对象。
     """
     # 1. 加载节点数据
-    nodes_df = pd.read_csv(rt.get_path(config, "processed.nodes_metadata"))
-    features_array = np.load(rt.get_path(config, "processed.node_features"))
+    nodes_df = pd.read_csv(rt.get_path(config, "processed.common.nodes_metadata"))
+    features_array = np.load(rt.get_path(config, "processed.common.node_features"))
     features_tensor = torch.from_numpy(features_array).float()
 
     data = HeteroData()
@@ -54,7 +54,7 @@ def load_graph_structure_from_files(config: DictConfig, fold_idx: int) -> Hetero
 
     # 3. 加载边数据
     edges_path = rt.get_path(
-        config, "processed.typed_edge_list_template", split_suffix=f"_fold{fold_idx}"
+        config, "processed.specific.graph_template", prefix=f"fold_{fold_idx}"
     )
     edges_df = pd.read_csv(edges_path)
 
@@ -86,16 +86,13 @@ def load_supervision_labels_for_fold(
     """
     print(f"--- [Loader] Loading labeled edges for Fold {fold_idx}... ---")
 
-    lp_labels_key = "processed.link_prediction_labels_template"
-    suffix = config.data.files.processed.suffix
-    train_suffix = suffix.train
-    test_suffix = suffix.test
+    lp_labels_key = "processed.specific.labels_template"
 
     train_path = rt.get_path(
-        config, lp_labels_key, split_suffix=f"_fold{fold_idx}{train_suffix}"
+        config, lp_labels_key, prefix=f"fold_{fold_idx}", suffix="train"
     )
     test_path = rt.get_path(
-        config, lp_labels_key, split_suffix=f"_fold{fold_idx}{test_suffix}"
+        config, lp_labels_key, prefix=f"fold_{fold_idx}", suffix="test"
     )
 
     train_df = pd.read_csv(train_path)

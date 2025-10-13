@@ -101,7 +101,7 @@ def run_end_to_end_workflow(
         data=hetero_graph,
         num_neighbors=[-1] * config.predictor.params.num_layers,
         edge_label_index=(target_edge_type, train_edge_label_index),
-        batch_size=config.training.get("batch_size", 512),  # TODO:确定合适
+        batch_size=config.training.get("batch_size", 512),
         shuffle=True,
         neg_sampling_ratio=1.0,
         num_workers=config.runtime.get("trian_loader_cpus", 8),
@@ -203,7 +203,8 @@ def train(config: DictConfig):
         print(f"  - Predictor:           '{predictor_name or 'N/A'}'")
         print(f"  - Use Relations:   '{config.relations.name}'")
         print(f"  - Seed:                {config['runtime']['seed']}")
-        print(f"  - Device:              {device}")  # TODO: 加上split
+        print(f"  - Device:              {device}")
+        print(f"  - Cold Start:          {config.training.coldstart.mode}")
         print("=" * 80 + "\n")
 
         (
