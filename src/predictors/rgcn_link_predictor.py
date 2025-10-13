@@ -159,7 +159,7 @@ class RGCNLinkPredictor(torch.nn.Module):
         dist_sq = ((z_src - z_dst) ** 2).sum(dim=-1)
         return -dist_sq
 
-    def get_loss(
+    def get_loss(  # TODO: 多任务学习尝试
         self,
         hetero_data: HeteroData,
         edge_label_index: torch.Tensor,

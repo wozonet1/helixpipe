@@ -13,8 +13,10 @@ from research_template import ensure_path_exists
 # ------------------- 模型加载与初始化 -------------------
 
 
+# TODO: 使用esm2-3B
 def get_esm_model_and_alphabet(
-    model_name: str = "facebook/esm2_t30_150M_UR50D", device: str = "cpu"
+    model_name: str = "facebook/esm2_t30_150M_UR50D",
+    device: str = "cpu",
 ) -> tuple:
     """
     【新版】从Hugging Face Hub加载指定的ESM-2模型和对应的分词器。

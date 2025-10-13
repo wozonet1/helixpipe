@@ -102,7 +102,7 @@ def _stage_1_load_and_index_entities(
             )
             try:
                 gtopdb_ligands_df = pd.read_csv(
-                    rt.get_path(config, "gtopdb.processed.ligands"),
+                    rt.get_path(config, "gtopdb.processed.common.ligands"),
                     header=None,
                     names=["CID", "SMILES"],
                 )
@@ -110,7 +110,7 @@ def _stage_1_load_and_index_entities(
                 print(f"-> Found {len(extra_ligands_list)} unique ligands from GtoPdb.")
 
                 gtopdb_proteins_df = pd.read_csv(
-                    rt.get_path(config, "gtopdb.processed.proteins"),
+                    rt.get_path(config, "gtopdb.processed.common.proteins"),
                     header=None,
                     names=["UniProt", "Sequence"],
                 )
@@ -1011,7 +1011,7 @@ def _collect_positive_pairs(
     if data_config["use_gtopdb"]:
         print("--> Scanning positive interactions from GtoPdb...")
         gtopdb_edges_df = pd.read_csv(
-            rt.get_path(config, "gtopdb.processed.interactions"),
+            rt.get_path(config, "gtopdb.processed.common.interactions"),
             header=None,
             names=["Sequence", "SMILES", "Affinity"],
         )

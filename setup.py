@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="dti_system_pharmacology",
+    name="dti_project",
     version="0.1.0",
     packages=find_packages(where="src"),
     package_dir={"": "src"},

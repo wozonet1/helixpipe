@@ -58,4 +58,5 @@ dependencies:
       - torch-cluster --find-links https://data.pyg.org/whl/torch-2.2.0+cu118.html
       - torch-spline-conv --find-links https://data.pyg.org/whl/torch-2.2.0+cu118.html
       - torch-geometric
+      - pubchempy
       - research_template @ git+https://github.com/wozonet1/common_utils.git@dcf7931

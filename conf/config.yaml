@@ -40,9 +40,10 @@ data:
         ligands: "ligands.csv"
         targets: "targets_and_families.csv"
       processed:
-        ligands: "gtopdb_ligands.csv"
-        proteins: "gtopdb_proteins.csv"
-        interactions: "gtopdb_p-l_edges.csv"
+        common:
+          ligands: "gtopdb_ligands.csv"
+          proteins: "gtopdb_proteins.csv"
+          interactions: "gtopdb_p-l_edges.csv"
   feature_extractors:
     protein:
     extractor_function: "extract_esm_protein_embeddings"
@@ -75,7 +76,7 @@ runtime:
   gpu: "cuda:2"
   force_restart: false
   sim_restart: false
-  skip_data_proc: true
+  skip_data_proc: false
   debug: true
   trian_loader_cpus: 16
   test_loader_cpus: 8
