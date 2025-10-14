@@ -1,5 +1,12 @@
 from torch_geometric.data import HeteroData
 import torch
+import research_template as rt
+import pandas as pd
+from omegaconf import DictConfig
+from rdkit import Chem
+import re
+from tqdm import tqdm
+from typing import Optional
 
 
 def run_optional_diagnostics(hetero_graph: HeteroData):
@@ -366,3 +373,156 @@ def validate_data_pipeline_integrity(
     print("=" * 80)
     print(" " * 22 + "✅ PIPELINE INTEGRITY VALIDATION PASSED ✅")
     print("=" * 80 + "\n")
+
+
+# 可以在文件顶部定义一些颜色，让输出更醒目
+class bcolors:
+    HEADER = "\033[95m"
+    OKBLUE = "\033[94m"
+    OKCYAN = "\033[96m"
+    OKGREEN = "\033[92m"
+    WARNING = "\033[93m"
+    FAIL = "\033[91m"
+    ENDC = "\033[0m"
+    BOLD = "\033[1m"
+    UNDERLINE = "\033[4m"
+
+
+def validate_authoritative_dti_file(
+    config: DictConfig, df: Optional[pd.DataFrame] = None
+):
+    """
+    一个通用的、严格的验证函数，用于审查由任何数据处理流水线生成的
+    最终权威DTI交互文件(例如 full.csv)。
+
+    Args:
+        config (DictConfig): 实验的完整配置对象。
+        df (Optional[pd.DataFrame]): 一个可选的、已加载的DataFrame。
+                                      如果为None,函数将从config指定的路径加载。
+
+    Raises:
+        AssertionError: 如果检测到任何严重的数据质量问题。
+    """
+    print("\n" + "=" * 80)
+    print(
+        f"{bcolors.HEADER}{bcolors.BOLD}"
+        + " " * 18
+        + "开始执行权威DTI文件质量检验流程"
+        + f"{bcolors.ENDC}"
+    )
+    print("=" * 80)
+
+    # --- 1. 加载数据 ---
+    if df is None:
+        try:
+            file_path = rt.get_path(config, "raw.dti_interactions")
+            print(f"正在加载文件: {file_path}")
+            df = pd.read_csv(file_path)
+            print(
+                f"--> {bcolors.OKGREEN}文件加载成功。共 {len(df)} 行记录。{bcolors.ENDC}"
+            )
+        except FileNotFoundError:
+            print(
+                f"❌ {bcolors.FAIL}致命错误: 找不到指定的DTI文件: {file_path}{bcolors.ENDC}"
+            )
+            raise
+    else:
+        print("--> 使用已传入的DataFrame进行检验。")
+
+    # --- 2. 模式和结构验证 ---
+    print("\n" + "-" * 30 + " 1. 模式与结构验证 " + "-" * 29)
+    required_columns = {"PubChem_CID", "UniProt_ID", "SMILES", "Sequence", "Label"}
+    actual_columns = set(df.columns)
+    assert required_columns.issubset(actual_columns), (
+        f"❌ {bcolors.FAIL}验证失败: 文件缺少必需的列。需要: {required_columns}, 实际: {actual_columns}{bcolors.ENDC}"
+    )
+    print(f"✅ {bcolors.OKGREEN}列完整性: 所有必需列均存在。{bcolors.ENDC}")
+
+    assert pd.api.types.is_integer_dtype(df["PubChem_CID"]), (
+        f"❌ {bcolors.FAIL}验证失败: 'PubChem_CID' 列应为整数类型。{bcolors.ENDC}"
+    )
+    assert pd.api.types.is_integer_dtype(df["Label"]), (
+        f"❌ {bcolors.FAIL}验证失败: 'Label' 列应为整数类型。{bcolors.ENDC}"
+    )
+    print(f"✅ {bcolors.OKGREEN}数据类型: 关键列的数据类型正确。{bcolors.ENDC}")
+
+    # --- 3. 数据唯一性验证 ---
+    print("\n" + "-" * 30 + " 2. 数据唯一性验证 " + "-" * 29)
+    duplicates = df.duplicated(subset=["PubChem_CID", "UniProt_ID"]).sum()
+    assert duplicates == 0, (
+        f"❌ {bcolors.FAIL}验证失败: 在 ('PubChem_CID', 'UniProt_ID') 上发现 {duplicates} 条重复记录。{bcolors.ENDC}"
+    )
+    print(
+        f"✅ {bcolors.OKGREEN}交互对唯一性: 所有 (药物, 靶点) 对都是唯一的。{bcolors.ENDC}"
+    )
+
+    # --- 4. 内容有效性验证 ---
+    print("\n" + "-" * 30 + " 3. 内容有效性验证 " + "-" * 30)
+
+    # a. SMILES 有效性
+    sample_size = min(len(df), 5000)  # 最多检查5000个样本，避免大数据集上耗时过长
+    invalid_smiles_count = 0
+    sampled_smiles = df["SMILES"].sample(
+        n=sample_size, random_state=config.runtime.seed
+    )
+    for smiles in tqdm(sampled_smiles, desc="检验SMILES有效性"):
+        if Chem.MolFromSmiles(smiles) is None:
+            invalid_smiles_count += 1
+
+    invalidation_rate = (invalid_smiles_count / sample_size) * 100
+    assert invalidation_rate < 0.1, (
+        f"❌ {bcolors.FAIL}验证失败: SMILES有效性过低。在{sample_size}个样本中发现 {invalid_smiles_count} ({invalidation_rate:.2f}%) 个无效SMILES。{bcolors.ENDC}"
+    )
+    print(
+        f"✅ {bcolors.OKGREEN}SMILES有效性: 在{sample_size}个样本中，无效比例为 {invalidation_rate:.2f}% (通过)。{bcolors.ENDC}"
+    )
+
+    # b. UniProt ID 格式
+    uniprot_pattern = re.compile(
+        r"([OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2})"
+    )
+    invalid_uniprot_ids = df[~df["UniProt_ID"].astype(str).str.match(uniprot_pattern)]
+    assert len(invalid_uniprot_ids) == 0, (
+        f"❌ {bcolors.FAIL}验证失败: 发现 {len(invalid_uniprot_ids)} 个不符合标准格式的UniProt ID。例如: {invalid_uniprot_ids['UniProt_ID'].head().tolist()}{bcolors.ENDC}"
+    )
+    print(f"✅ {bcolors.OKGREEN}UniProt ID格式: 所有ID均符合标准格式。{bcolors.ENDC}")
+
+    # a. 定义合法的氨基酸字符集
+    amino_acids = "ACDEFGHIKLMNPQRSTVWYU"
+
+    # b. 构建查找非法字符的正则表达式
+    invalid_char_pattern = f"[^{amino_acids}]"
+
+    # c. 找出所有包含非法字符的序列的DataFrame
+    invalid_seq_df = df[
+        df["Sequence"]
+        .str.upper()
+        .str.contains(invalid_char_pattern, regex=True, na=False)
+    ]
+
+    # d. 检查是否存在无效序列
+    if not invalid_seq_df.empty:
+        num_invalid = len(invalid_seq_df)
+        print(
+            f"❌ {bcolors.FAIL}验证失败: 发现 {num_invalid} 条蛋白质序列包含非法字符。{bcolors.ENDC}"
+        )
+        print("--- 无效序列样本 (前5条): ---")
+        # 使用 .to_string() 保证打印内容对齐
+        print(invalid_seq_df[["Sequence"]].head().to_string())
+        print("-" * 30)
+        # 抛出更明确的错误
+        raise ValueError(f"数据集中存在 {num_invalid} 条无效的蛋白质序列。")
+    else:
+        print(
+            f"✅ {bcolors.OKGREEN}蛋白质序列内容: 所有序列均由合法的氨基酸字符组成。{bcolors.ENDC}"
+        )
+
+    # --- 5. 最终总结 ---
+    print("\n" + "=" * 80)
+    print(
+        f"{bcolors.OKGREEN}{bcolors.BOLD}"
+        + " " * 25
+        + "✅ 所有验证项目均已通过 ✅"
+        + f"{bcolors.ENDC}"
+    )
+    print("=" * 80)

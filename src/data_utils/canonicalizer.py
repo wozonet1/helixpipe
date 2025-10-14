@@ -94,8 +94,8 @@ def canonicalize_smiles_to_cid(
 
 def is_valid_uniprot_accession(accession):
     """
-    使用正则表达式，快速检查一个ID是否符合UniProt Accession的典型格式。
-    这是一个简化版检查，但能过滤掉大部分非Accession的ID。
+    使用正则表达式,快速检查一个ID是否符合UniProt Accession的典型格式。
+    这是一个简化版检查,但能过滤掉大部分非Accession的ID。
     """
     # 典型的UniProt Accession格式: e.g., P12345, Q9Y261, A0A024R1R8
     # 规则: 字母开头，后面跟5个或更多数字/字母

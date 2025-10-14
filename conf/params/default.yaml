@@ -1,13 +1,4 @@
 name: default
 
 # --- [核心修改] 创建一个专门的 'similarity_thresholds' 配置块 ---
-similarity_thresholds:
-  protein_protein: 0.8  # 对应 protein_protein_similarity
-  drug_drug: 0.988      # 对应 drug_drug_similarity
-  ligand_ligand: 0.988  # 对应 ligand_ligand_similarity, 复用同一个严格阈值
-  drug_ligand: 0.7      # 对应 drug_ligand_similarity, 使用一个更宽松的阈值
 
-# --- 其他参数保持不变 ---
-max_pp_edges: 500
-gtopdb_max_affinity_nM: 10000
-negative_sampling_strategy: "popular"

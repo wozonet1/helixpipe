@@ -1,0 +1,12 @@
+# conf/data/bindingdb.yaml
+# BindingDB数据集专属配置
+name: bindingdb
+root: "data"
+primary_dataset: "bindingdb" # 这将是 data/ 目录下的子文件夹名
+#FIXME: 可以这样做吗
+files:
+  raw:
+    # 这个路径指向我们新脚本将要创建的那个权威文件
+    dti_interactions: "BindingDB_All.tsv"
+    # 增加一个dummy file的key，方便在脚本中获取raw目录的路径
+    dummy_file_to_get_dir: "dummy.txt"
