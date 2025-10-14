@@ -8,9 +8,10 @@ name: bindingdb
 root: "data"
 primary_dataset: "bindingdb"
 
-dataset_specific_filenames:
-  authoritative_dti: "bindingdb_interactions" # 注意：这里不带扩展名
-  raw_tsv: "BindingDB_All.tsv"
+filenames:
+  raw:
+    authoritative_dti: "bindingdb_interactions.csv"
+    raw_tsv: "BindingDB_All.tsv"
 
   # 【新增】在这里定义所有与BindingDB原始文件相关的列名
 schema:

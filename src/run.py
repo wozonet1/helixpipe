@@ -21,7 +21,7 @@ def run_experiment(cfg: DictConfig):
     if not is_config_valid(cfg):
         return
     config_dict = cfg
-
+    rt.register_hydra_resolvers()
     rt.set_seeds(config_dict.runtime.seed)
     rt.setup_dataset_directories(config_dict)  # Handles directory creation and cleaning
     if not config_dict.runtime.get("skip_data_proc", False):

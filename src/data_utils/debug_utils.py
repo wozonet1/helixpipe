@@ -760,13 +760,13 @@ def run_online_validation(
 
     with Parallel(n_jobs=n_jobs) as parallel:
         # --- PubChem Validation ---
-        # print("\n[Phase 1/2] Querying PubChem API for SMILES validation...")
-        # pubchem_results = parallel(
-        #     delayed(validate_pubchem_entry)(row.PubChem_CID, row.SMILES)
-        #     for _, row in tqdm(
-        #         sample_df.iterrows(), total=len(sample_df), desc="PubChem Checks"
-        #     )
-        # )
+        print("\n[Phase 1/2] Querying PubChem API for SMILES validation...")
+        pubchem_results = parallel(
+            delayed(validate_pubchem_entry)(row.PubChem_CID, row.SMILES)
+            for _, row in tqdm(
+                sample_df.iterrows(), total=len(sample_df), desc="PubChem Checks"
+            )
+        )
 
         # --- UniProt Validation ---
         print("\n[Phase 2/2] Querying UniProt API for Sequence validation...")
@@ -778,9 +778,9 @@ def run_online_validation(
         )
 
     # --- Generate Reports ---
-    # _print_validation_report(
-    #     "PubChem CID vs SMILES", pubchem_results, sample_df, "PubChem_CID"
-    # )
+    _print_validation_report(
+        "PubChem CID vs SMILES", pubchem_results, sample_df, "PubChem_CID"
+    )
     _print_validation_report(
         "UniProt ID vs Sequence", uniprot_results, sample_df, "UniProt_ID"
     )

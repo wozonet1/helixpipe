@@ -172,6 +172,7 @@ if __name__ == "__main__":
     print(OmegaConf.to_yaml(cfg))
     print("~" * 80 + "\n")
     # 1. 运行数据处理主流程
+    rt.register_hydra_resolvers()
     final_df = process_bindingdb_data(cfg)
 
     # 2. 对输出文件进行严格质检
