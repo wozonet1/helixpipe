@@ -5,7 +5,6 @@ defaults:
   - _self_ # 第二步：加载这个文件自身的其余内容，并与base合并
 
 name: bindingdb
-root: "data"
 primary_dataset: "bindingdb"
 
 filenames:

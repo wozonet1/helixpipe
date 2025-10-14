@@ -6,6 +6,10 @@ defaults:
   - analysis: split_diff # 仅仅在分析时用到
   - _self_ # This line is important, it tells Hydra to also load the rest of this file.
 
+global_paths:
+  data_root: "data"
+  feature_cache_root: "data/global_feature_cache"
+
 #会影响训练性能的参数放在这里
 training:
   learning_rate: 0.0005

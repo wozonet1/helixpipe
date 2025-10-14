@@ -1,206 +1,188 @@
-# src/gtopdb_proc.py
-
 import pandas as pd
 import sys
-from pathlib import Path
-import yaml
-from research_template import get_path
+from omegaconf import DictConfig, OmegaConf
+from hydra import initialize, compose
+
+# 导入需要的工具函数
+import research_template as rt
 from data_utils.canonicalizer import fetch_sequences_from_uniprot
+from data_utils.debug_utils import validate_authoritative_dti_file
+from data_processing.purifiers import purify_dti_dataframe_parallel
 
 
-def load_config(config_path="config.yaml"):
-    """Loads the YAML config file from the project root."""
-    project_root = Path(__file__).parent.parent
-    with open(project_root / config_path, "r") as f:
-        return yaml.safe_load(f)
-
-
-# Load config at the start of the script
-config = load_config()
-
-
-def process_gtopdb_data():
+def process_gtopdb_data(config: DictConfig):
     """
-    解析Guide to PHARMACOLOGY的原始数据文件,提取内源性配体-靶点相互作用，
-    并生成可用于下游异构网络构建的干净文件。
-
-    参数:
-        input_dir (Path): 存放下载的GtoPdb原始CSV文件的目录路径。
-        output_dir (Path): 存放处理后输出文件的目录路径。
+    解析Guide to PHARMACOLOGY的原始数据，提取高质量的内源性配体-靶点相互作用，
+    并生成一个遵循项目黄金标准的DTI交互文件。
+    【V2 重构版】
     """
-    print("==========================================================")
-    print("  Starting Guide to PHARMACOLOGY Data Processing Pipeline  ")
-    print("==========================================================")
+    print("\n" + "=" * 80)
+    print(" " * 15 + "开始处理 Guide to PHARMACOLOGY 数据流水线 (V2)")
+    print("=" * 80 + "\n")
 
-    # --- 1. 加载核心数据文件 ---
+    # --- 1. 从配置中加载Schema和路径 ---
+    gtopdb_schema = config.data_structure.schema.external.gtopdb
+    internal_schema = config.data_structure.schema.internal.authoritative_dti
 
-    print("\n[Step 1/4] Loading raw data files ")
+    # --- 2. 加载核心数据文件 ---
+    print("--- [步骤 1/5] 加载原始数据文件 ---")
     try:
         interactions_df = pd.read_csv(
-            get_path(config, "gtopdb.raw.interactions"), low_memory=False, comment="#"
+            rt.get_path(config, "data_structure.paths.raw.interactions"),
+            low_memory=False,
+            comment="#",
         )
         ligands_df = pd.read_csv(
-            get_path(config, "gtopdb.raw.ligands"), low_memory=False, comment="#"
+            rt.get_path(config, "data_structure.paths.raw.ligands"),
+            low_memory=False,
+            comment="#",
         )
     except FileNotFoundError as e:
-        print(f"Error: Raw CSV file not found! {e}")
-        print(
-            "Please ensure 'interactions.csv' and 'ligands.csv' are in the specified input directory."
-        )
-        sys.exit(1)  # 退出程序
+        print(f"❌ 致命错误: 原始CSV文件未找到! {e}")
+        sys.exit(1)
 
-    print(f"-> Loaded {len(interactions_df)} total interactions.")
-    print(f"-> Loaded {len(ligands_df)} total ligands.")
+    print(f"-> 已加载 {len(interactions_df)} 条总交互, {len(ligands_df)} 条总配体。")
 
-    # --- 2. 筛选内源性配体相互作用 ---
-    print("\n[Step 2/4] Filtering for high-quality endogenous ligand interactions...")
+    # --- 3. 筛选高质量的内源性配体相互作用 ---
+    print("\n--- [步骤 2/5] 筛选高质量的内源性交互 ---")
 
-    # 核心筛选条件：'endogenous' 列为 True
-    endogenous_interactions = interactions_df[interactions_df["Endogenous"]].copy()
-    print(
-        f"-> Found {len(endogenous_interactions)} interactions involving endogenous ligands."
-    )
+    # 使用配置驱动的列名
+    is_endogenous = interactions_df[gtopdb_schema.interactions.endogenous_flag]
+    endogenous_interactions = interactions_df[is_endogenous].copy()
 
-    # [MODIFIED] 现在我们依赖 'Original Affinity Median nm'，所以它是必需的
-    required_cols = ["Target UniProt ID", "Ligand ID", "Original Affinity Median nm"]
+    required_cols = [
+        gtopdb_schema.interactions.target_id,
+        gtopdb_schema.interactions.ligand_id,
+        gtopdb_schema.interactions.affinity,
+    ]
     endogenous_interactions.dropna(subset=required_cols, inplace=True)
-    print(
-        f"-> After cleaning (removing entries with missing IDs or standardized affinity), {len(endogenous_interactions)} interactions remain."
+
+    # 亲和力筛选
+    affinity_threshold = config.data_params.gtopdb_max_affinity_nM
+    endogenous_interactions[gtopdb_schema.interactions.affinity] = pd.to_numeric(
+        endogenous_interactions[gtopdb_schema.interactions.affinity], errors="coerce"
     )
-
-    # --- [MODIFIED] Affinity-based Filtering ---
-    try:
-        affinity_threshold = config["params"]["gtopdb"]["max_affinity_nM"]
-        print(
-            f"--> Applying affinity threshold: retaining interactions with 'Original Affinity Median nm' <= {affinity_threshold} nM."
-        )
-
-        # 确保亲和力列是数值类型
-        endogenous_interactions["Original Affinity Median nm"] = pd.to_numeric(
-            endogenous_interactions["Original Affinity Median nm"], errors="coerce"
-        )
-        endogenous_interactions.dropna(
-            subset=["Original Affinity Median nm"], inplace=True
-        )
-
-        original_count = len(endogenous_interactions)
-
-        # [MODIFIED] 使用正确的列进行筛选
-        endogenous_interactions = endogenous_interactions[
-            endogenous_interactions["Original Affinity Median nm"] <= affinity_threshold
-        ].copy()
-
-        print(
-            f"--> After affinity filtering, {len(endogenous_interactions)} of {original_count} interactions were retained."
-        )
-
-    except KeyError:
-        print(
-            "--> WARNING: Affinity threshold not found in config.yaml. Skipping affinity-based filtering."
-        )
-    # --- [NEW] End: Affinity-based Filtering ---
-    # --- 3. 提取并清洗配体信息 (获取SMILES) ---
-    print("\n[Step 3/4] Extracting SMILES for the relevant endogenous ligands...")
-
-    # 获取我们需要的配体的唯一ID列表
-    relevant_ligand_ids = endogenous_interactions["Ligand ID"].unique()
-
-    # 从大的配体表中，只筛选出我们需要的配体信息
-    relevant_ligands = ligands_df[
-        ligands_df["Ligand ID"].isin(relevant_ligand_ids)
+    endogenous_interactions.dropna(
+        subset=[gtopdb_schema.interactions.affinity], inplace=True
+    )
+    endogenous_interactions = endogenous_interactions[
+        endogenous_interactions[gtopdb_schema.interactions.affinity]
+        <= affinity_threshold
     ].copy()
 
-    # 清洗配体数据：只保留有SMILES和PubChem CID的记录
-    relevant_ligands.dropna(subset=["SMILES", "PubChem CID"], inplace=True)
-    relevant_ligands["PubChem CID"] = relevant_ligands["PubChem CID"].astype(
-        int
-    )  # 确保CID是整数
-    print(f"-> Found SMILES for {len(relevant_ligands)} unique endogenous ligands.")
+    print(f"-> 筛选后保留 {len(endogenous_interactions)} 条高质量内源性交互。")
 
-    # --- 4. 合并信息并保存为最终的输出文件 ---
-    print("\n[Step 4/4] Merging data and saving to output files...")
+    # --- 4. 合并与清洗数据 ---
+    print("\n--- [步骤 3/5] 合并交互与配体信息 ---")
 
-    # 将相互作用数据与配体数据通过 'ligand_id' 连接起来
-    final_df = pd.merge(
+    # 清洗配体信息
+    ligands_df.dropna(
+        subset=[
+            gtopdb_schema.ligands.molecule_sequence,
+            gtopdb_schema.ligands.molecule_id,
+        ],
+        inplace=True,
+    )
+
+    # 合并数据
+    merged_df = pd.merge(
         endogenous_interactions,
-        relevant_ligands,
-        left_on="Ligand ID",
-        right_on="Ligand ID",
-    )
-    print("\n[NEW Step] Fetching protein sequences for all relevant targets...")
-
-    # 1. 从合并后的数据中，收集所有需要查询序列的唯一UniProt ID
-    #    先处理'|'分隔符，然后展开列表，最后取唯一值
-    all_target_uniprot_ids = (
-        final_df["Target UniProt ID"]
-        .str.split("|")
-        .explode()
-        .dropna()
-        .unique()
-        .tolist()
+        ligands_df,
+        left_on=gtopdb_schema.interactions.ligand_id,
+        right_on=gtopdb_schema.ligands.ligand_id,
     )
 
-    # 2. 调用我们写的函数，去UniProt“补全”序列信息
-    uniprot_to_sequence_map = fetch_sequences_from_uniprot(all_target_uniprot_ids)
-
-    # 3. 将查询到的序列映射回我们的主DataFrame
-    #    我们只关心主要ID（第一个ID）的序列
-    main_uniprot_id = final_df["Target UniProt ID"].str.split("|").str[0]
-    final_df["target_sequence"] = main_uniprot_id.map(uniprot_to_sequence_map)
-
-    # 4. 清洗：丢弃那些因为某些原因没能查到序列的记录
-    original_count = len(final_df)
-    final_df.dropna(subset=["target_sequence"], inplace=True)
-    print(
-        f"-> Found sequences for {len(final_df)} out of {original_count} interactions. Proceeding with these."
+    # GtoPdb的UniProt ID可能包含多个，用'|'分隔，我们只取第一个作为主要ID
+    merged_df["main_protein_id"] = (
+        merged_df[gtopdb_schema.interactions.target_id].str.split("|").str[0]
     )
 
-    # --- 5. 保存最终的输出文件 (现在输出的文件信息更完整了) ---
-    print("\n[Final Step] Saving enriched data to output files...")
+    print(f"-> 成功合并数据，得到 {len(merged_df)} 条记录。")
 
-    # a) 保存新的 P-L 边文件，现在包含【序列】而不是ID
-    # 文件格式: protein_sequence, ligand_smiles, affinity_median
-    output_edges = final_df[["target_sequence", "SMILES", "Affinity Median"]].copy()
-    output_edges.rename(
-        columns={"target_sequence": 0, "SMILES": 1, "Affinity Median": 2}, inplace=True
-    )
+    # --- 5. 补全蛋白质序列 ---
+    print("\n--- [步骤 4/5] 从UniProt在线获取蛋白质序列 ---")
 
-    output_edge_path = get_path(config, "gtopdb.processed.interactions")
-    output_edges.to_csv(output_edge_path, index=False, header=False)
-    print(
-        f"-> Successfully saved {len(output_edges)} Protein-Ligand edges (with sequences and SMILES) to: {output_edge_path}"
+    unique_pids = merged_df["main_protein_id"].dropna().unique().tolist()
+    uniprot_to_sequence_map = fetch_sequences_from_uniprot(unique_pids)
+
+    merged_df["protein_sequence"] = merged_df["main_protein_id"].map(
+        uniprot_to_sequence_map
     )
 
-    # b) 保存新的配体信息文件 (可以保持不变，也可以只保存一次)
-    output_ligands = final_df[["PubChem CID", "SMILES"]].drop_duplicates()
-    output_ligands.rename(columns={"PubChem CID": 0, "SMILES": 1}, inplace=True)
-    output_ligand_path = get_path(config, "gtopdb.processed.ligands")
-    output_ligands.to_csv(output_ligand_path, index=False, header=False)
-    print(
-        f"-> Successfully saved info for {len(output_ligands)} Ligand nodes to: {output_ligand_path}"
+    # 移除没有成功获取到序列的记录
+    merged_df.dropna(subset=["protein_sequence"], inplace=True)
+    print(f"-> 成功获取序列，剩余 {len(merged_df)} 条完整记录。")
+
+    # --- 6. 构建并保存最终的黄金标准文件 ---
+    print("\n--- [步骤 5/5] 构建并保存最终的权威DTI文件 ---")
+
+    # a. 选取并重命名列，以符合黄金标准
+    output_df = merged_df[
+        [
+            gtopdb_schema.ligands.molecule_id,
+            "main_protein_id",
+            gtopdb_schema.ligands.molecule_sequence,
+            "protein_sequence",
+        ]
+    ].copy()
+
+    output_df.rename(
+        columns={
+            gtopdb_schema.ligands.molecule_id: internal_schema.molecule_id,
+            "main_protein_id": internal_schema.protein_id,
+            gtopdb_schema.ligands.molecule_sequence: internal_schema.molecule_sequence,
+            "protein_sequence": internal_schema.protein_sequence,
+        },
+        inplace=True,
     )
 
-    # c) (推荐) 另外保存一份蛋白质的 "ID-序列" 对应表，以备后用
-    output_proteins = final_df[
-        ["Target UniProt ID", "target_sequence"]
-    ].drop_duplicates()
-    output_proteins["Target UniProt ID"] = (
-        output_proteins["Target UniProt ID"].str.split("|").str[0]
-    )
-    output_proteins.rename(
-        columns={"Target UniProt ID": 0, "target_sequence": 1}, inplace=True
-    )
-    output_protein_path = get_path(config, "gtopdb.processed.proteins")
-    output_proteins.to_csv(output_protein_path, index=False, header=False)
-    print(
-        f"-> Successfully saved info for {len(output_proteins)} Protein nodes to: {output_protein_path}"
+    # b. 添加Label列
+    output_df[internal_schema.label] = 1
+
+    # c. 清理数据类型
+    output_df[internal_schema.molecule_id] = output_df[
+        internal_schema.molecule_id
+    ].astype(int)
+
+    # d. 【重要】在输出前，对SMILES和序列进行一次净化
+    print("--> 对最终数据进行深度净化...")
+    # purify_dti_dataframe 期望的列名是 'SMILES' 和 'Sequence', 我们的内部schema正好是
+    output_df = purify_dti_dataframe_parallel(output_df, config)
+
+    # e. 去重
+    output_df.drop_duplicates(
+        subset=[internal_schema.molecule_id, internal_schema.protein_id], inplace=True
     )
 
-    print("\n==========================================================")
-    print("  GtoPdb Processing Finished Successfully!  ")
-    print("==========================================================")
+    # f. 保存
+    output_path = rt.get_path(config, "data_structure.paths.raw.authoritative_dti")
+    rt.ensure_path_exists(output_path)
+    output_df.to_csv(output_path, index=False)
+
+    print(f"\n✅ 成功创建GtoPdb权威DTI文件，包含 {len(output_df)} 条独特的交互对。")
+    print(f"   已保存至: {output_path}")
+    print("=" * 80)
+
+    return output_df
 
 
 if __name__ == "__main__":
-    # --- 执行主函数 ---
-    process_gtopdb_data()
+    rt.register_hydra_resolvers()
+    with initialize(config_path="../../conf", job_name="gtopdb_process"):
+        # 加载gtopdb的数据结构，以及通用的数据处理参数
+        cfg = compose(
+            config_name="config",
+            overrides=["data_structure=gtopdb", "data_params=base"],
+        )
+    print("--- HYDRA COMPOSED CONFIG ---")
+    print(OmegaConf.to_yaml(cfg))
+    print("-----------------------------")
+    # 1. 运行主流程
+    final_df = process_gtopdb_data(cfg)
+
+    # 2. 对产出物进行质检
+    if not final_df.empty:
+        print("\n" + "*" * 80)
+        print(" " * 20 + "处理完成，现在开始对输出文件进行最终验证...")
+        print("*" * 80)
+        validate_authoritative_dti_file(cfg, df=final_df)

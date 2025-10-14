@@ -11,7 +11,7 @@ gtopdb_max_affinity_nM: 10000
 negative_sampling_strategy: "popular"
 affinity_threshold_nM: 10000
 
-use_gtopdb: false
+auxiliary_datasets: []
 feature_extractors:
   protein:
   extractor_function: "extract_esm_protein_embeddings"

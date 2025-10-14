@@ -1,0 +1,29 @@
+# conf/data_structure/gtopdb.yaml
+
+defaults:
+  - base
+  - _self_
+
+name: "gtopdb" # 数据集名称
+primary_dataset: "gtopdb" # 顶层目录名
+
+# GtoPdb专属的文件名
+filenames:
+  raw:
+    interactions: "interactions.csv"
+    ligands: "ligands.csv"
+    authoritative_dti: "gtopdb_interactions.csv"
+
+# GtoPdb原始文件的Schema定义
+schema:
+  external:
+    gtopdb:
+      interactions:
+        endogenous_flag: "Endogenous"
+        target_id: "Target UniProt ID"
+        ligand_id: "Ligand ID"
+        affinity: "Original Affinity Median nm"
+      ligands:
+        ligand_id: "Ligand ID"
+        molecule_sequence: "SMILES"
+        molecule_id: "PubChem CID"

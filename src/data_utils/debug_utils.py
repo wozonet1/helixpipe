@@ -11,66 +11,101 @@ import time
 import requests
 from collections import namedtuple, Counter
 from joblib import Parallel, delayed
+import hydra
+
+# run.py 或 utils/config_validator.py
+from pathlib import Path
 
 
-def is_config_valid(config: DictConfig) -> bool:
+def is_config_valid(cfg: DictConfig) -> bool:
     """
-    Checks if the experiment configuration is logically valid.
-
-    Rules:
-    1. If gtopdb is NOT used (`use_gtopdb: false`), then relations involving 'l'
-       (ligand) are FORBIDDEN.
-    2. If gtopdb IS used (`use_gtopdb: true`), then relations involving 'l'
-       are MANDATORY (at least one 'l' relation must be enabled).
-
-    Args:
-        config (DictConfig): The fully composed Hydra configuration object.
-
-    Returns:
-        bool: True if the configuration is valid, False otherwise.
+    【V2 重构版】对最终组合好的配置进行一系列逻辑一致性检查。
     """
-    try:
-        # --- Rule 1: Check for forbidden relations when gtopdb is off ---
-        use_gtopdb = config.data.use_gtopdb
+    print("\n--- [Config Validation] Running logic consistency checks... ---")
+    checks_passed = True
 
-        # Access the dictionary of relation switches
-        # The actual config group is 'relations', which contains a 'params' sub-key,
-        # which in turn contains 'include_relations'. Let's use a robust access method.
-        # UPDATE: Based on your provided config structure, the path is simpler.
-        include_relations = config.relations.flags
+    # --- 检查 1: 辅助数据集与图关系的依赖关系 ---
+    # 规则：如果 data_params.auxiliary_datasets 包含 'gtopdb'，
+    #       那么 relations.flags 中至少要有一个与 'ligand' 相关的开关是 true。
+    aux_datasets = cfg.data_params.get("auxiliary_datasets", [])
+    if "gtopdb" in aux_datasets:
+        relation_flags = cfg.relations.flags
+        # 定义哪些关系依赖于GtoPdb（即引入了'ligand'节点类型）
+        ligand_related_relations = ["lp_interaction", "ll_similarity", "dl_similarity"]
 
-        # Define which relation keys are considered 'ligand-related'
-        ligand_related_keys = ["lp_interaction", "ll_similarity", "dl_similarity"]
-
-        # Check if any ligand-related relation is enabled
-        any_l_relation_enabled = any(
-            include_relations.get(key, False) for key in ligand_related_keys
+        is_any_ligand_relation_enabled = any(
+            relation_flags.get(rel, False) for rel in ligand_related_relations
         )
 
-        if not use_gtopdb:
-            if any_l_relation_enabled:
-                print(
-                    "[CONFIG INVALID] Run skipped: Ligand relations (e.g., lp, ll, dl) are enabled, but 'use_gtopdb' is false."
-                )
-                return False
+        if not is_any_ligand_relation_enabled:
+            print(
+                "❌ VALIDATION FAILED: GtoPdb is enabled as an auxiliary dataset, "
+                "but no ligand-related relations (lp_interaction, ll_similarity, dl_similarity) are enabled in the `relations` config."
+            )
+            checks_passed = False
 
-        # --- Rule 2: Check for mandatory relations when gtopdb is on ---
-        else:  # This means use_gtopdb is True
-            if not any_l_relation_enabled:
-                print(
-                    "[CONFIG INVALID] Run skipped: 'use_gtopdb' is true, but no ligand-related relations are enabled in the config."
-                )
-                return False
+    # 反向检查：如果启用了ligand相关关系，但gtopdb不在辅助数据集中
+    # （这个检查可能过于严格，有时我们可能希望在没有gtopdb的情况下也允许dl_similarity，
+    #  但作为一个例子，它可以这样做）
+    relation_flags = cfg.relations.flags
+    ligand_related_relations = ["lp_interaction", "ll_similarity", "dl_similarity"]
+    is_any_ligand_relation_enabled = any(
+        relation_flags.get(rel, False) for rel in ligand_related_relations
+    )
 
-    except Exception as e:
-        # This will catch errors if the config structure is unexpected (e.g., 'include_relations' is missing)
+    if is_any_ligand_relation_enabled and "gtopdb" not in cfg.data_params.get(
+        "auxiliary_datasets", []
+    ):
         print(
-            f"[CONFIG CHECK FAILED] Could not validate config due to an error: {e}. Skipping run."
+            "⚠️ VALIDATION WARNING: Ligand-related relations are enabled, but 'gtopdb' is not in `auxiliary_datasets`."
         )
-        return False
+        # 这里我们可以只打印警告而不是直接失败，因为可能存在合理的使用场景
+        # checks_passed = False
 
-    # If all checks pass, the configuration is valid
-    return True
+    # --- 检查 2: 必需的原始文件是否存在 ---
+    # 这个检查非常重要，可以避免在流水线中途因文件缺失而失败
+
+    # a. 检查主数据集的权威DTI文件
+    primary_dti_path = rt.get_path(cfg, "data_structure.paths.raw.authoritative_dti")
+    if not primary_dti_path.exists():
+        print(
+            f"❌ VALIDATION FAILED: Primary authoritative DTI file for dataset '{cfg.data_structure.name}' not found."
+        )
+        print(f"   - Expected at: {primary_dti_path}")
+        checks_passed = False
+
+    # b. 如果启用了辅助数据集，也检查它们的文件
+    for aux_name in cfg.data_params.get("auxiliary_datasets", []):
+        try:
+            # 同样利用临时配置的技巧来获取路径
+            with hydra.initialize_config_dir(
+                config_dir=Path(cfg.hydra.runtime.config_dir).parent
+            ):
+                aux_cfg = hydra.compose(
+                    config_name="config", overrides=[f"data_structure={aux_name}"]
+                )
+            aux_path = rt.get_path(
+                aux_cfg, "data_structure.paths.raw.authoritative_dti"
+            )
+            if not aux_path.exists():
+                print(
+                    f"❌ VALIDATION FAILED: Auxiliary authoritative DTI file for dataset '{aux_name}' not found."
+                )
+                print(f"   - Expected at: {aux_path}")
+                checks_passed = False
+        except Exception as e:
+            print(
+                f"❌ VALIDATION FAILED: Could not resolve path for auxiliary dataset '{aux_name}'. Error: {e}"
+            )
+            checks_passed = False
+
+    # --- 总结 ---
+    if checks_passed:
+        print("✅ All configuration logic checks passed.")
+    else:
+        print("\n--- [Config Validation] Finished with errors. Halting execution. ---")
+
+    return checks_passed
 
 
 def run_optional_diagnostics(hetero_graph: HeteroData):

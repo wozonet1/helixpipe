@@ -1,15 +1,15 @@
 # conf/data_structure/base.yaml
 
 #主要是有关数据处理的,影响结果的参数与文件结构描述
-dataset_specific_filenames:
-  authoritative_dti: "default_interactions"
-  raw_tsv: "default_raw.tsv"
+primary_dataset: "default_dataset"
 
 filenames:
   raw:
     authoritative_dti: "default_interactions.csv"
     raw_tsv: "default_raw.tsv"
     dummy_file_to_get_dir: "dummy.txt"
+    interactions: "interactions_default.csv"
+    ligands: "ligands_default.csv"
   processed:
     common:
       nodes_metadata: "nodes.csv"
@@ -23,13 +23,16 @@ filenames:
     specific:
       graph_template: "{prefix}_graph_{suffix}.csv"
       labels_template: "{prefix}_labels_{suffix}.csv"
-
+  cache:
+    feature_template: "{entity_type}/{model_name}/{authoritative_id}.pt"
 paths:
   raw:
     authoritative_dti: "${path:raw.authoritative_dti}"
     raw_tsv: "${path:raw.raw_tsv}"
     dummy_file_to_get_dir: "${path:raw.dummy_file_to_get_dir}"
-    
+    interactions: "${path:raw.interactions}"
+    ligands: "${path:raw.ligands}"
+
   processed:
     common:
       nodes_metadata: "${path:processed.common.nodes_metadata}"
@@ -40,11 +43,12 @@ paths:
       similarity_matrices:
         molecule: "${path:processed.common.similarity_matrices.molecule}"
         protein: "${path:processed.common.similarity_matrices.protein}"
-        
+
     specific:
       graph_template: "${path:processed.specific.graph_template}"
       labels_template: "${path:processed.specific.labels_template}"
-
+  cache:
+    feature_template: "${path:cache.feature_template}"
 schema:
   internal:
     # 1. 项目内部的、黄金标准的数据格式定义
