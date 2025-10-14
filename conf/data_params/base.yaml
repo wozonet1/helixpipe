@@ -1,0 +1,24 @@
+name: base
+
+similarity_thresholds:
+  protein_protein: 0.8 # 对应 protein_protein_similarity
+  drug_drug: 0.988 # 对应 drug_drug_similarity
+  ligand_ligand: 0.988 # 对应 ligand_ligand_similarity, 复用同一个严格阈值
+  drug_ligand: 0.7 # 对应 drug_ligand_similarity, 使用一个更宽松的阈值
+
+max_pp_edges: 500
+gtopdb_max_affinity_nM: 10000
+negative_sampling_strategy: "popular"
+affinity_threshold_nM: 10000
+
+use_gtopdb: false
+feature_extractors:
+  protein:
+  extractor_function: "extract_esm_protein_embeddings"
+  model_name: "facebook/esm2_t30_150M_UR50D"
+  # 在GPU上进行特征提取时的批处理大小
+  batch_size: 32
+molecule:
+  extractor_function: "extract_chemberta_molecule_embeddings"
+  model_name: "seyonec/ChemBERTa-zinc-base-v1"
+  batch_size: 64 # 通常可以比蛋白质的batch size更大

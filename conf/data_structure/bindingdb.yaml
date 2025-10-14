@@ -1,0 +1,29 @@
+# conf/data/bindingdb.yaml
+
+defaults:
+  - base # 第一步：加载 `conf/data/base.yaml` 的所有内容
+  - _self_ # 第二步：加载这个文件自身的其余内容，并与base合并
+
+name: bindingdb
+root: "data"
+primary_dataset: "bindingdb"
+
+files:
+  raw:
+    # 原始下载的TSV压缩包内的文件名
+    raw_tsv: "BindingDB_All.tsv"
+    authoritative_dti: "bindingdb_interactions.csv"
+    dummy_file_to_get_dir: "dummy.txt"
+
+  # 【新增】在这里定义所有与BindingDB原始文件相关的列名
+schema:
+  external:
+    bindingdb:
+      molecule_sequence: "Ligand SMILES"
+      molecule_id: "PubChem CID"
+      organism: "Target Source Organism According to Curator or DataSource"
+      ki: "Ki (nM)"
+      ic50: "IC50 (nM)"
+      kd: "Kd (nM)"
+      protein_id: "UniProt (SwissProt) Primary ID of Target Chain 1"
+      protein_sequence: "BindingDB Target Chain Sequence 1"

@@ -1,0 +1,49 @@
+#主要是有关数据处理的,影响结果的参数与文件结构描述
+
+subfolders:
+  raw: "raw"
+  processed: "processed"
+files:
+  raw: {}
+  processed:
+    common:
+      nodes_metadata: "nodes.csv"
+      node_features: "node_features.npy"
+      feature_caches:
+        molecule_embeddings: "feature_caches/molecule_features.pkl"
+        protein_embeddings: "feature_caches/esm_protein_features.pkl"
+      similarity_matrices:
+        molecule: "sim_matrixes/dl_similarity_matrix.pkl"
+        protein: "sim_matrixes/prot_similarity_matrix.pkl"
+      indexes:
+        drug: "indexes/drug2index.pkl"
+        ligand: "indexes/ligand2index.pkl"
+        protein: "indexes/prot2index.pkl"
+
+    specific:
+      graph_template: "{prefix}_graph_{suffix}.csv" #最后是{fold_idx}-train/test
+      labels_template: "{prefix}_labels_{suffix}.csv"
+schema:
+  internal:
+    # 1. 项目内部的、黄金标准的数据格式定义
+    authoritative_dti:
+      molecule_id: "PubChem_CID"
+      protein_id: "UniProt_ID"
+      molecule_sequence: "SMILES"
+      protein_sequence: "Sequence"
+      label: "Label"
+
+    # 2. 图和标签文件的输出格式定义
+    graph_output:
+      source_node: "source"
+      target_node: "target"
+      edge_type: "edge_type"
+
+    labeled_edges_output:
+      source_node: "source"
+      target_node: "target"
+      label: "label"
+
+  # 3. 各个原始数据源的列名定义
+  #    将它们嵌套在各自的键下，保持结构清晰
+  external: {}

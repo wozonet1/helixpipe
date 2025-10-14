@@ -7,6 +7,70 @@ from rdkit import Chem
 import re
 from tqdm import tqdm
 from typing import Optional
+import time
+import requests
+from collections import namedtuple, Counter
+from joblib import Parallel, delayed
+
+
+def is_config_valid(config: DictConfig) -> bool:
+    """
+    Checks if the experiment configuration is logically valid.
+
+    Rules:
+    1. If gtopdb is NOT used (`use_gtopdb: false`), then relations involving 'l'
+       (ligand) are FORBIDDEN.
+    2. If gtopdb IS used (`use_gtopdb: true`), then relations involving 'l'
+       are MANDATORY (at least one 'l' relation must be enabled).
+
+    Args:
+        config (DictConfig): The fully composed Hydra configuration object.
+
+    Returns:
+        bool: True if the configuration is valid, False otherwise.
+    """
+    try:
+        # --- Rule 1: Check for forbidden relations when gtopdb is off ---
+        use_gtopdb = config.data.use_gtopdb
+
+        # Access the dictionary of relation switches
+        # The actual config group is 'relations', which contains a 'params' sub-key,
+        # which in turn contains 'include_relations'. Let's use a robust access method.
+        # UPDATE: Based on your provided config structure, the path is simpler.
+        include_relations = config.relations.flags
+
+        # Define which relation keys are considered 'ligand-related'
+        ligand_related_keys = ["lp_interaction", "ll_similarity", "dl_similarity"]
+
+        # Check if any ligand-related relation is enabled
+        any_l_relation_enabled = any(
+            include_relations.get(key, False) for key in ligand_related_keys
+        )
+
+        if not use_gtopdb:
+            if any_l_relation_enabled:
+                print(
+                    "[CONFIG INVALID] Run skipped: Ligand relations (e.g., lp, ll, dl) are enabled, but 'use_gtopdb' is false."
+                )
+                return False
+
+        # --- Rule 2: Check for mandatory relations when gtopdb is on ---
+        else:  # This means use_gtopdb is True
+            if not any_l_relation_enabled:
+                print(
+                    "[CONFIG INVALID] Run skipped: 'use_gtopdb' is true, but no ligand-related relations are enabled in the config."
+                )
+                return False
+
+    except Exception as e:
+        # This will catch errors if the config structure is unexpected (e.g., 'include_relations' is missing)
+        print(
+            f"[CONFIG CHECK FAILED] Could not validate config due to an error: {e}. Skipping run."
+        )
+        return False
+
+    # If all checks pass, the configuration is valid
+    return True
 
 
 def run_optional_diagnostics(hetero_graph: HeteroData):
@@ -526,3 +590,197 @@ def validate_authoritative_dti_file(
         + f"{bcolors.ENDC}"
     )
     print("=" * 80)
+
+
+# 定义一个结构化的返回类型，让结果更清晰
+ValidationResult = namedtuple("ValidationResult", ["status", "message"])
+
+# --- 核心验证函数 ---
+
+
+def validate_pubchem_entry(cid: int, local_smiles: str) -> ValidationResult:
+    """
+    通过PubChem PUG REST API查询给定的CID，并将其规范SMILES与本地SMILES进行比较。
+
+    Args:
+        cid (int): PubChem Compound ID.
+        local_smiles (str): 数据集中与该CID关联的SMILES字符串。
+
+    Returns:
+        ValidationResult: 包含 'MATCH', 'MISMATCH', 或 'API_ERROR' 状态的结果。
+    """
+    # PubChem 要求每秒请求不超过5次。在每个请求前暂停一下来遵守规则。
+    time.sleep(0.25)
+    url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/property/IsomericSMILES/TXT"
+    # url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/property/CanonicalSMILES/TXT"
+    try:
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()  # 检查HTTP错误 (如 404, 500)
+
+        api_smiles = response.text.strip()
+
+        local_mol = Chem.MolFromSmiles(local_smiles)
+        api_mol = Chem.MolFromSmiles(api_smiles)
+
+        if not local_mol:
+            return ValidationResult("LOCAL_INVALID", "Local SMILES is invalid.")
+        if not api_mol:
+            return ValidationResult("API_INVALID", "API SMILES is invalid.")
+
+        # --- 【核心修复】 ---
+        # 直接将分子对象 local_mol 和 api_mol 传给指纹函数
+        local_fp = Chem.RDKFingerprint(local_mol)
+        api_fp = Chem.RDKFingerprint(api_mol)
+
+        if local_fp == api_fp:
+            return ValidationResult("MATCH", "Molecules are chemically equivalent.")
+        else:
+            # 只有在不匹配时，我们才为了生成报告而创建规范SMILES字符串
+            local_canonical_str = Chem.MolToSmiles(local_mol, canonical=True)
+            api_canonical_str = Chem.MolToSmiles(api_mol, canonical=True)
+            msg = f"Molecules are different. Local: '{local_canonical_str}' vs API: '{api_canonical_str}'"
+            return ValidationResult("MISMATCH", msg)
+
+    except requests.exceptions.RequestException as e:
+        return ValidationResult("API_ERROR", str(e))
+
+
+def validate_uniprot_entry(pid: str, local_sequence: str) -> ValidationResult:
+    """
+    通过UniProt API查询给定的蛋白质ID，并将其序列与本地序列进行比较。
+
+    Args:
+        pid (str): UniProt Primary Accession ID.
+        local_sequence (str): 数据集中与该PID关联的蛋白质序列。
+
+    Returns:
+        ValidationResult: 包含 'MATCH', 'MISMATCH', 或 'API_ERROR' 状态的结果。
+    """
+    url = f"https://rest.uniprot.org/uniprotkb/{pid}.fasta"
+    try:
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+
+        # 解析FASTA格式
+        lines = response.text.strip().split("\n")
+        api_sequence = "".join(lines[1:])
+        # 【核心修复】: 在比较前对两个字符串都使用 .strip()
+        local_seq_clean = local_sequence.strip().upper()
+        api_seq_clean = api_sequence.strip().upper()
+
+        if local_seq_clean == api_seq_clean:
+            return ValidationResult("MATCH", "Sequences successfully matched.")
+        else:
+            # 现在，任何不匹配都是真实的内容差异
+            import difflib
+
+            if len(local_seq_clean) == len(api_seq_clean):
+                # 使用difflib找出具体字符差异
+                diff = list(difflib.ndiff(local_seq_clean, api_seq_clean))
+                # 过滤出有差异的部分，并使其更可读
+                diff_parts = [
+                    d for d in diff if d.startswith("+ ") or d.startswith("- ")
+                ]
+                # 将例如 ['- A', '+ B', '- C', '+ D'] 变成 "A->B, C->D"
+                readable_diff = []
+                # 假设差异总是成对出现
+                for i in range(0, len(diff_parts), 2):
+                    if i + 1 < len(diff_parts):
+                        readable_diff.append(
+                            f"{diff_parts[i][-1]}->{diff_parts[i + 1][-1]}"
+                        )
+                msg = f"Content mismatch: {', '.join(readable_diff)[:100]}"
+            elif local_seq_clean in api_seq_clean or api_seq_clean in local_seq_clean:
+                msg = f"Local sequence is a SUBSTRING of API sequence (or vice versa). Local={len(local_seq_clean)}, API={len(api_seq_clean)}"
+                return ValidationResult("MATCH_SUBSTRING", msg)
+            else:
+                msg = f"Length mismatch: Local={len(local_seq_clean)}, API={len(api_seq_clean)}"
+
+            return ValidationResult("MISMATCH", msg)
+
+    except requests.exceptions.RequestException as e:
+        return ValidationResult("API_ERROR", str(e))
+
+
+# --- 主协调与报告函数 ---
+
+
+def _print_validation_report(
+    title: str, results: list[ValidationResult], sample_df: pd.DataFrame, id_col: str
+):
+    """一个辅助函数，用于打印格式化的报告。"""
+    print("\n" + "=" * 30)
+    print(f" {title} Validation Report")
+    print("=" * 30)
+
+    counts = Counter(r.status for r in results)
+    total = len(results)
+
+    print(f"  - Total Samples: {total}")
+    for status, count in counts.items():
+        percentage = (count / total) * 100
+        print(f"  - {status:<10}: {count:>4} ({percentage:.1f}%)")
+
+    mismatches = [
+        (res.message, row[id_col])
+        for res, (_, row) in zip(results, sample_df.iterrows())
+        if res.status == "MISMATCH"
+    ]
+
+    if mismatches:
+        print("\n--- Mismatch Details (up to 5) ---")
+        for i, (msg, item_id) in enumerate(mismatches[:5]):
+            print(f"{i + 1}. ID: {item_id}")
+            print(f"   Reason: {msg}")
+    print("=" * 30)
+
+
+def run_online_validation(
+    df: pd.DataFrame, n_samples: int = 200, n_jobs: int = 4, random_state: int = 42
+):
+    """
+    从给定的DataFrame中抽样，并行执行对PubChem和UniProt的在线验证，并打印总结报告。
+
+    Args:
+        df (pd.DataFrame): 包含 'PubChem_CID', 'SMILES', 'UniProt_ID', 'Sequence' 列的DataFrame。
+        n_samples (int): 要随机抽取的样本数量。
+        n_jobs (int): 用于并行API请求的作业数。
+                       注意：PubChem有速率限制，过高的n_jobs可能无益。
+        random_state (int): 用于抽样的随机种子，以保证结果可复现。
+    """
+    print(f"\n🚀 Starting online validation for {n_samples} random samples...")
+
+    if n_samples > len(df):
+        print(
+            f"Warning: n_samples ({n_samples}) is larger than DataFrame size ({len(df)}). Validating all entries."
+        )
+        n_samples = len(df)
+
+    sample_df = df.sample(n=n_samples, random_state=random_state)
+
+    with Parallel(n_jobs=n_jobs) as parallel:
+        # --- PubChem Validation ---
+        # print("\n[Phase 1/2] Querying PubChem API for SMILES validation...")
+        # pubchem_results = parallel(
+        #     delayed(validate_pubchem_entry)(row.PubChem_CID, row.SMILES)
+        #     for _, row in tqdm(
+        #         sample_df.iterrows(), total=len(sample_df), desc="PubChem Checks"
+        #     )
+        # )
+
+        # --- UniProt Validation ---
+        print("\n[Phase 2/2] Querying UniProt API for Sequence validation...")
+        uniprot_results = parallel(
+            delayed(validate_uniprot_entry)(row.UniProt_ID, row.Sequence)
+            for _, row in tqdm(
+                sample_df.iterrows(), total=len(sample_df), desc="UniProt Checks"
+            )
+        )
+
+    # --- Generate Reports ---
+    # _print_validation_report(
+    #     "PubChem CID vs SMILES", pubchem_results, sample_df, "PubChem_CID"
+    # )
+    _print_validation_report(
+        "UniProt ID vs Sequence", uniprot_results, sample_df, "UniProt_ID"
+    )
