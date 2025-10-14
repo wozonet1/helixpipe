@@ -54,7 +54,7 @@ def _purify_chunk(df_chunk: pd.DataFrame) -> pd.DataFrame:
     return df_chunk
 
 
-def purify_dti_dataframe_parallel(df: pd.DataFrame, n_jobs: int = -1) -> pd.DataFrame:
+def purify_dti_dataframe_parallel(df: pd.DataFrame, config) -> pd.DataFrame:
     """
     对一个包含DTI数据的DataFrame进行并行的深度清洗和标准化。
 
@@ -65,6 +65,7 @@ def purify_dti_dataframe_parallel(df: pd.DataFrame, n_jobs: int = -1) -> pd.Data
     Returns:
         pd.DataFrame: 经过深度清洗和标准化的DataFrame。
     """
+    n_jobs = config.runtime.cpus
     print("\n" + "-" * 80)
     print(" " * 20 + f"启动并行数据净化流程 (使用 {n_jobs} 个核心)")
     print("-" * 80)

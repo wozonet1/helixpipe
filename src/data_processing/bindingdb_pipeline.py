@@ -21,24 +21,19 @@ def process_bindingdb_data(config: DictConfig):
 
     # --- [核心修改] 从新的、更清晰的配置结构中获取Schema和路径 ---
     # 外部(原始文件)的schema
-    external_schema = config.data.schema.external.bindingdb
+    external_schema = config.data_structure.schema.external.bindingdb
     # 内部(黄金标准)的schema
-    internal_schema = config.data.schema.internal.authoritative_dti
+    internal_schema = config.data_structure.schema.internal.authoritative_dti
 
-    raw_dir = rt.get_path(config, "data.files.raw.dummy_file_to_get_dir").parent
-
-    # --- 步骤 1/4: 验证并加载本地原始TSV文件 ---
-    print("--- [步骤 1/4] 验证并加载本地原始TSV文件 ---")
-    try:
-        tsv_path = next(raw_dir.glob(config.data.files.raw.raw_tsv))
-    except StopIteration:
-        print(
-            f"❌ 致命错误: 在 '{raw_dir}' 中找不到 '{config.data.files.raw.raw_tsv}' 文件。"
-        )
+    tsv_path = rt.get_path(config, "data_structure.paths.raw.raw_tsv")
+    if not tsv_path.exists():
+        # 错误信息现在可以更精确地指出期望的文件路径
+        print(f"❌ 致命错误: 在 '{tsv_path.parent}' 中找不到 '{tsv_path.name}' 文件。")
+        print(f"   (完整路径: {tsv_path})")
         print("   请确保您已手动下载并解压了BindingDB的TSV数据文件。")
         sys.exit(1)
 
-    print(f"--> 成功定位数据文件: '{tsv_path.name}'")
+    print(f"--> 成功定位数据文件: '{tsv_path}'")  # 打印完整的路径
 
     # 从外部Schema动态构建要读取的列列表
     columns_to_read = [
@@ -92,7 +87,7 @@ def process_bindingdb_data(config: DictConfig):
         )
 
         # 4. 根据亲和力阈值过滤
-        affinity_threshold = config.params.affinity_threshold_nM
+        affinity_threshold = config.data_params.affinity_threshold_nM
         chunk.dropna(subset=["affinity_nM"], inplace=True)
         chunk = chunk[chunk["affinity_nM"] <= affinity_threshold]
 
@@ -151,7 +146,7 @@ def process_bindingdb_data(config: DictConfig):
     print(f"--> 去重后保留 {len(output_df)} / {initial_count} 条独特的交互对。")
 
     # 从配置获取最终输出路径
-    output_path = rt.get_path(config, "data.files.raw.authoritative_dti")
+    output_path = rt.get_path(config, "data_structure.paths.raw.authoritative_dti")
     rt.ensure_path_exists(output_path)
     output_df.to_csv(output_path, index=False)
 
@@ -167,7 +162,8 @@ if __name__ == "__main__":
     with initialize(config_path="../../conf", job_name="bindingdb_process"):
         # 这个 compose 调用现在因为我们的配置重构而变得非常强大和简洁
         cfg = compose(
-            config_name="config", overrides=["data=bindingdb", "params=default"]
+            config_name="config",
+            overrides=["data_structure=bindingdb", "data_params=base"],
         )
     print("\n" + "~" * 80)
     print(" " * 25 + "HYDRA COMPOSED CONFIGURATION")

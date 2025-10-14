@@ -1,28 +1,39 @@
-#主要是有关数据处理的,影响结果的参数与文件结构描述
+# conf/data_structure/base.yaml
 
-subfolders:
-  raw: "raw"
-  processed: "processed"
-files:
-  raw: {}
+#主要是有关数据处理的,影响结果的参数与文件结构描述
+dataset_specific_filenames:
+  authoritative_dti: "default_interactions"
+  raw_tsv: "default_raw.tsv"
+
+paths:
+  # 1. 定义动态的目录“根”
+  #    这些不是最终文件，而是可复用的路径片段
+  _dir_roots:
+    raw: "${data_structure.root}/${data_structure.primary_dataset}/raw"
+    # [关键] processed_common的路径现在包含了动态的variant文件夹
+    processed_common: "${data_structure.root}/${data_structure.primary_dataset}/processed/${runtime.variant_folder}/common"
+    # [关键] processed_specific的路径现在包含了两个动态文件夹
+    processed_specific: "${data_structure.root}/${data_structure.primary_dataset}/processed/${runtime.variant_folder}/${runtime.experiment_folder}"
+
+  raw:
+    # [关键] 文件名现在直接通过插值引用上面的变量
+    authoritative_dti: "${data_structure.paths._dir_roots.raw}/${data_structure.dataset_specific_filenames.authoritative_dti}.csv"
+    raw_tsv: "${data_structure.paths._dir_roots.raw}/${data_structure.dataset_specific_filenames.raw_tsv}"
+    dummy_file_to_get_dir: "${data_structure.paths._dir_roots.raw}/dummy.txt"
+    
   processed:
     common:
-      nodes_metadata: "nodes.csv"
-      node_features: "node_features.npy"
+      nodes_metadata: "${data_structure.paths._dir_roots.processed_common}/nodes.csv"
+      node_features: "${data_structure.paths._dir_roots.processed_common}/node_features.npy"
       feature_caches:
-        molecule_embeddings: "feature_caches/molecule_features.pkl"
-        protein_embeddings: "feature_caches/esm_protein_features.pkl"
+        molecule_embeddings: "${data_structure.paths._dir_roots.processed_common}/feature_caches/molecule_features.pkl"
+        protein_embeddings: "${data_structure.paths._dir_roots.processed_common}/feature_caches/esm_protein_features.pkl"
       similarity_matrices:
-        molecule: "sim_matrixes/dl_similarity_matrix.pkl"
-        protein: "sim_matrixes/prot_similarity_matrix.pkl"
-      indexes:
-        drug: "indexes/drug2index.pkl"
-        ligand: "indexes/ligand2index.pkl"
-        protein: "indexes/prot2index.pkl"
-
+        molecule: "${data_structure.paths._dir_roots.processed_common}/sim_matrixes/dl_similarity_matrix.pkl"
+        protein: "${data_structure.paths._dir_roots.processed_common}/sim_matrixes/prot_similarity_matrix.pkl"
     specific:
-      graph_template: "{prefix}_graph_{suffix}.csv" #最后是{fold_idx}-train/test
-      labels_template: "{prefix}_labels_{suffix}.csv"
+      graph_template: "${data_structure.paths._dir_roots.processed_specific}/{prefix}_graph_{suffix}.csv"
+      labels_template: "${data_structure.paths._dir_roots.processed_specific}/{prefix}_labels_{suffix}.csv"
 schema:
   internal:
     # 1. 项目内部的、黄金标准的数据格式定义
@@ -47,3 +58,7 @@ schema:
   # 3. 各个原始数据源的列名定义
   #    将它们嵌套在各自的键下，保持结构清晰
   external: {}
+
+runtime:
+  variant_folder: "baseline" # 默认值
+  experiment_folder: "default-experiment" # 默认值
