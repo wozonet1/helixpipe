@@ -15,16 +15,17 @@ class IDMapper:
         self, base_df: pd.DataFrame, extra_dfs: List[pd.DataFrame], config: "DictConfig"
     ):
         """
-        通过一个或多个标准化的DataFrame来初始化ID映射器。
-
-        Args:
-            dataframes (List[pd.DataFrame]): 包含交互数据的DataFrame列表。
-                                              每个DataFrame都必须包含由config定义的权威ID和序列列。
-            config (DictConfig): 全局配置对象。
+        通过一个基础DataFrame和多个扩展DataFrame来初始化ID映射器。
+        【V2 优化版】
         """
         print("--- [IDMapper] Initializing with entity type distinction...")
         self._config = config
         schema = self._config.data_structure.schema.internal.authoritative_dti
+
+        # --- 0. 初始化所有实例属性 ---
+        # 将所有属性的定义都放在最前面，是一个好的编程习惯
+        self._cid_to_smiles: Dict[int, str] = {}
+        self._uniprot_to_sequence: Dict[str, str] = {}
 
         # --- 1. 收集并区分 Drug 和 Ligand 的权威ID (CIDs) ---
         base_cids = set(base_df[schema.molecule_id].dropna().unique())
@@ -33,37 +34,39 @@ class IDMapper:
         for df in extra_dfs:
             extra_cids.update(df[schema.molecule_id].dropna().unique())
 
-        # 定义规则：Drug 是基础数据集中的所有分子。
-        #         Ligand 是只在扩展数据集中出现的分子。
-        self._drug_cids = base_cids
-        self._ligand_cids = extra_cids - base_cids
+        self._drug_cids: Set[int] = base_cids
+        self._ligand_cids: Set[int] = extra_cids - base_cids
 
-        # --- 2. 收集所有唯一的蛋白质权威ID (UniProt IDs) ---
-        all_dfs = [base_df] + extra_dfs
-        all_uniprot_ids = set()
-        for df in all_dfs:
-            all_uniprot_ids.update(df[schema.protein_id].dropna().unique())
+        # --- 2. 合并数据并收集实体与序列映射 ---
+        all_dfs = [base_df] + (extra_dfs if extra_dfs else [])
+        merged_df = pd.concat(all_dfs, ignore_index=True)
 
-        # --- 3. 收集权威ID到序列/SMILES的映射 ---
-        self._cid_to_smiles: Dict[int, str] = {}
-        self._uniprot_to_sequence: Dict[str, str] = {}
+        # a. 收集所有唯一的蛋白质ID
+        all_uniprot_ids: Set[str] = set(merged_df[schema.protein_id].dropna().unique())
 
-        # 迭代所有DataFrame来填充映射，后面的会覆盖前面的（数据应已清洗）
-        for df in all_dfs:
-            df_dedup_mol = df.drop_duplicates(subset=[schema.molecule_id])
-            for cid, smiles in zip(
-                df_dedup_mol[schema.molecule_id], df_dedup_mol[schema.molecule_sequence]
-            ):
-                self._cid_to_smiles[cid] = smiles
+        # b. 【优化】一次性构建 CID -> SMILES 映射
+        mol_map_df = (
+            merged_df[[schema.molecule_id, schema.molecule_sequence]]
+            .dropna()
+            .drop_duplicates(subset=[schema.molecule_id])
+        )
+        self._cid_to_smiles = pd.Series(
+            mol_map_df[schema.molecule_sequence].values,
+            index=mol_map_df[schema.molecule_id],
+        ).to_dict()
 
-            df_dedup_prot = df.drop_duplicates(subset=[schema.protein_id])
-            for pid, seq in zip(
-                df_dedup_prot[schema.protein_id], df_dedup_prot[schema.protein_sequence]
-            ):
-                self._uniprot_to_sequence[pid] = seq
+        # c. 【优化】一次性构建 UniProt ID -> Sequence 映射
+        prot_map_df = (
+            merged_df[[schema.protein_id, schema.protein_sequence]]
+            .dropna()
+            .drop_duplicates(subset=[schema.protein_id])
+        )
+        self._uniprot_to_sequence = pd.Series(
+            prot_map_df[schema.protein_sequence].values,
+            index=prot_map_df[schema.protein_id],
+        ).to_dict()
 
-        # --- 4. 创建从权威ID到逻辑ID的有序映射 ---
-        # 排序以保证每次运行的ID分配都是确定性的
+        # --- 3. 创建从权威ID到逻辑ID的有序映射 ---
         self._sorted_drugs = sorted(list(self._drug_cids))
         self._sorted_ligands = sorted(list(self._ligand_cids))
         self._sorted_proteins = sorted(list(all_uniprot_ids))
@@ -71,7 +74,7 @@ class IDMapper:
         # 逻辑ID分配: [drugs, ligands, proteins]
         current_id = 0
         self.drug_to_id: Dict[int, int] = {
-            cid: i for i, cid in enumerate(self._sorted_drugs)
+            cid: i + current_id for i, cid in enumerate(self._sorted_drugs)
         }
         current_id += len(self._sorted_drugs)
 
@@ -84,9 +87,10 @@ class IDMapper:
             pid: i + current_id for i, pid in enumerate(self._sorted_proteins)
         }
 
-        # --- 5. 创建统一和反向的映射，以方便使用 ---
+        # --- 4. 创建统一和反向的映射 (别名) ---
         self.molecule_to_id = {**self.drug_to_id, **self.ligand_to_id}
-        self.cid_to_id = self.molecule_to_id  # 别名
+        self.cid_to_id = self.molecule_to_id
+        self.uniprot_to_id = self.protein_to_id
 
         self.id_to_drug: Dict[int, int] = {i: cid for cid, i in self.drug_to_id.items()}
         self.id_to_ligand: Dict[int, int] = {
@@ -95,8 +99,11 @@ class IDMapper:
         self.id_to_protein: Dict[int, str] = {
             i: pid for pid, i in self.protein_to_id.items()
         }
-        self.id_to_cid = {**self.id_to_drug, **self.id_to_ligand}  # 别名
 
+        self.id_to_cid = {**self.id_to_drug, **self.id_to_ligand}
+        self.id_to_uniprot = self.id_to_protein
+
+        # --- 5. 打印总结信息 ---
         print("--- [IDMapper] Initialization complete. ---")
         print(f"  - Found {self.num_drugs} unique drugs.")
         print(f"  - Found {self.num_ligands} unique pure ligands.")
@@ -235,26 +242,3 @@ class IDMapper:
         print(f"--> Found {len(positive_pairs_set)} unique positive pairs.")
 
         return positive_pairs, positive_pairs_set
-
-    def get_node_type(self, logic_id: int) -> str:
-        """
-        根据给定的逻辑ID，返回其节点类型 ('drug', 'ligand', 'protein')。
-        """
-        # 我们需要知道 drug 和 ligand 的边界
-        # 假设 IDMapper 初始化时也创建了 drug/ligand 映射
-        # 我们需要对 IDMapper 的 __init__ 做一点小小的增强
-
-        # --- 在 IDMapper.__init__ 中需要增加 ---
-        # self.drug_to_id = ...
-        # self.ligand_to_id = ...
-        # self.num_drugs = len(self.drug_to_id)
-        # self.num_ligands = len(self.ligand_to_id)
-        # ------------------------------------
-
-        if logic_id < self.num_drugs:
-            return "drug"
-        # 假设 drug 和 ligand 的ID是连续的
-        elif logic_id < self.num_drugs + self.num_ligands:
-            return "ligand"
-        else:
-            return "protein"

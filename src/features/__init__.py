@@ -10,3 +10,4 @@ from . import similarity_calculators as sim_calculators
 # from .feature_extractors import extract_esm_protein_embeddings
 
 # 但通常，保持两层命名空间（features.extractors）是更清晰的做法。
+__all__ = [extractors, sim_calculators]

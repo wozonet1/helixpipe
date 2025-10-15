@@ -1,3 +1,5 @@
+name: gtopdb
+
 defaults:
   - base
   - _self_

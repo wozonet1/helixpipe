@@ -1,4 +1,4 @@
-name: base
+name: baseline
 
 similarity_thresholds:
   protein_protein: 0.8 # 对应 protein_protein_similarity
@@ -14,11 +14,11 @@ affinity_threshold_nM: 10000
 auxiliary_datasets: []
 feature_extractors:
   protein:
-  extractor_function: "extract_esm_protein_embeddings"
-  model_name: "facebook/esm2_t30_150M_UR50D"
-  # 在GPU上进行特征提取时的批处理大小
-  batch_size: 32
-molecule:
-  extractor_function: "extract_chemberta_molecule_embeddings"
-  model_name: "seyonec/ChemBERTa-zinc-base-v1"
-  batch_size: 64 # 通常可以比蛋白质的batch size更大
+    extractor_function: "extract_esm_protein_embeddings"
+    model_name: "facebook/esm2_t30_150M_UR50D"
+    # 在GPU上进行特征提取时的批处理大小
+    batch_size: 32
+  molecule:
+    extractor_function: "extract_chemberta_molecule_embeddings"
+    model_name: "seyonec/ChemBERTa-zinc-base-v1"
+    batch_size: 64 # 通常可以比蛋白质的batch size更大

@@ -8,25 +8,25 @@ from pathlib import Path
 from tqdm import tqdm
 from collections import defaultdict
 
-from features import extractors, sim_calculators
 import torch
 from data_utils.id_mapper import IDMapper
-from typing import List
+from typing import List, Dict
 from data_utils.splitters import DataSplitter
+from features import extractors
+from features import sim_calculators
 
 
-def process_data(config: DictConfig, dataframes_to_process: List[pd.DataFrame]):
+def process_data(
+    config: DictConfig, base_df: pd.DataFrame, extra_dfs: List[pd.DataFrame]
+):
     """
     【V3 重构版】数据处理的总编排器。
     接收一个DataFrame列表作为输入，然后驱动所有后续处理。
     """
 
     restart_flag = config.runtime.get("force_restart", False)
-    if not dataframes_to_process:
+    if base_df is None or base_df.empty:
         raise ValueError("Cannot process data: Input dataframe list is empty.")
-
-    base_df = dataframes_to_process[0]
-    extra_dfs = dataframes_to_process[1:]  # 列表的其余部分都是“扩展”数据集
 
     id_mapper = IDMapper(base_df, extra_dfs, config)
 
@@ -47,6 +47,7 @@ def process_data(config: DictConfig, dataframes_to_process: List[pd.DataFrame]):
             restart_flag=restart_flag,
         )
     )
+    dataframes_to_process = [base_df] + extra_dfs
     _stage_4_split_data_and_build_graphs(
         config,
         id_mapper,
@@ -70,20 +71,36 @@ def _stage_2_generate_features(
     )
 
     if not final_features_path.exists() or restart_flag:
-        # 1. 【核心变化】从 id_mapper 获取按正确【逻辑ID顺序】排列的SMILES和序列列表。
-        smiles_list = id_mapper.get_ordered_smiles()
-        sequence_list = id_mapper.get_ordered_sequences()
+        # 1. 从 id_mapper 获取有序的权威ID和序列/SMILES列表
+        ordered_cids = id_mapper._sorted_drugs + id_mapper._sorted_ligands
+        ordered_smiles = id_mapper.get_ordered_smiles()
+        ordered_pids = id_mapper._sorted_proteins
+        ordered_sequences = id_mapper.get_ordered_sequences()
 
-        print(
-            f"--> Preparing to extract features for {len(smiles_list)} molecules and {len(sequence_list)} proteins."
+        # 2. 调用新的特征提取器，获取特征字典
+        molecule_features_dict = _generate_or_load_embeddings(
+            config, "molecule", ordered_cids, ordered_smiles, restart_flag
+        )
+        protein_features_dict = _generate_or_load_embeddings(
+            config, "protein", ordered_pids, ordered_sequences, restart_flag
         )
 
-        # 2. 调用通用的特征提取器（我们将在下一步重构它以支持全局缓存）。
-        molecule_embeddings = _generate_or_load_embeddings(
-            config, "molecule", smiles_list, restart_flag
+        # 3. 【核心变化】根据 id_mapper 的顺序，从字典中组装最终的有序张量
+        print("--> Assembling final feature matrices from dictionaries...")
+        # a. 组装分子嵌入
+        ordered_mol_embeddings = [molecule_features_dict[cid] for cid in ordered_cids]
+        molecule_embeddings = (
+            torch.stack(ordered_mol_embeddings)
+            if ordered_mol_embeddings
+            else torch.empty(0)
         )
-        protein_embeddings = _generate_or_load_embeddings(
-            config, "protein", sequence_list, restart_flag
+
+        # b. 组装蛋白质嵌入
+        ordered_prot_embeddings = [protein_features_dict[pid] for pid in ordered_pids]
+        protein_embeddings = (
+            torch.stack(ordered_prot_embeddings)
+            if ordered_prot_embeddings
+            else torch.empty(0)
         )
 
         if molecule_embeddings.shape[1] != protein_embeddings.shape[1]:
@@ -123,73 +140,63 @@ def _stage_2_generate_features(
 
 
 def _generate_or_load_embeddings(
-    config: DictConfig,
-    entity_type: str,
-    entity_list: list,
+    config: "DictConfig",
+    entity_type: str,  # "protein" or "molecule"
+    authoritative_ids: list,
+    sequences_or_smiles: list,
     restart_flag: bool,
-) -> torch.Tensor:
+) -> Dict[str, torch.Tensor]:  # <-- 返回值变为字典
     """
-    【高阶辅助函数】一个通用的工作流，用于为指定实体类型生成或加载SOTA嵌入。
+    【V2 全局缓存版】高阶辅助函数/动态分派器。
 
     它会自动：
-    1. 从config中读取该实体类型的专属配置 (如模型名称, batch_size)。
-    2. 从config中获取该实体类型的缓存文件路径。
-    3. 动态地从`features.extractors`模块中，获取并调用正确的提取器函数。
-    4. 将所有必要的参数传递给提取器。
-
-    Args:
-        config (DictConfig): 完整的Hydra配置对象。
-        entity_type (str): 实体类型，必须与config中的键匹配 (例如 "protein", "molecule")。
-        entity_list (list): 包含实体数据（序列或SMILES）的列表。
-        restart_flag (bool): 是否强制重新生成。
-        device (str): 计算设备。
+    1. 从config中读取该实体类型的专属配置 (模型名称, 提取器函数名等)。
+    2. 动态地从`features.extractors`模块中获取并调用正确的提取器函数。
+    3. 将所有必要的参数（包括权威ID和序列）传递给提取器。
 
     Returns:
-        torch.Tensor: 最终的嵌入张量。
+        Dict[str, torch.Tensor]: 一个从权威ID映射到特征张量的字典。
     """
-    print(f"\n--> Processing '{entity_type}' features...")
+    print(f"\n--> Dispatching feature extraction for '{entity_type}'...")
 
-    # 1. 读取配置
+    # 1. 读取配置 (现在从 data_structure 读取)
     try:
         entity_cfg = config.data_params.feature_extractors[entity_type]
         device = torch.device(
             config.runtime.gpu if torch.cuda.is_available() else "cpu"
         )
-        cache_key = f"processed.common.feature_caches.{entity_type}_embeddings"
-        extractor_func_name = (
-            entity_cfg.extractor_function
-        )  # <-- [关键] 从配置读取函数名
+        extractor_func_name = entity_cfg.extractor_function
     except KeyError as e:
-        print(
-            f"❌ FATAL: Configuration error for entity_type '{entity_type}'. Missing key: {e}"
+        raise KeyError(
+            f"Configuration error for entity_type '{entity_type}'. Missing key: {e}"
         )
-        raise
 
-    # 2. 获取路径
-    cache_path = rt.get_path(config, cache_key)
-
-    # 3. 动态获取提取器函数
+    # 2. 动态获取提取器函数
     try:
         extractor_function = getattr(extractors, extractor_func_name)
     except AttributeError:
-        print(
-            f"❌ FATAL: Extractor function '{extractor_func_name}' not found in 'features.extractors' module."
+        raise AttributeError(
+            f"Extractor function '{extractor_func_name}' not found in 'features.extractors' module."
         )
-        raise
+    kwargs_for_extractor = {
+        "authoritative_ids": authoritative_ids,
+        "config": config,
+        "device": device,
+        "force_regenerate": restart_flag,
+    }
 
-    # 4. 统一调用
-    embeddings = extractor_function(
-        # 根据提取器函数的参数名，传递正确的实体列表
-        # 这里我们假设蛋白质提取器接收'sequences'，分子提取器接收'smiles_list'
-        entity_list,
-        cache_path=cache_path,
-        model_name=entity_cfg.model_name,
-        batch_size=entity_cfg.batch_size,
-        device=device,
-        force_regenerate=restart_flag,
-    )
+    # 根据实体类型，添加正确的、具有语义的关键字参数
+    if entity_type == "protein":
+        kwargs_for_extractor["sequences"] = sequences_or_smiles
+    elif entity_type == "molecule":
+        kwargs_for_extractor["smiles_list"] = sequences_or_smiles
+    else:
+        raise ValueError(f"Unknown entity_type for feature extraction: {entity_type}")
 
-    return embeddings.to(device)
+    # 4. 【核心变化】使用 ** 操作符解包字典，进行调用
+    features_dict = extractor_function(**kwargs_for_extractor)
+
+    return features_dict
 
 
 def _stage_3_calculate_similarity_matrices(

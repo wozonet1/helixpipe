@@ -2,7 +2,7 @@ defaults:
   - data_structure: bindingdb # 描述文件架构与文件内列的名字,与最终实际内容无关
   - predictor: rgcn
   - relations: DP_sim
-  - data_params: base #数据处理相关,且影响最终数据内容的参数
+  - data_params: baseline #数据处理相关,且影响最终数据内容的参数
   - analysis: split_diff # 仅仅在分析时用到
   - _self_ # This line is important, it tells Hydra to also load the rest of this file.
 

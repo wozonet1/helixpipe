@@ -11,99 +11,80 @@ import time
 import requests
 from collections import namedtuple, Counter
 from joblib import Parallel, delayed
-import hydra
 
 # run.py 或 utils/config_validator.py
-from pathlib import Path
+from typing import List
 
 
-def is_config_valid(cfg: DictConfig) -> bool:
+def validate_config_with_data(
+    cfg: DictConfig, base_df: pd.DataFrame, extra_dfs: List[pd.DataFrame]
+) -> bool:
     """
-    【V2 重构版】对最终组合好的配置进行一系列逻辑一致性检查。
+    【V3 重构版】在数据加载后，对配置和数据进行深度的逻辑一致性检查。
     """
-    print("\n--- [Config Validation] Running logic consistency checks... ---")
+    print("\n--- [Config & Data Validation] Running logic consistency checks... ---")
     checks_passed = True
 
     # --- 检查 1: 辅助数据集与图关系的依赖关系 ---
-    # 规则：如果 data_params.auxiliary_datasets 包含 'gtopdb'，
-    #       那么 relations.flags 中至少要有一个与 'ligand' 相关的开关是 true。
-    aux_datasets = cfg.data_params.get("auxiliary_datasets", [])
-    if "gtopdb" in aux_datasets:
-        relation_flags = cfg.relations.flags
-        # 定义哪些关系依赖于GtoPdb（即引入了'ligand'节点类型）
-        ligand_related_relations = ["lp_interaction", "ll_similarity", "dl_similarity"]
+    # 这个检查与之前基本相同，但现在我们可以基于 `extra_dfs` 的存在来判断
 
+    # a. 如果我们加载了扩展数据（意味着启用了GtoPdb等）...
+    if extra_dfs:
+        relation_flags = cfg.relations.flags
+        ligand_related_relations = ["lp_interaction", "ll_similarity", "dl_similarity"]
         is_any_ligand_relation_enabled = any(
             relation_flags.get(rel, False) for rel in ligand_related_relations
         )
 
         if not is_any_ligand_relation_enabled:
             print(
-                "❌ VALIDATION FAILED: GtoPdb is enabled as an auxiliary dataset, "
-                "but no ligand-related relations (lp_interaction, ll_similarity, dl_similarity) are enabled in the `relations` config."
+                "❌ VALIDATION FAILED: Auxiliary datasets were loaded, but no ligand-related relations are enabled in the `relations` config."
+            )
+            print(
+                "   - This implies 'ligand' nodes would be created but never used in the graph."
             )
             checks_passed = False
 
-    # 反向检查：如果启用了ligand相关关系，但gtopdb不在辅助数据集中
-    # （这个检查可能过于严格，有时我们可能希望在没有gtopdb的情况下也允许dl_similarity，
-    #  但作为一个例子，它可以这样做）
+    # b. 反向检查：如果启用了ligand关系，但没有加载扩展数据...
     relation_flags = cfg.relations.flags
     ligand_related_relations = ["lp_interaction", "ll_similarity", "dl_similarity"]
     is_any_ligand_relation_enabled = any(
         relation_flags.get(rel, False) for rel in ligand_related_relations
     )
 
-    if is_any_ligand_relation_enabled and "gtopdb" not in cfg.data_params.get(
-        "auxiliary_datasets", []
-    ):
+    if is_any_ligand_relation_enabled and not extra_dfs:
         print(
-            "⚠️ VALIDATION WARNING: Ligand-related relations are enabled, but 'gtopdb' is not in `auxiliary_datasets`."
+            "⚠️ VALIDATION WARNING: Ligand-related relations are enabled, but no auxiliary datasets were loaded."
         )
-        # 这里我们可以只打印警告而不是直接失败，因为可能存在合理的使用场景
-        # checks_passed = False
-
-    # --- 检查 2: 必需的原始文件是否存在 ---
-    # 这个检查非常重要，可以避免在流水线中途因文件缺失而失败
-
-    # a. 检查主数据集的权威DTI文件
-    primary_dti_path = rt.get_path(cfg, "data_structure.paths.raw.authoritative_dti")
-    if not primary_dti_path.exists():
         print(
-            f"❌ VALIDATION FAILED: Primary authoritative DTI file for dataset '{cfg.data_structure.name}' not found."
+            "   - This is valid only if the base dataset itself contains entities you consider 'ligands'."
         )
-        print(f"   - Expected at: {primary_dti_path}")
-        checks_passed = False
 
-    # b. 如果启用了辅助数据集，也检查它们的文件
-    for aux_name in cfg.data_params.get("auxiliary_datasets", []):
-        try:
-            # 同样利用临时配置的技巧来获取路径
-            with hydra.initialize_config_dir(
-                config_dir=Path(cfg.hydra.runtime.config_dir).parent
-            ):
-                aux_cfg = hydra.compose(
-                    config_name="config", overrides=[f"data_structure={aux_name}"]
-                )
-            aux_path = rt.get_path(
-                aux_cfg, "data_structure.paths.raw.authoritative_dti"
-            )
-            if not aux_path.exists():
-                print(
-                    f"❌ VALIDATION FAILED: Auxiliary authoritative DTI file for dataset '{aux_name}' not found."
-                )
-                print(f"   - Expected at: {aux_path}")
-                checks_passed = False
-        except Exception as e:
+    # --- 检查 2: 基于DataFrame内容的检查 ---
+    # 我们可以检查 DataFrame 是否包含我们期望的实体类型
+
+    # a. 检查 `extra_dfs` 是否真的引入了新的分子
+    if extra_dfs:
+        schema = cfg.data_structure.schema.internal.authoritative_dti
+        base_cids = set(base_df[schema.molecule_id].unique())
+        extra_cids = set()
+        for df in extra_dfs:
+            extra_cids.update(df[schema.molecule_id].unique())
+
+        pure_ligand_cids = extra_cids - base_cids
+        if not pure_ligand_cids:
             print(
-                f"❌ VALIDATION FAILED: Could not resolve path for auxiliary dataset '{aux_name}'. Error: {e}"
+                "⚠️ VALIDATION WARNING: Auxiliary datasets were loaded, but they did not introduce any new molecules (pure ligands)."
             )
-            checks_passed = False
+            print(
+                "   - The distinction between 'drug' and 'ligand' nodes will be meaningless in this run."
+            )
 
     # --- 总结 ---
     if checks_passed:
-        print("✅ All configuration logic checks passed.")
+        print("✅ All configuration and data logic checks passed.")
     else:
-        print("\n--- [Config Validation] Finished with errors. Halting execution. ---")
+        print("\n--- [Validation] Finished with errors. Halting execution. ---")
 
     return checks_passed
 
