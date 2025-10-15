@@ -15,12 +15,11 @@ def main(cfg: DictConfig):
 
     # 即使在这里立即实例化，也不会再引起路径解析的错误
 
-    cfg.data_params = hydra.utils.instantiate(cfg.data_params)
-    cfg.data_structure = hydra.utils.instantiate(cfg.data_structure)
+    cfg = rt.instantiate_data_config(cfg=cfg)
     print("\n--- Current Data Structure Config ---")
-    print(cfg.data_structure)
+    print(OmegaConf.to_yaml(cfg.data_structure))
     print("\n--- Current Data Params Config ---")
-    print(cfg.data_params)
+    print(OmegaConf.to_yaml(cfg.data_params))
 
     final_dti_path = rt.get_path(cfg, "data_structure.paths.raw.authoritative_dti")
 

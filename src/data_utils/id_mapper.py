@@ -20,7 +20,7 @@ class IDMapper:
         """
         print("--- [IDMapper] Initializing with entity type distinction...")
         self._config = config
-        schema = self._config.data_structure.schema.internal.authoritative_dti
+        schema = self._config.data_structure.schema.internal
 
         # --- 0. 初始化所有实例属性 ---
         # 将所有属性的定义都放在最前面，是一个好的编程习惯
@@ -28,6 +28,7 @@ class IDMapper:
         self._uniprot_to_sequence: Dict[str, str] = {}
 
         # --- 1. 收集并区分 Drug 和 Ligand 的权威ID (CIDs) ---
+
         base_cids = set(base_df[schema.molecule_id].dropna().unique())
 
         extra_cids = set()
@@ -212,7 +213,7 @@ class IDMapper:
                 - 一个包含所有正样本逻辑ID对的集合，用于快速查找。
         """
         print("--- [IDMapper] Mapping interaction pairs to logic IDs...")
-        schema = self._config.data_structure.schema.internal.authoritative_dti
+        schema = self._config.data_structure.schema.internal
 
         if not dataframes:
             return [], set()

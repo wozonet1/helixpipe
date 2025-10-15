@@ -1,7 +1,7 @@
 name: gtopdb
 
 defaults:
-  - base
+  - base_data_params
   - _self_
 
 auxiliary_datasets:

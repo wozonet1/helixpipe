@@ -38,8 +38,6 @@ class DataParamsConfig:
     它现在精确地反映了 baseline.yaml 和其他变体中的所有字段。
     """
 
-    _target_: str = "src.configs.data_params.DataParamsConfig"
-
     # --- 字段定义 ---
     name: str = "baseline"
 

@@ -124,6 +124,7 @@ def _calculate_descriptors_for_chunk(smiles_series: pd.Series) -> pd.DataFrame:
 # --- 主过滤器函数 (并行版) ---
 
 
+# TODO: 添加更多属性检查,到~1万左右
 def filter_molecules_by_properties(
     df: pd.DataFrame, config: DictConfig
 ) -> pd.DataFrame:
@@ -145,7 +146,7 @@ def filter_molecules_by_properties(
     )
 
     initial_count = len(df)
-    schema = config.data_structure.schema.internal.authoritative_dti
+    schema = config.data_structure.schema.internal
     smiles_col = schema.molecule_sequence
 
     # 2. 【核心变化】并行计算所有必需的分子描述符

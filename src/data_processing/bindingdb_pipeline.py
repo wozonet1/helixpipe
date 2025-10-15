@@ -27,7 +27,7 @@ def process_bindingdb_data(config: DictConfig):
     # 外部(原始文件)的schema
     external_schema = config.data_structure.schema.external.bindingdb
     # 内部(黄金标准)的schema
-    internal_schema = config.data_structure.schema.internal.authoritative_dti
+    internal_schema = config.data_structure.schema.internal
 
     tsv_path = rt.get_path(config, "data_structure.paths.raw.raw_tsv")
     if not tsv_path.exists():

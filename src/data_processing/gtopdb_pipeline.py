@@ -22,7 +22,7 @@ def process_gtopdb_data(config: DictConfig):
 
     # --- 1. 从配置中加载Schema和路径 ---
     gtopdb_schema = config.data_structure.schema.external.gtopdb
-    internal_schema = config.data_structure.schema.internal.authoritative_dti
+    internal_schema = config.data_structure.schema.internal
 
     # --- 2. 加载核心数据文件 ---
     print("--- [步骤 1/5] 加载原始数据文件 ---")

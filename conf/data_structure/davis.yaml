@@ -1,4 +1,0 @@
-# Configuration specific to the 'davis' dataset
-name: davis
-root: "data"
-primary_dataset: "davis"

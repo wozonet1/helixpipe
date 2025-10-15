@@ -1,50 +1,15 @@
 defaults:
+  - base_app_schema
   - data_structure: bindingdb # 描述文件架构与文件内列的名字,与最终实际内容无关
   - predictor: rgcn
   - relations: DP_sim
   - data_params: strict_strong #数据处理相关,且影响最终数据内容的参数
   - analysis: split_effect # 仅仅在分析时用到
-  - _self_ # This line is important, it tells Hydra to also load the rest of this file.
-
-global_paths:
-  data_root: "data"
-  feature_cache_root: "data/global_feature_cache"
-
-#会影响训练性能的参数放在这里
-training:
-  learning_rate: 0.0005
-  epochs: 200
-  negative_sampling_ratio: 1
-  weight_decay: 1e-5
-  k_folds: 5
-  coldstart:
-    mode: "drug"
-    test_fraction: 0.2
-  batch_size: 512 # TODO: 调优
-
-#运行相关,但是不影响数据处理结果或训练性能的参数
-runtime:
-  seed: 514
-  cpus: 100
-  gpu: "cuda:2"
-  force_restart: false
-  sim_restart: false
-  skip_data_proc: false
-  debug: true
-  trian_loader_cpus: 16
-  test_loader_cpus: 8
-  validate_every_n_epochs: 10
-  fold_idx: 1 # [核心] 当前折数，由多任务扫描覆盖
-
-mlflow:
-  tracking_uri: "logs/mlruns"
-  experiment_name: "Het-DTI_Prediction_Hydra_on_${data_structure.primary_dataset}"
+  - _self_ 
 
 hydra:
   run:
-    dir: logs/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S} #相当于前面自动有${hydra.runtime.cwd}
-
-  # 您也可以在这里配置 multirun 的输出目录
+    dir: logs/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
   sweep:
     dir: logs/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
-    subdir: ${hydra.job.num} # 每个子任务的文件夹名
+    subdir: ${hydra.job.num}

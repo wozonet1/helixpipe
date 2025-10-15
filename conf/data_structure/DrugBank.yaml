@@ -1,4 +1,0 @@
-# Configuration specific to the 'DrugBank' dataset
-name: DrugBank
-root: "data"
-primary_dataset: "DrugBank"

@@ -65,7 +65,7 @@ def validate_config_with_data(
 
     # a. 检查 `extra_dfs` 是否真的引入了新的分子
     if extra_dfs:
-        schema = cfg.data_structure.schema.internal.authoritative_dti
+        schema = cfg.data_structure.schema.internal
         base_cids = set(base_df[schema.molecule_id].unique())
         extra_cids = set()
         for df in extra_dfs:
