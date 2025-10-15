@@ -1,0 +1,3 @@
+# 文件: conf/relations/dataclass.yaml
+
+_target_: configs.relations.RelationsConfig

@@ -1,0 +1,10 @@
+task_name: "split_effect_visualization"
+
+defaults:
+  - plotting_defaults # 继承所有默认绘图设置
+  - _self_
+  
+# 这个任务的绘图参数可能不同
+plot_settings:
+  figure_size: [14, 8]
+  palette: "viridis" # 调色板

@@ -3,9 +3,13 @@ import pandas as pd
 from tqdm import tqdm
 from omegaconf import DictConfig, OmegaConf
 from hydra import initialize, compose
+from argparse import ArgumentParser
 
 # 根据您的说明，移除 'src.' 前缀
-from data_processing.purifiers import purify_dti_dataframe_parallel
+from data_processing.purifiers import (
+    purify_dti_dataframe_parallel,
+    filter_molecules_by_properties,
+)
 import research_template as rt
 from data_utils.debug_utils import validate_authoritative_dti_file
 
@@ -120,11 +124,11 @@ def process_bindingdb_data(config: DictConfig):
     # purify_dti_dataframe 内部应使用内部标准列名 "SMILES" 和 "Sequence"
     # 我们的 internal_schema 正好满足这个约定
     df_purified = purify_dti_dataframe_parallel(df, config)  # 假设净化器也需要config
-
+    df_filtered = filter_molecules_by_properties(df_purified, config)
     # --- 步骤 4/4: 构建最终文件并保存 ---
     print("\n--- [步骤 4/4] 构建并保存最终的权威文件 ---")
 
-    output_df = df_purified[
+    output_df = df_filtered[
         [
             internal_schema.molecule_id,
             internal_schema.protein_id,
@@ -158,21 +162,57 @@ def process_bindingdb_data(config: DictConfig):
 
 
 if __name__ == "__main__":
-    # 独立运行脚本时，加载配置
+    # --------------------------------------------------------------------------
+    # 1. 设置命令行参数解析
+    # --------------------------------------------------------------------------
+    # 我们使用 argparse 来捕获所有在 "--" 之后传递的未知参数
+    parser = ArgumentParser(
+        description="Run the BindingDB processing pipeline with custom Hydra overrides."
+    )
+    # 'remainder' 会将所有无法识别的参数都收集到一个列表中
+    parser.add_argument(
+        "hydra_overrides",
+        nargs="*",
+        help="Any valid Hydra overrides (e.g., data_params=strict)",
+    )
+
+    args = parser.parse_args()
+
+    # --------------------------------------------------------------------------
+    # 2. 准备Hydra的overrides列表
+    # --------------------------------------------------------------------------
+    # a. 定义这个脚本固有的、基础的overrides
+    #    我们总是要处理 bindingdb 的数据结构
+    base_overrides = ["data_structure=bindingdb"]
+
+    # b. 从命令行获取用户自定义的overrides
+    user_overrides = args.hydra_overrides
+
+    # c. 合并两者，用户的覆盖会优先
+    final_overrides = base_overrides + user_overrides
+
+    print("--- Applying Hydra Overrides ---")
+    print(f"  - Base: {base_overrides}")
+    print(f"  - User: {user_overrides}")
+    print(f"  - Final: {final_overrides}")
+    print("--------------------------------")
+
+    # --------------------------------------------------------------------------
+    # 3. 初始化Hydra并加载配置
+    # --------------------------------------------------------------------------
+    # 确保解析器被注册
+    rt.register_hydra_resolvers()
+
     with initialize(config_path="../../conf", job_name="bindingdb_process"):
-        # 这个 compose 调用现在因为我们的配置重构而变得非常强大和简洁
-        cfg = compose(
-            config_name="config",
-            overrides=["data_structure=bindingdb", "data_params=base"],
-        )
+        # 【核心修改】将动态生成的 final_overrides 列表传递给 compose
+        cfg = compose(config_name="config", overrides=final_overrides)
     print("\n" + "~" * 80)
     print(" " * 25 + "HYDRA COMPOSED CONFIGURATION")
     print("~" * 80)
     # OmegaConf.to_yaml() 会将配置对象转换为一个格式化的YAML字符串
     print(OmegaConf.to_yaml(cfg))
     print("~" * 80 + "\n")
-    # 1. 运行数据处理主流程
-    rt.register_hydra_resolvers()
+
     final_df = process_bindingdb_data(cfg)
 
     # 2. 对输出文件进行严格质检

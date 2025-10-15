@@ -1,0 +1,6 @@
+# 文件: conf/data_params/structured.yaml
+
+# 这一行是唯一的、核心的指令。
+# 它告诉Hydra：“当你需要创建'data_params'配置节点时，
+# 请不要看这个文件里的其他内容了，直接去实例化这个Python类！”
+_target_: configs.data_params.DataParamsConfig

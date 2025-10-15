@@ -4,8 +4,9 @@ from rdkit import Chem
 from rdkit import RDLogger
 from tqdm import tqdm
 from joblib import Parallel, delayed
-
+from rdkit.Chem import Descriptors
 from data_utils.canonicalizer import canonicalize_smiles
+from omegaconf import DictConfig
 
 # 让tqdm能和pandas的apply方法优雅地协作
 # 在并行化场景下，我们将主要用tqdm来包裹joblib的调用
@@ -100,3 +101,112 @@ def purify_dti_dataframe_parallel(df: pd.DataFrame, config) -> pd.DataFrame:
     print("-" * 80)
 
     return purified_df
+
+
+def _calculate_descriptors_for_chunk(smiles_series: pd.Series) -> pd.DataFrame:
+    """
+    一个“工人”函数，为一小块(chunk)SMILES数据计算分子描述符。
+    它被设计为可以在独立的进程中运行。
+    """
+    results = []
+    for smiles in smiles_series:
+        mol = Chem.MolFromSmiles(smiles)
+        if mol:
+            mw = Descriptors.MolWt(mol)
+            logp = Descriptors.MolLogP(mol)
+            results.append({"MW": mw, "LogP": logp})
+        else:
+            # 对于无效的SMILES，返回NaN，以便后续可以轻松过滤掉
+            results.append({"MW": np.nan, "LogP": np.nan})
+    return pd.DataFrame(results)
+
+
+# --- 主过滤器函数 (并行版) ---
+
+
+def filter_molecules_by_properties(
+    df: pd.DataFrame, config: DictConfig
+) -> pd.DataFrame:
+    """
+    【V2 并行版】根据配置中定义的分子理化性质规则，对DataFrame进行过滤。
+    """
+    # 1. 检查总开关 (逻辑不变)
+    try:
+        filter_cfg = config.data_params.filtering
+        if not filter_cfg.get("enabled", False):
+            print("--> Molecular property filtering is disabled. Skipping.")
+            return df
+    except Exception:
+        print("--> No 'filtering' config found. Skipping molecular property filtering.")
+        return df
+
+    print(
+        "\n--- [Molecule Filter] Applying molecular property filters (Parallel Mode)... ---"
+    )
+
+    initial_count = len(df)
+    schema = config.data_structure.schema.internal.authoritative_dti
+    smiles_col = schema.molecule_sequence
+
+    # 2. 【核心变化】并行计算所有必需的分子描述符
+    print(
+        f"    - Calculating molecular descriptors for {len(df)} molecules in parallel..."
+    )
+
+    # a. 确定并行核心数
+    n_jobs = config.runtime.get("cpus", -1)
+
+    # b. 将SMILES列分割成多个块(chunks)
+    #    选择合适的块数量，通常是CPU核心数的几倍，以实现负载均衡
+    num_chunks = min(len(df) // 1000, n_jobs * 4) if len(df) > 1000 else n_jobs
+    if num_chunks <= 0:
+        num_chunks = 1
+
+    smiles_chunks = np.array_split(df[smiles_col], num_chunks)
+
+    # c. 使用 joblib 并行执行“工人”函数
+    with Parallel(n_jobs=n_jobs) as parallel:
+        descriptor_dfs = parallel(
+            delayed(_calculate_descriptors_for_chunk)(chunk)
+            for chunk in tqdm(smiles_chunks, desc="      Descriptor Chunks")
+        )
+
+    # d. 合并结果，并将其与原始DataFrame对齐
+    descriptors_df = pd.concat(descriptor_dfs).reset_index(drop=True)
+    df = df.reset_index(drop=True)  # 确保原始df的索引也是连续的
+    df[["MW", "LogP"]] = descriptors_df
+
+    # 移除计算失败的分子
+    df.dropna(subset=["MW", "LogP"], inplace=True)
+
+    # 3. 逐条应用过滤规则 (逻辑不变，但在大数据上会快很多)
+    print("    - Applying filters...")
+
+    # a. 分子量
+    if "molecular_weight" in filter_cfg:
+        mw_cfg = filter_cfg.molecular_weight
+        df = df[
+            df["MW"].between(
+                mw_cfg.get("min", -float("inf")), mw_cfg.get("max", float("inf"))
+            )
+        ]
+
+    # b. LogP
+    if "logp" in filter_cfg:
+        logp_cfg = filter_cfg.logp
+        df = df[
+            df["LogP"].between(
+                logp_cfg.get("min", -float("inf")), logp_cfg.get("max", float("inf"))
+            )
+        ]
+
+    final_count = len(df)
+    print(f"    - Filtering complete. {final_count} molecules remain.")
+
+    # 4. 清理并返回 (逻辑不变)
+    df.drop(columns=["MW", "LogP"], inplace=True)
+
+    num_removed = initial_count - final_count
+    print(f"--- [Molecule Filter] Complete. Removed {num_removed} molecules. ---")
+
+    return df

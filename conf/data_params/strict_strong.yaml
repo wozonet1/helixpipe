@@ -1,0 +1,12 @@
+name: "strict_strong"
+
+defaults:
+  - dataclass
+  - _self_
+
+affinity_threshold_nM: 100
+
+filtering:
+  enabled: true
+  molecular_weight: { min: 100, max: 500 } # 严格的Lipinski规则
+  logp: { min: -2.0, max: 5.0 }

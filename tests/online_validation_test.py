@@ -1,48 +1,37 @@
-import pandas as pd
-from data_utils.debug_utils import run_online_validation
-import research_template as rt
+# 文件: tests/online_validation_test.py (还原后的简洁版)
+
 import hydra
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
+import pandas as pd
+import research_template as rt
+from data_utils.debug_utils import run_online_validation
 
 rt.register_hydra_resolvers()
 
 
-# 1. 加载您最终生成的权威DTI文件
 @hydra.main(config_path="../conf", config_name="config", version_base=None)
-def main(cfg):
+def main(cfg: DictConfig):
     print("--- [Online Validation] Starting ---")
 
-    # 打印出当前正在验证的数据集配置，以便确认
-    print("\n--- Current Data Structure Config ---")
-    print(OmegaConf.to_yaml(cfg.data_structure))
-    print("-" * 35)
+    # 即使在这里立即实例化，也不会再引起路径解析的错误
 
-    # 1. 加载您最终生成的权威DTI文件
-    #    get_path 会根据传入的 cfg 动态地构建正确的路径
-    print(
-        f"--> Attempting to load authoritative DTI file for dataset: '{cfg.data_structure.primary_dataset}'"
-    )
+    cfg.data_params = hydra.utils.instantiate(cfg.data_params)
+    cfg.data_structure = hydra.utils.instantiate(cfg.data_structure)
+    print("\n--- Current Data Structure Config ---")
+    print(cfg.data_structure)
+    print("\n--- Current Data Params Config ---")
+    print(cfg.data_params)
+
     final_dti_path = rt.get_path(cfg, "data_structure.paths.raw.authoritative_dti")
 
-    try:
-        main_df = pd.read_csv(final_dti_path)
-        print(f"--> Successfully loaded file: {final_dti_path}")
-    except FileNotFoundError:
-        print(f"❌ ERROR: File not found at '{final_dti_path}'.")
-        print(
-            "   Please make sure you have run the corresponding data processing pipeline first."
-        )
-        return  # 优雅地退出
-
-    # 2. 运行在线验证
-    print("\n--> Starting online validation...")
+    # ... 后续逻辑不变 ...
+    main_df = pd.read_csv(final_dti_path)
     run_online_validation(
         main_df, n_samples=200, n_jobs=6, random_state=cfg.runtime.seed
     )
+
     print("\n--- [Online Validation] Finished ---")
 
 
 if __name__ == "__main__":
-    # 现在 __main__ 块只负责调用由 @hydra.main 装饰的 main 函数。
-    # 所有初始化逻辑都移到了 main 函数内部或文件顶部。
     main()

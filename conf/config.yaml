@@ -2,8 +2,8 @@ defaults:
   - data_structure: bindingdb # 描述文件架构与文件内列的名字,与最终实际内容无关
   - predictor: rgcn
   - relations: DP_sim
-  - data_params: baseline #数据处理相关,且影响最终数据内容的参数
-  - analysis: split_diff # 仅仅在分析时用到
+  - data_params: strict_strong #数据处理相关,且影响最终数据内容的参数
+  - analysis: split_effect # 仅仅在分析时用到
   - _self_ # This line is important, it tells Hydra to also load the rest of this file.
 
 global_paths:
@@ -38,7 +38,7 @@ runtime:
 
 mlflow:
   tracking_uri: "logs/mlruns"
-  experiment_name: "Het-DTI_Prediction_Hydra_on_${data.primary_dataset}"
+  experiment_name: "Het-DTI_Prediction_Hydra_on_${data_structure.primary_dataset}"
 
 hydra:
   run:

@@ -1,0 +1,10 @@
+task_name: "similarity_distributions_analysis"
+
+defaults:
+  - plotting_defaults # 继承所有默认绘图设置
+  - _self_
+  
+# 定义一些该任务专属的绘图设置
+plot_settings:
+
+  bins: 50

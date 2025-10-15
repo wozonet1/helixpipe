@@ -1,8 +1,8 @@
 # conf/data/bindingdb.yaml
 
 defaults:
-  - base # 第一步：加载 `conf/data/base.yaml` 的所有内容
-  - _self_ # 第二步：加载这个文件自身的其余内容，并与base合并
+  - dataclass
+  - _self_
 
 name: bindingdb
 primary_dataset: "bindingdb"

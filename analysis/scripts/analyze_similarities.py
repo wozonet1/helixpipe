@@ -8,7 +8,7 @@ from omegaconf import DictConfig
 import research_template as rt
 
 # 导入我们新的绘图工具
-from .plot_utils import plot_histogram
+from plot_utils import plot_histogram
 
 # 确保解析器被注册
 rt.register_hydra_resolvers()
