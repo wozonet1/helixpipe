@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 import pandas as pd
-from omegaconf import DictConfig
+from configs.register_schemas import AppConfig
 
 
 class BaseDataProcessor(ABC):
@@ -16,7 +16,7 @@ class BaseDataProcessor(ABC):
     遵循项目内部“黄金标准”格式的、干净的DataFrame。
     """
 
-    def __init__(self, config: DictConfig):
+    def __init__(self, config: AppConfig):
         """
         初始化处理器。
 

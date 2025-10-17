@@ -5,7 +5,7 @@ defaults:
   - relations: DP_sim
   - data_params: strict_strong #数据处理相关,且影响最终数据内容的参数
   - analysis: split_effect # 仅仅在分析时用到
-  - _self_ 
+  - _self_
 
 hydra:
   run:

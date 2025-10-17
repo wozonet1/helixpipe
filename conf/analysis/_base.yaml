@@ -1,0 +1,5 @@
+plot_settings:
+  style: "seaborn-v0_8-whitegrid"
+  figure_size: [12, 8]
+  dpi: 300
+  palette: "muted"

@@ -1,7 +1,7 @@
 # conf/data/bindingdb.yaml
 
 defaults:
-  - base_data_structure
+  - _base
   - _self_
 
 name: bindingdb

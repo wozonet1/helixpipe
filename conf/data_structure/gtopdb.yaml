@@ -1,7 +1,7 @@
 # conf/data_structure/gtopdb.yaml
 
 defaults:
-  - base_data_structure
+  - _base
   - _self_
 
 name: "gtopdb" # 数据集名称

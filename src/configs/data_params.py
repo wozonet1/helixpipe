@@ -54,9 +54,6 @@ class DataParamsConfig:
     # 【已补全】最大蛋白质-蛋白质边数量
     max_pp_edges: int = 500
 
-    # 【已补全】GtoPdb专属的亲和力阈值
-    gtopdb_max_affinity_nM: int = 10000
-
     # 负采样策略
     negative_sampling_strategy: str = "popular"
 

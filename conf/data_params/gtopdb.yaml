@@ -1,0 +1,10 @@
+name: "gtopdb"
+
+defaults:
+  - _base
+  - _self_
+
+affinity_threshold_nM: 10000
+
+filtering:
+  enabled: false

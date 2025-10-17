@@ -1,84 +1,107 @@
-# 文件: src/configs/register_schemas.py (V3.1 - 完全自动化版)
+# 文件: src/configs/register_schemas.py (V4.0 - 最终稳定版)
 
-import importlib
 from pathlib import Path
-from dataclasses import field, make_dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Any, List
+import dataclasses
 from hydra.core.config_store import ConfigStore
-import dataclasses  # 显式导入
 
-# --- 全局变量，用于存储发现的schemas ---
-# 顶层schemas (没有配置组)
-_top_level_schemas: Dict[str, type] = {}
-# 带组的schemas
-_grouped_schemas: Dict[str, type] = {}
-
-# 约定：哪些配置文件应该被视为顶层配置
-TOP_LEVEL_CONFIG_NAMES = ["global_paths", "mlflow", "hydra", "training", "runtime"]
-
-
-def _discover_and_load_schemas():
-    """自动扫描、导入，并根据约定区分“顶层”和“带组”的schemas。"""
-    if _top_level_schemas or _grouped_schemas:  # 避免重复扫描
-        return
-
-    for f in Path(__file__).parent.glob("*.py"):
-        if f.name.startswith(("_", "register")):
-            continue
-
-        module_name = f.stem
-        try:
-            module = importlib.import_module(f".{module_name}", package=__package__)
-            class_name = (
-                f"{''.join(word.capitalize() for word in module_name.split('_'))}Config"
-            )
-
-            if hasattr(module, class_name):
-                schema_class = getattr(module, class_name)
-                if dataclasses.is_dataclass(schema_class):
-                    # 【核心修正】根据约定进行区分
-                    if module_name in TOP_LEVEL_CONFIG_NAMES:
-                        _top_level_schemas[module_name] = schema_class
-                    else:
-                        _grouped_schemas[module_name] = schema_class
-        except ImportError as e:
-            print(f"⚠️ Warning: Could not process schema in '{f.name}': {e}")
+# --- 1. 静态地、明确地导入所有Config组件 ---
+# 这使得AppConfig可以被静态分析，并被外部导入
+from .data_structure import DataStructureConfig
+from .data_params import DataParamsConfig
+from .relations import RelationsConfig
+from .predictor import PredictorConfig
+from .training import TrainingConfig
+from .runtime import RuntimeConfig
+from .analysis import AnalysisConfig
+from .global_paths import GlobalPathsConfig
+from .mlflow import MlflowConfig
 
 
-def _create_dynamic_app_config() -> type:
-    """基于自动发现的所有schema，动态地创建一个顶层的AppConfig dataclass。"""
+# --------------------------------------------------------------------------
+# 2. 静态地定义顶层的 AppConfig
+#    这个类现在可以被项目中的任何其他文件导入！
+# --------------------------------------------------------------------------
+@dataclass
+class AppConfig:
+    """
+    【最终版】顶层聚合配置的静态定义。
+    它作为整个配置结构的唯一“真理之源”和可导入的类型。
+    """
 
-    # 1. 动态构建所有字段
-    all_fields = [("defaults", List[Any], field(default_factory=list))]
+    defaults: List[Any] = field(default_factory=list)
 
-    # a. 添加所有顶层字段
-    for name, schema_cls in _top_level_schemas.items():
-        all_fields.append((name, schema_cls, field(default_factory=schema_cls)))
+    # --- 明确列出所有配置组字段 ---
+    data_structure: DataStructureConfig = field(default_factory=DataStructureConfig)
+    data_params: DataParamsConfig = field(default_factory=DataParamsConfig)
+    relations: RelationsConfig = field(default_factory=RelationsConfig)
+    predictor: PredictorConfig = field(default_factory=PredictorConfig)
 
-    # b. 添加所有带组的字段
-    for name, schema_cls in _grouped_schemas.items():
-        all_fields.append((name, schema_cls, field(default_factory=schema_cls)))
+    # --- 明确列出所有顶层字段 ---
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
+    analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
+    global_paths: GlobalPathsConfig = field(default_factory=GlobalPathsConfig)
+    mlflow: MlflowConfig = field(default_factory=MlflowConfig)
 
-    # 2. 动态创建AppConfig类
-    AppConfig = make_dataclass("AppConfig", fields=all_fields)
-    return AppConfig
+    # hydra节点我们依然让它保持为 untyped dict
+    hydra: Dict[str, Any] = field(default_factory=dict)
 
 
+# --------------------------------------------------------------------------
+# 3. 自动化的注册函数 (职责简化)
+# --------------------------------------------------------------------------
 def register_all_schemas():
-    """【自动化版】将项目中所有的dataclass schema注册到Config Store。"""
-    # 1. 运行发现
-    _discover_and_load_schemas()
-    # 2. 动态创建AppConfig
-    AppConfig = _create_dynamic_app_config()
-
+    """
+    【最终版】将静态定义的AppConfig及其所有组件注册到Config Store。
+    它还包含一个检查步骤，以确保AppConfig没有遗漏任何configs目录下的模块。
+    """
     cs = ConfigStore.instance()
 
-    # 3. 注册主schema
+    # a. 注册主schema
     cs.store(name="base_app_schema", node=AppConfig)
 
-    # 4. 自动注册所有【带组】的子schema
-    for group_name, schema_cls in _grouped_schemas.items():
+    # b. 自动发现并注册所有【组】schema
+    #    我们通过 inspect AppConfig 的字段来找到它们
+    grouped_schemas = {
+        "data_structure": DataStructureConfig,
+        "data_params": DataParamsConfig,
+        "relations": RelationsConfig,
+        "predictor": PredictorConfig,
+        "analysis": AnalysisConfig,
+        # 注意：training, runtime等顶层节点没有“组”的概念，所以不在这里注册
+    }
+
+    for group_name, schema_cls in grouped_schemas.items():
         schema_name = f"base_{group_name}"
         cs.store(name=schema_name, group=group_name, node=schema_cls)
 
-    print("--> All structured config schemas dynamically discovered and registered.")
+    # c. (可选但推荐) 自动验证，确保没有遗漏
+    _validate_completeness()
+
+    print("--> All structured config schemas registered successfully.")
+
+
+def _validate_completeness():
+    """一个辅助函数，用于检查AppConfig是否包含了configs目录下的所有定义。"""
+    defined_fields = {f.name for f in dataclasses.fields(AppConfig)}
+
+    found_modules = set()
+    for f in Path(__file__).parent.glob("*.py"):
+        if f.name.startswith(("_", "register")):
+            continue
+        found_modules.add(f.stem)
+
+    missing_in_app_config = found_modules - defined_fields
+    if missing_in_app_config:
+        print("=" * 80)
+        print(
+            "⚠️  CONFIG SCHEMA WARNING: The following modules were found in 'src/configs/' but are missing as fields in 'AppConfig':"
+        )
+        for missing in sorted(list(missing_in_app_config)):
+            print(f"   - {missing}")
+        print(
+            "   Please add them to 'src/configs/register_schemas.py' -> AppConfig dataclass."
+        )
+        print("=" * 80)
