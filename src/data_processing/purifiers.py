@@ -14,45 +14,54 @@ tqdm.pandas()
 
 
 def _purify_chunk(df_chunk: pd.DataFrame) -> pd.DataFrame:
-    """
-    这是一个“工作者”函数,用于处理单个DataFrame块。
-    所有核心的清洗逻辑都在这里。
-    """
-    # 抑制此工作进程中的RDKit日志
+    if df_chunk.empty:
+        return df_chunk
+
     logger = RDLogger.logger()
     logger.setLevel(RDLogger.CRITICAL)
 
-    is_valid_smiles = df_chunk["SMILES"].apply(
-        lambda s: Chem.MolFromSmiles(s) is not None if isinstance(s, str) else False
+    df = df_chunk.copy()
+
+    # --- 1. SMILES 净化 (我们的逻辑更严格，保持不变) ---
+    smiles_mask_initial = df["SMILES"].apply(
+        lambda s: isinstance(s, str) and s.strip() != ""
     )
-    df_chunk = df_chunk[is_valid_smiles].copy()
-    if df_chunk.empty:
-        return pd.DataFrame()
+    df = df[smiles_mask_initial]
+    if df.empty:
+        return df
 
-    # --- 2. 标准化 (Canonicalize) SMILES ---
-    df_chunk["SMILES"] = df_chunk["SMILES"].apply(canonicalize_smiles)
-    df_chunk.dropna(subset=["SMILES"], inplace=True)
-    if df_chunk.empty:
-        return pd.DataFrame()
+    smiles_mask_valid = df["SMILES"].apply(lambda s: Chem.MolFromSmiles(s) is not None)
+    df = df[smiles_mask_valid]
+    if df.empty:
+        return df
 
-    # 【第一步：标准化】将所有序列转换为大写。这是关键！
-    # 这样可以确保后续验证的正确性，并使输出数据保持一致。
-    df_chunk["Sequence"] = df_chunk["Sequence"].str.upper()
+    # --- 2. 序列 净化 (借鉴DeepPurpose) ---
+    # a. 过滤掉None/NaN或非字符串
+    df.dropna(subset=["Sequence"], inplace=True)
+    df = df[df["Sequence"].apply(isinstance, args=(str,))]
+    if df.empty:
+        return df
 
-    # 【第二步：验证和过滤】现在在大写序列上查找非法字符。
-    valid_amino_acids = "ACDEFGHIKLMNPQRSTVWUY"
-    invalid_char_pattern = f"[^{valid_amino_acids}]"
+    # b. 【核心改进】使用DeepPurpose启发的、更完整的字符集
+    VALID_SEQ_CHARS = "ACDEFGHIKLMNPQRSTVWYU"  # 标准21种氨基酸
+    valid_chars_set = set(VALID_SEQ_CHARS)
 
-    # 找出不包含任何非法字符的序列
-    is_sequence_valid = ~df_chunk["Sequence"].str.contains(
-        invalid_char_pattern,
-        regex=True,
-        na=True,  # na=True 将NaN视为无效
-    )
+    def is_valid_protein_sequence(seq: str) -> bool:
+        seq_clean = "".join(seq.split()).upper()
+        if not seq_clean:
+            return False
+        return all(char in valid_chars_set for char in seq_clean)
 
-    df_chunk = df_chunk[is_sequence_valid].copy()
+    valid_seq_mask = df["Sequence"].apply(is_valid_protein_sequence)
+    df = df[valid_seq_mask]
+    if df.empty:
+        return df
 
-    return df_chunk
+    # --- 3. SMILES 标准化 (在所有过滤之后) ---
+    df["SMILES"] = df["SMILES"].apply(canonicalize_smiles)
+    df.dropna(subset=["SMILES"], inplace=True)
+
+    return df
 
 
 def purify_dti_dataframe_parallel(df: pd.DataFrame, config) -> pd.DataFrame:

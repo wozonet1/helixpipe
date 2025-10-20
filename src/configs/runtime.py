@@ -14,7 +14,10 @@ class RuntimeConfig:
     gpu: str = "cuda:2"
     force_restart: bool = False
     skip_data_proc: bool = False
-    debug: bool = True
+    # 0: 静默模式 (只输出错误和关键信息)
+    # 1: 标准调试模式 (打印每个阶段的数量变化)
+    # 2: 深度调试模式 (打印DataFrame的样本内容，主要用于测试)
+    verbose: int = 1
     validate_every_n_epochs: int = 10
 
     # fold_idx 由sweeper覆盖，给一个默认值

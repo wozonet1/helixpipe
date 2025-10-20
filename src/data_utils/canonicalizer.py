@@ -10,12 +10,15 @@ import re
 
 
 def canonicalize_smiles(smiles):
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is not None:
-        return Chem.MolToSmiles(mol, canonical=True)
-    else:
-        print(f"Warning: Invalid SMILES string found and will be ignored: {smiles}")
-        return None  # Return None for invalid SMILES
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is not None:
+            return Chem.MolToSmiles(mol, canonical=True)
+        else:
+            return None  # 如果初始解析就失败，返回None
+    except Exception:
+        # 捕获所有可能的意外错误
+        return None
 
 
 def canonicalize_smiles_to_cid(

@@ -1,0 +1,14 @@
+# conf/data_params/test.yaml
+
+defaults:
+  - _base # 继承基础schema
+  - _self_
+
+name: test
+
+# 【核心】在测试配置中，明确地禁用分子属性过滤器
+filtering:
+  enabled: false
+
+# 其他参数可以保持dataclass的默认值，或者在这里明确写出
+affinity_threshold_nM: 10000

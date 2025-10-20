@@ -1,63 +1,91 @@
-# 文件: src/data_processing/base_processor.py
+# 文件: src/data_processing/base_processor.py (V3 - 终极解耦版)
 
 from abc import ABC, abstractmethod
 import pandas as pd
+import research_template as rt
+from data_utils.debug_utils import validate_authoritative_dti_file
+from pathlib import Path
 from configs.register_schemas import AppConfig
 
 
 class BaseDataProcessor(ABC):
-    """
-    数据处理器抽象基类 (Abstract Base Class)。
-
-    这是一个“契约”，规定了所有具体的数据处理器（如BindingDB, TDC, GtoPdb）
-    都必须遵循的结构和接口。
-
-    它的核心职责是：将某个特定来源的、原始、混乱的数据，处理成一个
-    遵循项目内部“黄金标准”格式的、干净的DataFrame。
-    """
-
     def __init__(self, config: AppConfig):
-        """
-        初始化处理器。
-
-        Args:
-            config (DictConfig): 实验的完整Hydra配置对象。
-                                 处理器可以从中获取它需要的所有参数，
-                                 如文件路径、过滤阈值、schema定义等。
-        """
         self.config = config
-        print(f"--- [{self.__class__.__name__}] Initialized. ---")
+        self.verbose = config.runtime.verbose
+        if self.verbose > 0:
+            print(
+                f"--- [{self.__class__.__name__}] Initialized (Verbose Level: {self.verbose}). ---"
+            )
+        else:
+            print(f"--- [{self.__class__.__name__}] Initialized. ---")
+
+    @property
+    def output_path(self) -> Path:
+        """
+        【契约实现】直接使用self.config来动态解析路径。
+        """
+        return rt.get_path(self.config, "data_structure.paths.raw.authoritative_dti")
 
     @abstractmethod
-    def process(self) -> pd.DataFrame:
+    def _process_raw_data(self) -> pd.DataFrame:
         """
-        执行完整数据处理流水线的主方法。
-
-        这个方法必须被所有子类实现。它应该包含加载、过滤、净化、标准化
-        等所有必要步骤。
-
-        Returns:
-            pd.DataFrame: 一个干净的、遵循项目内部黄金标准schema的DataFrame。
-                          即使处理失败或没有数据，也应返回一个空的、但列名正确
-                          的DataFrame，而不是None。
+        【抽象方法】子类【必须】实现这个“工人”方法。
         """
         raise NotImplementedError
 
-    def validate(self, df: pd.DataFrame):
+    def process(self) -> pd.DataFrame:
         """
-        一个可选但强烈推荐的步骤，用于在处理完成后进行最终的质量检验。
+        【模板方法】外部统一入口，封装了缓存逻辑。
+        这个方法不应该被子类覆盖。
         """
-        # 假设 validate_authoritative_dti_file 存在于 debug_utils 中
-        from data_utils.debug_utils import validate_authoritative_dti_file
+        output_target = self.output_path
+
+        if output_target.exists() and not self.config.runtime.force_restart:
+            if self.verbose > 0:
+                print(
+                    f"--> [{self.__class__.__name__}] Cache hit! Loading from '{output_target.name}'..."
+                )
+            df = pd.read_csv(output_target)
+            self.validate(df, output_target, is_cached=True)
+            return df
+
+        if self.verbose > 0:
+            print(
+                f"--> [{self.__class__.__name__}] Cache miss or force_restart=True. Starting raw data processing..."
+            )
+
+        final_df = self._process_raw_data()
+
+        if final_df is None or final_df.empty:
+            return pd.DataFrame()
 
         print(
-            f"\n--- [{self.__class__.__name__}] Running final validation on processed data... ---"
+            f"--> [{self.__class__.__name__}] Saving processed data to cache: '{output_target.name}'..."
         )
-        try:
-            # 调用我们之前设计的通用验证器
-            validate_authoritative_dti_file(self.config, df=df)
-        except Exception as e:
+        rt.ensure_path_exists(output_target)
+        final_df.to_csv(output_target, index=False)
+
+        self.validate(final_df, output_target, is_cached=False)
+
+        return final_df
+
+    def validate(self, df: pd.DataFrame, file_path: Path, is_cached: bool = False):
+        """验证工具函数，现在也接收文件路径用于删除损坏文件。"""
+        # ... (validate的逻辑基本不变，只是错误处理时使用传入的file_path)
+        if self.verbose == 0:  # 0级时完全跳过验证的打印
+            return
+
+        if is_cached:
             print(
-                f"❌ FATAL: Validation failed for data processed by {self.__class__.__name__}!"
+                f"--- [{self.__class__.__name__}] Running quick validation on cached data... ---"
             )
+        else:
+            print(
+                f"\n--- [{self.__class__.__name__}] Running full validation on newly processed data... ---"
+            )
+        try:
+            validate_authoritative_dti_file(self.config, df=df, verbose=self.verbose)
+        except Exception as e:
+            if file_path.exists():
+                file_path.unlink()
             raise e

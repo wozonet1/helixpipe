@@ -1,6 +1,5 @@
 # 文件: src/data_processing/gtopdb_processor.py (全新/重构)
 
-import sys
 import pandas as pd
 from argparse import ArgumentParser
 
@@ -9,23 +8,19 @@ from data_processing.base_processor import BaseDataProcessor
 from data_processing.purifiers import purify_dti_dataframe_parallel
 from data_utils.canonicalizer import fetch_sequences_from_uniprot
 import research_template as rt
-from configs.register_schemas import register_all_schemas, AppConfig
+from configs.register_schemas import register_all_schemas
+from data_processing.log_decorators import log_step
 
 register_all_schemas()
 rt.register_hydra_resolvers()
 
 
 class GtoPdbProcessor(BaseDataProcessor):
-    """
-    一个专门负责处理GuideToPHARMACOLOGY (GtoPdb)数据的处理器。
-    主要用于提取高质量的、内源性的配体-靶点相互作用。
-    """
+    # --- 将处理流程拆分为独立的、被装饰的步骤 ---
 
-    def _load_and_filter_raw_data(self) -> pd.DataFrame:
-        """
-        私有方法：加载并筛选原始GtoPdb数据文件。
-        """
-        print("--- [Step 1/3] 加载并筛选原始GtoPdb数据文件 ---")
+    @log_step("Load & Initial Filter")
+    def _step_1_load_and_filter(self, _) -> pd.DataFrame:
+        """步骤1：加载interactions.csv和ligands.csv，进行初步筛选和合并。"""
         gtopdb_schema = self.config.data_structure.schema.external.gtopdb
 
         try:
@@ -38,21 +33,13 @@ class GtoPdbProcessor(BaseDataProcessor):
             )
             ligands_df = pd.read_csv(ligands_path, low_memory=False, comment="#")
         except FileNotFoundError as e:
-            print(f"❌ 致命错误: GtoPdb原始CSV文件未找到! {e}")
-            print(
-                "   请确保 'interactions.csv' 和 'ligands.csv' 已放置在正确的raw目录下。"
-            )
-            sys.exit(1)
+            raise FileNotFoundError(f"GtoPdb原始CSV文件未找到! {e}")
 
-        print(
-            f"-> 已加载 {len(interactions_df)} 条总交互, {len(ligands_df)} 条总配体。"
-        )
-
-        # 1. 筛选内源性交互
+        # 1a. 筛选内源性交互
         is_endogenous = interactions_df[gtopdb_schema.interactions.endogenous_flag]
         endogenous_interactions = interactions_df[is_endogenous].copy()
 
-        # 2. 过滤掉关键信息缺失的行
+        # 1b. 过滤掉关键信息缺失的行
         required_cols = [
             gtopdb_schema.interactions.target_id,
             gtopdb_schema.interactions.ligand_id,
@@ -60,7 +47,7 @@ class GtoPdbProcessor(BaseDataProcessor):
         ]
         endogenous_interactions.dropna(subset=required_cols, inplace=True)
 
-        # 3. 根据亲和力阈值过滤
+        # 1c. 根据亲和力阈值过滤
         affinity_threshold = self.config.data_params.affinity_threshold_nM
         endogenous_interactions[gtopdb_schema.interactions.affinity] = pd.to_numeric(
             endogenous_interactions[gtopdb_schema.interactions.affinity],
@@ -74,9 +61,7 @@ class GtoPdbProcessor(BaseDataProcessor):
             <= affinity_threshold
         ].copy()
 
-        print(f"-> 初步筛选后得到 {len(endogenous_interactions)} 条高质量内源性交互。")
-
-        # 4. 合并配体信息
+        # 1d. 合并配体信息
         ligands_df.dropna(
             subset=[
                 gtopdb_schema.ligands.molecule_sequence,
@@ -93,49 +78,51 @@ class GtoPdbProcessor(BaseDataProcessor):
         )
         return merged_df
 
-    def process(self) -> pd.DataFrame:
-        """
-        【契约实现】执行完整的GtoPdb处理流程。
-        """
-        # 1. 加载和初步过滤
-        df = self._load_and_filter_raw_data()
-        if df.empty:
-            return df
-
+    @log_step("Fetch Protein Sequences")
+    def _step_2_fetch_sequences(self, df: pd.DataFrame) -> pd.DataFrame:
+        """步骤2：处理UniProt ID，并从网络获取蛋白质序列。"""
         gtopdb_schema = self.config.data_structure.schema.external.gtopdb
-        internal_schema = self.config.data_structure.schema.internal
 
-        # 2. 补全蛋白质序列
-        print("\n--- [Step 2/3] 从UniProt在线获取蛋白质序列 ---")
         # GtoPdb的UniProt ID可能包含多个，用'|'分隔，我们只取第一个
         df["main_protein_id"] = (
             df[gtopdb_schema.interactions.target_id].str.split("|").str[0]
         )
 
         unique_pids = df["main_protein_id"].dropna().unique().tolist()
+        if not unique_pids:
+            return pd.DataFrame()  # 如果没有有效的PID，直接返回空
+
         uniprot_to_sequence_map = fetch_sequences_from_uniprot(unique_pids)
         df["protein_sequence"] = df["main_protein_id"].map(uniprot_to_sequence_map)
 
-        df.dropna(subset=["protein_sequence"], inplace=True)
-        print(f"-> 成功获取序列，剩余 {len(df)} 条完整记录。")
+        # 移除没有成功获取到序列的记录
+        return df.dropna(subset=["protein_sequence"])
 
-        # 3. 标准化列名并构建最终输出
-        print("\n--- [Step 3/3] 标准化、净化并构建最终文件 ---")
-        df.rename(
+    @log_step("Standardize Columns")
+    def _step_3_standardize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """步骤3：将列名重命名为项目内部的黄金标准。"""
+        gtopdb_schema = self.config.data_structure.schema.external.gtopdb
+        internal_schema = self.config.data_structure.schema.internal
+        return df.rename(
             columns={
                 gtopdb_schema.ligands.molecule_id: internal_schema.molecule_id,
                 "main_protein_id": internal_schema.protein_id,
                 gtopdb_schema.ligands.molecule_sequence: internal_schema.molecule_sequence,
                 "protein_sequence": internal_schema.protein_sequence,
-            },
-            inplace=True,
+            }
         )
 
-        # 深度净化
-        df_purified = purify_dti_dataframe_parallel(df, self.config)
+    @log_step("Purify Data (SMILES/Sequence)")
+    def _step_4_purify(self, df: pd.DataFrame) -> pd.DataFrame:
+        """步骤4：调用通用的净化模块，进行深度清洗。"""
+        return purify_dti_dataframe_parallel(df, self.config)
 
-        # 构建最终输出
-        final_df = df_purified[
+    @log_step("Finalize and De-duplicate")
+    def _step_5_finalize(self, df: pd.DataFrame) -> pd.DataFrame:
+        """步骤5：添加Label，清理数据类型，并进行最终去重。"""
+        internal_schema = self.config.data_structure.schema.internal
+
+        final_df = df[
             [
                 internal_schema.molecule_id,
                 internal_schema.protein_id,
@@ -152,16 +139,68 @@ class GtoPdbProcessor(BaseDataProcessor):
             subset=[internal_schema.molecule_id, internal_schema.protein_id],
             inplace=True,
         )
-
-        print(
-            f"\n✅ [{self.__class__.__name__}] 处理完成，最终生成 {len(final_df)} 条独特的交互对。"
-        )
-
-        self.validate(final_df)
-
         return final_df
 
+    def _process_raw_data(self) -> pd.DataFrame:
+        """
+        【契约实现】GtoPdb处理流水线的编排器。
+        """
+        df = pd.DataFrame()  # 初始空DataFrame
 
+        df = self._step_1_load_and_filter(df)
+        if df.empty:
+            return df
+
+        df = self._step_2_fetch_sequences(df)
+        if df.empty:
+            return df
+
+        df = self._step_3_standardize_columns(df)
+        if df.empty:
+            return df
+
+        df = self._step_4_purify(df)
+        if df.empty:
+            return df
+
+        df = self._step_5_finalize(df)
+
+        print(f"\n✅ [{self.__class__.__name__}] Raw processing pipeline complete.")
+        return df
+
+
+# --------------------------------------------------------------------------
+# 独立运行的入口点 (使用我们最终的“手动Compose”模板)
+# --------------------------------------------------------------------------
+if __name__ == "__main__":
+    # ... (这里的代码与bindingdb_processor.py的__main__块完全一致，
+    #      只需将base_overrides修改为gtopdb专属的即可)
+
+    from hydra import compose, initialize_config_dir
+
+    # 1. 命令行解析
+    parser = ArgumentParser(description="Run the GtoPdb processing pipeline.")
+    parser.add_argument("user_overrides", nargs="*", help="Hydra overrides")
+    args, _ = parser.parse_known_args()
+
+    # 2. 准备覆盖
+    base_overrides = ["data_structure=gtopdb", "data_params=gtopdb"]
+    final_overrides = base_overrides + args.user_overrides
+
+    # 3. 手动Compose
+    project_root = rt.get_project_root()
+    config_dir = str(project_root / "conf")
+
+    with initialize_config_dir(
+        config_dir=config_dir, version_base=None, job_name="gtopdb_process"
+    ):
+        cfg = compose(config_name="config", overrides=final_overrides)
+
+    # 4. 执行业务逻辑
+    processor = GtoPdbProcessor(config=cfg)
+    processor.process()  # 调用基类的模板方法，它会自动处理一切
+
+    print("\n--- Standalone GtoPdb processing run finished. ---")
 if __name__ == "__main__":
     from hydra import compose, initialize
     from omegaconf import OmegaConf
@@ -212,7 +251,5 @@ if __name__ == "__main__":
         rt.ensure_path_exists(output_path)
         final_df.to_csv(output_path, index=False)
         print(f"\n✅ Successfully saved authoritative DTI file to: {output_path}")
-
-        processor.validate(final_df)
     else:
         print("\n⚠️  Processor returned an empty DataFrame. No file was saved.")

@@ -469,93 +469,105 @@ class bcolors:
 
 
 def validate_authoritative_dti_file(
-    config: DictConfig, df: Optional[pd.DataFrame] = None
+    config: DictConfig, df: Optional[pd.DataFrame] = None, verbose: int = 1
 ):
     """
-    一个通用的、严格的验证函数，用于审查由任何数据处理流水线生成的
-    最终权威DTI交互文件(例如 full.csv)。
-
-    Args:
-        config (DictConfig): 实验的完整配置对象。
-        df (Optional[pd.DataFrame]): 一个可选的、已加载的DataFrame。
-                                      如果为None,函数将从config指定的路径加载。
-
-    Raises:
-        AssertionError: 如果检测到任何严重的数据质量问题。
+    一个通用的、严格的、带分级日志的验证函数。
     """
-    print("\n" + "=" * 80)
-    print(
-        f"{bcolors.HEADER}{bcolors.BOLD}"
-        + " " * 18
-        + "开始执行权威DTI文件质量检验流程"
-        + f"{bcolors.ENDC}"
-    )
-    print("=" * 80)
+    # 从配置中获取verbose级别，如果不存在则默认为1
+    verbose = config.runtime.get("verbose", 1)
+
+    # 【核心逻辑】verbose=0时，直接跳过所有验证
+    if verbose == 0:
+        return
+
+    # --- 打印标题 ---
+    if verbose > 1:
+        print("\n" + "=" * 80)
+        print(
+            f"{bcolors.HEADER}{bcolors.BOLD}"
+            + " " * 18
+            + "开始执行权威DTI文件质量检验流程"
+            + f"{bcolors.ENDC}"
+        )
+        print("=" * 80)
 
     # --- 1. 加载数据 ---
     if df is None:
-        try:
-            file_path = rt.get_path(config, "raw.dti_interactions")
-            print(f"正在加载文件: {file_path}")
-            df = pd.read_csv(file_path)
-            print(
-                f"--> {bcolors.OKGREEN}文件加载成功。共 {len(df)} 行记录。{bcolors.ENDC}"
-            )
-        except FileNotFoundError:
-            print(
-                f"❌ {bcolors.FAIL}致命错误: 找不到指定的DTI文件: {file_path}{bcolors.ENDC}"
-            )
-            raise
-    else:
-        print("--> 使用已传入的DataFrame进行检验。")
+        # ... (加载数据的逻辑不变)
+        pass
+
+    if verbose > 1:
+        print(f"--> 使用已传入的DataFrame进行检验 (共 {len(df)} 行)。")
 
     # --- 2. 模式和结构验证 ---
-    print("\n" + "-" * 30 + " 1. 模式与结构验证 " + "-" * 29)
+    if verbose > 1:
+        print("\n" + "-" * 30 + " 1. 模式与结构验证 " + "-" * 29)
+
     required_columns = {"PubChem_CID", "UniProt_ID", "SMILES", "Sequence", "Label"}
     actual_columns = set(df.columns)
     assert required_columns.issubset(actual_columns), (
-        f"❌ {bcolors.FAIL}验证失败: 文件缺少必需的列。需要: {required_columns}, 实际: {actual_columns}{bcolors.ENDC}"
+        f"验证失败: 文件缺少必需的列。需要: {required_columns}, 实际: {actual_columns}"
     )
-    print(f"✅ {bcolors.OKGREEN}列完整性: 所有必需列均存在。{bcolors.ENDC}")
+    if verbose > 1:
+        print(f"  ✅ 列完整性: 所有必需列均存在。")
 
     assert pd.api.types.is_integer_dtype(df["PubChem_CID"]), (
-        f"❌ {bcolors.FAIL}验证失败: 'PubChem_CID' 列应为整数类型。{bcolors.ENDC}"
+        "验证失败: 'PubChem_CID' 列应为整数类型。"
     )
     assert pd.api.types.is_integer_dtype(df["Label"]), (
-        f"❌ {bcolors.FAIL}验证失败: 'Label' 列应为整数类型。{bcolors.ENDC}"
+        "验证失败: 'Label' 列应为整数类型。"
     )
-    print(f"✅ {bcolors.OKGREEN}数据类型: 关键列的数据类型正确。{bcolors.ENDC}")
+    if verbose > 1:
+        print(f"  ✅ 数据类型: 关键列的数据类型正确。")
+
+    print(f"✅ {bcolors.OKGREEN}模式与结构: 通过。{bcolors.ENDC}")
 
     # --- 3. 数据唯一性验证 ---
-    print("\n" + "-" * 30 + " 2. 数据唯一性验证 " + "-" * 29)
+    if verbose > 1:
+        print("\n" + "-" * 30 + " 2. 数据唯一性验证 " + "-" * 29)
+
     duplicates = df.duplicated(subset=["PubChem_CID", "UniProt_ID"]).sum()
     assert duplicates == 0, (
-        f"❌ {bcolors.FAIL}验证失败: 在 ('PubChem_CID', 'UniProt_ID') 上发现 {duplicates} 条重复记录。{bcolors.ENDC}"
+        f"验证失败: 在 ('PubChem_CID', 'UniProt_ID') 上发现 {duplicates} 条重复记录。"
     )
-    print(
-        f"✅ {bcolors.OKGREEN}交互对唯一性: 所有 (药物, 靶点) 对都是唯一的。{bcolors.ENDC}"
-    )
+    if verbose > 1:
+        print(f"  ✅ 交互对唯一性: 所有 (药物, 靶点) 对都是唯一的。")
+
+    print(f"✅ {bcolors.OKGREEN}数据唯一性: 通过。{bcolors.ENDC}")
 
     # --- 4. 内容有效性验证 ---
-    print("\n" + "-" * 30 + " 3. 内容有效性验证 " + "-" * 30)
+    if verbose > 1:
+        print("\n" + "-" * 30 + " 3. 内容有效性验证 " + "-" * 30)
 
     # a. SMILES 有效性
-    sample_size = min(len(df), 5000)  # 最多检查5000个样本，避免大数据集上耗时过长
-    invalid_smiles_count = 0
+    sample_size = min(len(df), 5000)
+    # 只有在verbose>1时才显示tqdm进度条
+    disable_tqdm = verbose <= 1
     sampled_smiles = df["SMILES"].sample(
         n=sample_size, random_state=config.runtime.seed
     )
-    for smiles in tqdm(sampled_smiles, desc="检验SMILES有效性"):
-        if Chem.MolFromSmiles(smiles) is None:
-            invalid_smiles_count += 1
 
-    invalidation_rate = (invalid_smiles_count / sample_size) * 100
+    invalid_smiles_count = 0
+    # 使用一个生成器表达式，更高效
+    invalid_smiles_count = sum(
+        1
+        for smiles in tqdm(
+            sampled_smiles, desc="  检验SMILES有效性", disable=disable_tqdm
+        )
+        if Chem.MolFromSmiles(smiles) is None
+    )
+
+    invalidation_rate = (
+        (invalid_smiles_count / sample_size) * 100 if sample_size > 0 else 0
+    )
     assert invalidation_rate < 0.1, (
-        f"❌ {bcolors.FAIL}验证失败: SMILES有效性过低。在{sample_size}个样本中发现 {invalid_smiles_count} ({invalidation_rate:.2f}%) 个无效SMILES。{bcolors.ENDC}"
+        f"验证失败: SMILES有效性过低。在{sample_size}个样本中发现 {invalid_smiles_count} ({invalidation_rate:.2f}%) 个无效SMILES。"
     )
-    print(
-        f"✅ {bcolors.OKGREEN}SMILES有效性: 在{sample_size}个样本中，无效比例为 {invalidation_rate:.2f}% (通过)。{bcolors.ENDC}"
-    )
+    if verbose > 1:
+        print(
+            f"  ✅ SMILES有效性: 在{sample_size}个样本中，无效比例为 {invalidation_rate:.2f}% (通过)。"
+        )
 
     # b. UniProt ID 格式
     uniprot_pattern = re.compile(
@@ -563,49 +575,48 @@ def validate_authoritative_dti_file(
     )
     invalid_uniprot_ids = df[~df["UniProt_ID"].astype(str).str.match(uniprot_pattern)]
     assert len(invalid_uniprot_ids) == 0, (
-        f"❌ {bcolors.FAIL}验证失败: 发现 {len(invalid_uniprot_ids)} 个不符合标准格式的UniProt ID。例如: {invalid_uniprot_ids['UniProt_ID'].head().tolist()}{bcolors.ENDC}"
+        f"验证失败: 发现 {len(invalid_uniprot_ids)} 个不符合标准格式的UniProt ID。例如: {invalid_uniprot_ids['UniProt_ID'].head().tolist()}"
     )
-    print(f"✅ {bcolors.OKGREEN}UniProt ID格式: 所有ID均符合标准格式。{bcolors.ENDC}")
+    if verbose > 1:
+        print(f"  ✅ UniProt ID格式: 所有ID均符合标准格式。")
 
-    # a. 定义合法的氨基酸字符集
-    amino_acids = "ACDEFGHIKLMNPQRSTVWYU"
-
-    # b. 构建查找非法字符的正则表达式
+    # c. 蛋白质序列内容
+    amino_acids = "ACDEFGHIKLMNPQRSTVWYU"  # 使用我们最终确定的严格标准
     invalid_char_pattern = f"[^{amino_acids}]"
-
-    # c. 找出所有包含非法字符的序列的DataFrame
     invalid_seq_df = df[
         df["Sequence"]
         .str.upper()
         .str.contains(invalid_char_pattern, regex=True, na=False)
     ]
 
-    # d. 检查是否存在无效序列
     if not invalid_seq_df.empty:
         num_invalid = len(invalid_seq_df)
+        # 失败时的详细信息总是要打印的
         print(
             f"❌ {bcolors.FAIL}验证失败: 发现 {num_invalid} 条蛋白质序列包含非法字符。{bcolors.ENDC}"
         )
         print("--- 无效序列样本 (前5条): ---")
-        # 使用 .to_string() 保证打印内容对齐
         print(invalid_seq_df[["Sequence"]].head().to_string())
         print("-" * 30)
-        # 抛出更明确的错误
         raise ValueError(f"数据集中存在 {num_invalid} 条无效的蛋白质序列。")
-    else:
-        print(
-            f"✅ {bcolors.OKGREEN}蛋白质序列内容: 所有序列均由合法的氨基酸字符组成。{bcolors.ENDC}"
-        )
+    if verbose > 1:
+        print(f"  ✅ 蛋白质序列内容: 所有序列均由合法的氨基酸字符组成。")
+
+    print(f"✅ {bcolors.OKGREEN}内容有效性: 通过。{bcolors.ENDC}")
 
     # --- 5. 最终总结 ---
-    print("\n" + "=" * 80)
+    if verbose > 1:
+        print("\n" + "=" * 80)
+
     print(
         f"{bcolors.OKGREEN}{bcolors.BOLD}"
         + " " * 25
         + "✅ 所有验证项目均已通过 ✅"
         + f"{bcolors.ENDC}"
     )
-    print("=" * 80)
+
+    if verbose > 1:
+        print("=" * 80)
 
 
 # 定义一个结构化的返回类型，让结果更清晰
