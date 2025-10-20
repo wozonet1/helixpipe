@@ -1,11 +1,16 @@
+# 文件: conf/relations/test_all_true.yaml (最终正确版)
+
 defaults:
-  - base_relations
+  - _base
   - _self_
+
 name: test_all_true
+
+# 【核心修正】使用与 dataclass 完全一致的全称键名
 flags:
-  dp_interaction: true
-  lp_interaction: true
-  dd_similarity: true
-  dl_similarity: true
-  ll_similarity: true
-  pp_similarity: true
+  drug_protein_interaction: true
+  ligand_protein_interaction: true
+  protein_protein_similarity: true
+  drug_drug_similarity: true
+  drug_ligand_similarity: true
+  ligand_ligand_similarity: true

@@ -33,7 +33,7 @@ def analyze_split_effect(cfg: DictConfig):
         # a. 加载第一折的训练图文件
         train_graph_path = rt.get_path(
             cfg,
-            "data_structure.paths.processed.specific.graph_template",
+            "processed.specific.graph_template",
             prefix=f"fold_{fold_idx}",
         )
         train_graph_df = pd.read_csv(train_graph_path)
@@ -41,7 +41,7 @@ def analyze_split_effect(cfg: DictConfig):
         # b. 加载第一折的测试标签文件，以找回被移除的交互
         test_labels_path = rt.get_path(
             cfg,
-            "data_structure.paths.processed.specific.labels_template",
+            "processed.specific.labels_template",
             prefix=f"fold_{fold_idx}",
             suffix="test",
         )

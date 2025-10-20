@@ -5,7 +5,7 @@ import pandas as pd
 import research_template as rt
 from data_utils.debug_utils import validate_authoritative_dti_file
 from pathlib import Path
-from types_1 import AppConfig
+from project_types import AppConfig
 
 
 class BaseDataProcessor(ABC):
@@ -24,7 +24,7 @@ class BaseDataProcessor(ABC):
         """
         【契约实现】直接使用self.config来动态解析路径。
         """
-        return rt.get_path(self.config, "data_structure.paths.raw.authoritative_dti")
+        return rt.get_path(self.config, "raw.authoritative_dti")
 
     @abstractmethod
     def _process_raw_data(self) -> pd.DataFrame:

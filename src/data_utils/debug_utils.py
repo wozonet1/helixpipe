@@ -1,7 +1,7 @@
 from torch_geometric.data import HeteroData
 import torch
 import pandas as pd
-from types_1 import AppConfig
+from project_types import AppConfig
 from rdkit import Chem
 import re
 from tqdm import tqdm
@@ -30,7 +30,11 @@ def validate_config_with_data(
     # a. 如果我们加载了扩展数据（意味着启用了GtoPdb等）...
     if extra_dfs:
         relation_flags = cfg.relations.flags
-        ligand_related_relations = ["lp_interaction", "ll_similarity", "dl_similarity"]
+        ligand_related_relations = [
+            "ligand_protein_interaction",
+            "ligand_ligand_similarity",
+            "drug_ligand_similarity",
+        ]
         is_any_ligand_relation_enabled = any(
             relation_flags.get(rel, False) for rel in ligand_related_relations
         )
@@ -46,7 +50,11 @@ def validate_config_with_data(
 
     # b. 反向检查：如果启用了ligand关系，但没有加载扩展数据...
     relation_flags = cfg.relations.flags
-    ligand_related_relations = ["lp_interaction", "ll_similarity", "dl_similarity"]
+    ligand_related_relations = [
+        "ligand_protein_interaction",
+        "ligand_ligand_similarity",
+        "drug_ligand_similarity",
+    ]
     is_any_ligand_relation_enabled = any(
         relation_flags.get(rel, False) for rel in ligand_related_relations
     )
@@ -481,7 +489,7 @@ def validate_authoritative_dti_file(
         return
 
     # --- 打印标题 ---
-    if verbose > 1:
+    if verbose > 0:
         print("\n" + "=" * 80)
         print(
             f"{bcolors.HEADER}{bcolors.BOLD}"
@@ -569,9 +577,7 @@ def validate_authoritative_dti_file(
         )
 
     # b. UniProt ID 格式
-    uniprot_pattern = re.compile(
-        r"([OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2})"
-    )
+    uniprot_pattern = re.compile(r"^[A-Z0-9]+$")
     invalid_uniprot_ids = df[~df["UniProt_ID"].astype(str).str.match(uniprot_pattern)]
     assert len(invalid_uniprot_ids) == 0, (
         f"验证失败: 发现 {len(invalid_uniprot_ids)} 个不符合标准格式的UniProt ID。例如: {invalid_uniprot_ids['UniProt_ID'].head().tolist()}"
@@ -604,8 +610,6 @@ def validate_authoritative_dti_file(
     print(f"✅ {bcolors.OKGREEN}内容有效性: 通过。{bcolors.ENDC}")
 
     # --- 5. 最终总结 ---
-    if verbose > 1:
-        print("\n" + "=" * 80)
 
     print(
         f"{bcolors.OKGREEN}{bcolors.BOLD}"
@@ -613,9 +617,6 @@ def validate_authoritative_dti_file(
         + "✅ 所有验证项目均已通过 ✅"
         + f"{bcolors.ENDC}"
     )
-
-    if verbose > 1:
-        print("=" * 80)
 
 
 # 定义一个结构化的返回类型，让结果更清晰

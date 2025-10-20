@@ -4,9 +4,9 @@ defaults:
   - _base
   - _self_
 flags:
-      dp_interaction: true
-      lp_interaction: true
-      pp_similarity: false
-      dd_similarity: false
-      dl_similarity: false
-      ll_similarity: false
+  drug_protein_interaction: true
+  ligand_protein_interaction: true
+  protein_protein_similarity: false
+  drug_drug_similarity: false
+  drug_ligand_similarity: false
+  ligand_ligand_similarity: false

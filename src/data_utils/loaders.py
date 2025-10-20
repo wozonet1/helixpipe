@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch_geometric.data import HeteroData
-from types_1 import AppConfig
+from project_types import AppConfig
 
 # [优化] 将 research_template 的导入也放在这里
 # 这样，所有与路径管理相关的依赖都集中在了这个文件中

@@ -15,7 +15,7 @@ register_all_schemas()
 rt.register_hydra_resolvers()
 
 
-class GtoPdbProcessor(BaseDataProcessor):
+class GtopdbProcessor(BaseDataProcessor):
     # --- 将处理流程拆分为独立的、被装饰的步骤 ---
 
     @log_step("Load & Initial Filter")
@@ -24,10 +24,8 @@ class GtoPdbProcessor(BaseDataProcessor):
         gtopdb_schema = self.config.data_structure.schema.external.gtopdb
 
         try:
-            interactions_path = rt.get_path(
-                self.config, "data_structure.paths.raw.interactions"
-            )
-            ligands_path = rt.get_path(self.config, "data_structure.paths.raw.ligands")
+            interactions_path = rt.get_path(self.config, "raw.interactions")
+            ligands_path = rt.get_path(self.config, "raw.ligands")
             interactions_df = pd.read_csv(
                 interactions_path, low_memory=False, comment="#"
             )
@@ -120,7 +118,7 @@ class GtoPdbProcessor(BaseDataProcessor):
     @log_step("Finalize and De-duplicate")
     def _step_5_finalize(self, df: pd.DataFrame) -> pd.DataFrame:
         """步骤5：添加Label，清理数据类型，并进行最终去重。"""
-        internal_schema = self.config.data_structure.schema.internal
+        internal_schema = self.config.data_structure.schema.internal.authoritative_dti
 
         final_df = df[
             [
@@ -169,38 +167,6 @@ class GtoPdbProcessor(BaseDataProcessor):
         return df
 
 
-# --------------------------------------------------------------------------
-# 独立运行的入口点 (使用我们最终的“手动Compose”模板)
-# --------------------------------------------------------------------------
-if __name__ == "__main__":
-    # ... (这里的代码与bindingdb_processor.py的__main__块完全一致，
-    #      只需将base_overrides修改为gtopdb专属的即可)
-
-    from hydra import compose, initialize_config_dir
-
-    # 1. 命令行解析
-    parser = ArgumentParser(description="Run the GtoPdb processing pipeline.")
-    parser.add_argument("user_overrides", nargs="*", help="Hydra overrides")
-    args, _ = parser.parse_known_args()
-
-    # 2. 准备覆盖
-    base_overrides = ["data_structure=gtopdb", "data_params=gtopdb"]
-    final_overrides = base_overrides + args.user_overrides
-
-    # 3. 手动Compose
-    project_root = rt.get_project_root()
-    config_dir = str(project_root / "conf")
-
-    with initialize_config_dir(
-        config_dir=config_dir, version_base=None, job_name="gtopdb_process"
-    ):
-        cfg = compose(config_name="config", overrides=final_overrides)
-
-    # 4. 执行业务逻辑
-    processor = GtoPdbProcessor(config=cfg)
-    processor.process()  # 调用基类的模板方法，它会自动处理一切
-
-    print("\n--- Standalone GtoPdb processing run finished. ---")
 if __name__ == "__main__":
     from hydra import compose, initialize
     from omegaconf import OmegaConf
@@ -237,7 +203,7 @@ if __name__ == "__main__":
     print("=" * 80 + "\n")
 
     # a. 实例化处理器 (cfg是DictConfig，Processor的__init__类型提示应为DictConfig)
-    processor = GtoPdbProcessor(config=cfg)
+    processor = GtopdbProcessor(config=cfg)
 
     # b. 运行处理流程
     final_df = processor.process()
@@ -247,7 +213,7 @@ if __name__ == "__main__":
         # 【重要】get_path现在会在当前目录下解析相对路径，
         # 因为我们没有改变工作目录，这正是我们想要的简单行为。
         # 它会正确地在项目根目录下的data/gtopdb/raw/中创建文件。
-        output_path = rt.get_path(cfg, "data_structure.paths.raw.authoritative_dti")
+        output_path = rt.get_path(cfg, "raw.authoritative_dti")
         rt.ensure_path_exists(output_path)
         final_df.to_csv(output_path, index=False)
         print(f"\n✅ Successfully saved authoritative DTI file to: {output_path}")

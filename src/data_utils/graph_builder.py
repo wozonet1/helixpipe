@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 from collections import defaultdict
 from project_types import AppConfig
+from tqdm import tqdm
 
 # 导入我们需要的自定义模块
 import research_template as rt
@@ -71,7 +72,7 @@ class GraphBuilder:
         # 步骤 3: 保存最终的图文件
         graph_output_path = rt.get_path(
             self.config,
-            "data_structure.paths.processed.specific.graph_template",
+            "processed.specific.graph_template",
             prefix=f"fold_{fold_idx}",
             suffix="train",  # 文件名后缀应为train
         )
@@ -107,10 +108,12 @@ class GraphBuilder:
             # 使用id_mapper来确定源节点的类型
             source_type = self.id_mapper.get_node_type(u)  # 'drug' or 'ligand'
 
-            if source_type == "drug" and flags.get("dp_interaction", False):
+            if source_type == "drug" and flags.get("drug_protein_interaction", False):
                 edges_list.append([u, v, "drug_protein_interaction"])
                 counts["drug_protein_interaction"] += 1
-            elif source_type == "ligand" and flags.get("lp_interaction", False):
+            elif source_type == "ligand" and flags.get(
+                "ligand_protein_interaction", False
+            ):
                 edges_list.append([u, v, "ligand_protein_interaction"])
                 counts["ligand_protein_interaction"] += 1
 
@@ -121,39 +124,101 @@ class GraphBuilder:
     def _add_similarity_edges(
         self, edges_list: list, sim_matrix: np.ndarray, entity_type: str
     ):
-        """私有方法：通用的、由IDMapper驱动的相似性边添加函数。"""
-        if self.verbose > 0:
+        """
+        【带分级Debug日志版】
+        私有方法：通用的、由IDMapper驱动的相似性边添加函数。
+        """
+        # verbose >= 1: 打印入口信息
+        if self.verbose >= 1:
             print(
-                f"    - Processing {entity_type} similarity matrix (shape: {sim_matrix.shape})..."
+                f"\n    -> Processing {entity_type} similarity matrix (shape: {sim_matrix.shape})..."
             )
 
         id_offset = 0 if entity_type == "molecule" else self.id_mapper.num_molecules
-
         rows, cols = np.where(np.triu(sim_matrix, k=1))
         edge_counts = defaultdict(int)
 
-        # 为了加速，预先获取配置
+        # 预先获取配置，准备打印
         flags = self.config.relations.flags
         thresholds = self.config.data_params.similarity_thresholds
 
-        for i, j in zip(rows, cols):
+        # verbose >= 1: 打印关键的上下文配置
+        if self.verbose >= 1:
+            print(f"      - [L1 Debug] Relation Flags being used: {flags}")
+            print(f"      - [L1 Debug] Similarity Thresholds being used: {thresholds}")
+
+        # 只有在 verbose >= 2 时才开启 tqdm 进度条，避免在 verbose=1 时刷屏
+        iterator = zip(rows, cols)
+        if self.verbose >= 2:
+            iterator = tqdm(
+                iterator,
+                total=len(rows),
+                desc=f"      [L2 Debug] Scanning '{entity_type}' pairs",
+                leave=False,
+            )
+
+        for i, j in iterator:
             similarity = sim_matrix[i, j]
 
-            type1 = self.id_mapper.get_node_type(i + id_offset)
-            type2 = self.id_mapper.get_node_type(j + id_offset)
+            global_id_i = i + id_offset
+            global_id_j = j + id_offset
 
-            relation_prefix = "_".join(sorted((type1, type2)))
+            type1 = self.id_mapper.get_node_type(global_id_i)
+            type2 = self.id_mapper.get_node_type(global_id_j)
+
+            # 假设您已将 get_canonical_relation 放入 research_template.graph_utils
+            source_type, relation_prefix, target_type = (
+                rt.graph_utils.get_canonical_relation(type1, type2)
+            )
+
             relation_flag_key = f"{relation_prefix}_similarity"
 
-            if flags.get(relation_flag_key, False):
+            # verbose >= 2: 打印每一对边的详细检查过程
+            if self.verbose >= 2:
+                print(
+                    f"\n      - [L2 Debug] Checking edge ({global_id_i}, {global_id_j})"
+                )
+                print(
+                    f"          - Types: ('{type1}', '{type2}') -> Canonical Prefix: '{relation_prefix}'"
+                )
+                print(f"          - Relation Key: '{relation_flag_key}'")
+                print(f"          - Similarity: {similarity:.4f}")
+
+            flag_value = flags.get(relation_flag_key, False)
+
+            if self.verbose >= 2:
+                print(
+                    f"          - Flag check: flags.get('{relation_flag_key}') -> {flag_value}"
+                )
+
+            if flag_value:
                 threshold = thresholds.get(relation_prefix, 1.1)
 
+                if self.verbose >= 2:
+                    print(f"          - Threshold check: threshold is {threshold}")
+
                 if similarity > threshold:
-                    source_id = i + id_offset
-                    target_id = j + id_offset
+                    if type1 == source_type:
+                        source_id, target_id = global_id_i, global_id_j
+                    else:
+                        source_id, target_id = global_id_j, global_id_i
+
                     edges_list.append([source_id, target_id, relation_flag_key])
                     edge_counts[relation_flag_key] += 1
 
-        if self.verbose > 1:
-            for edge_type, count in edge_counts.items():
-                print(f"      - Added {count} '{edge_type}' edges.")
+                    if self.verbose >= 2:
+                        print(
+                            f"          - Result: 🔥 PASSED! ({similarity:.4f} > {threshold}). Edge added."
+                        )
+                elif self.verbose >= 2:
+                    print("          - Result: ❄️  FAILED. (Similarity <= Threshold).")
+            elif self.verbose >= 2:
+                print("          - Result: 🚫 SKIPPED. (Flag is False).")
+
+        # verbose >= 1: 打印最终的总结
+        if self.verbose >= 1:
+            if not edge_counts:
+                print("      - No new similarity edges were added.")
+            else:
+                for edge_type, count in edge_counts.items():
+                    print(f"      - Added {count} '{edge_type}' edges.")

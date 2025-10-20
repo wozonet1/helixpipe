@@ -24,7 +24,7 @@ def analyze_single_graph_structure(cfg: DictConfig) -> pd.DataFrame | None:
             # 3. 使用 get_path 精确定位图文件
             graph_path = rt.get_path(
                 cfg,
-                "data_structure.paths.processed.specific.graph_template",
+                "processed.specific.graph_template",
                 prefix=f"fold_{fold_idx}",
             )
             if not graph_path.exists():

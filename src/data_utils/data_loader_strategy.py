@@ -6,6 +6,7 @@ import pandas as pd
 from omegaconf import DictConfig
 from typing import List, Tuple
 import hydra
+import research_template as rt
 
 # 导入我们的抽象基类，用于类型检查和文档
 from data_processing.base_processor import BaseDataProcessor
@@ -114,23 +115,33 @@ def load_datasets(config: DictConfig) -> Tuple[pd.DataFrame, List[pd.DataFrame]]
         print(
             f"\n--> Loading {len(aux_dataset_names)} AUXILIARY dataset(s): {aux_dataset_names}"
         )
+        # 【核心修正】在循环外，一次性地获取配置目录的绝对路径
+        try:
+            project_root = rt.get_project_root()
+            config_dir = str(project_root / "conf")
+        except Exception as e:
+            print(f"❌ 无法确定项目根目录或配置路径。错误: {e}")
+            sys.exit(1)
+
         for name in aux_dataset_names:
-            # 【关键步骤】为每个辅助数据集创建一个临时的、专属的配置上下文
-            # 这个上下文的唯一目的，就是让 get_path 函数能够定位到正确的数据集目录
             print(f"    - Composing temporary config for '{name}'...")
-            with hydra.initialize(config_path="../conf", version_base=None):
-                # 我们从主'config.yaml'开始组合，然后应用两个关键的覆盖：
-                # 1. 将data_structure强制切换到当前辅助数据集。
-                # 2. 保留主实验的数据处理参数 (data_params)。
+
+            # 【核心修正】使用 initialize_config_dir 和绝对路径
+            with hydra.initialize_config_dir(config_dir=config_dir, version_base=None):
+                # 【最终修正】直接把主config中所有相关的顶层配置，都作为覆盖传递下去
+                # 这确保了所有上下文都得到了保留
+                overrides_list = [
+                    f"data_structure={name}",
+                    f"data_params={config.data_params.name}",
+                    f"global_paths.data_root={config.global_paths.data_root}",  # <--- 明确传递
+                    f"runtime.verbose={config.runtime.verbose}",  # <--- 传递verbose
+                ]
+
                 aux_config = hydra.compose(
-                    config_name="config",
-                    overrides=[
-                        f"data_structure={name}",
-                        f"data_params={config.data_params.name}",
-                    ],
+                    config_name="config", overrides=overrides_list
                 )
 
-            # 将这个【为辅助数据集量身定做的aux_config】传递给_run_processor
+            # 将这个为辅助数据集量身定做的aux_config传递给_run_processor
             aux_df = _run_processor(name, aux_config)
             if not aux_df.empty:
                 extra_dfs.append(aux_df)

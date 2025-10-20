@@ -28,7 +28,7 @@ def process_data(
 
     id_mapper = IDMapper(base_df, extra_dfs, config)
 
-    if config.runtime.debug:
+    if config.runtime.verbose > 0:
         id_mapper.save_maps_for_debugging(config)
 
     # --- 后续阶段现在接收 id_mapper 对象 ---
@@ -64,9 +64,7 @@ def _stage_2_generate_features(
     """
     print("\n--- [Stage 2] Generating node features... ---")
 
-    final_features_path = rt.get_path(
-        config, "data_structure.paths.processed.common.node_features"
-    )
+    final_features_path = rt.get_path(config, "processed.common.node_features")
 
     if not final_features_path.exists() or restart_flag:
         # 1. 从 id_mapper 获取有序的权威ID和序列/SMILES列表
@@ -219,22 +217,23 @@ def _stage_3_calculate_similarity_matrices(
             embeddings=protein_embeddings, batch_size=1024
         )
         # --- 保存相似度矩阵 ---
-        pkl.dump(
-            dl_similarity_matrix,
-            open(
-                rt.get_path(
-                    config, checkpoint_files_dict["molecule_similarity_matrix"]
-                ),
-                "wb",
-            ),
+        mol_sim_path = rt.get_path(
+            config, "processed.common.similarity_matrices.molecule"
         )
-        pkl.dump(
-            prot_similarity_matrix,
-            open(
-                rt.get_path(config, checkpoint_files_dict["protein_similarity_matrix"]),
-                "wb",
-            ),
+        # 【核心修正】在写入文件之前，确保其父目录存在！
+        rt.ensure_path_exists(mol_sim_path)
+        # 现在可以安全地写入了
+        with open(mol_sim_path, "wb") as f:
+            pkl.dump(dl_similarity_matrix, f)
+
+        # b. 获取蛋白质相似度矩阵的路径
+        prot_sim_path = rt.get_path(
+            config, "processed.common.similarity_matrices.protein"
         )
+        # 【核心修正】同样确保目录存在
+        rt.ensure_path_exists(prot_sim_path)
+        with open(prot_sim_path, "wb") as f:
+            pkl.dump(prot_similarity_matrix, f)
         print("-> Similarity matrices saved successfully.")
     else:
         print("\n--- [Stage 3b] Loading similarity matrices from cache... ---")
@@ -313,7 +312,7 @@ def _generate_and_save_label_files_for_fold(
     if verbose > 0:
         print(f"    -> Generating label files for Fold {fold_idx}...")
 
-    labels_template_key = "data_structure.paths.processed.specific.labels_template"
+    labels_template_key = "processed.specific.labels_template"
     graph_schema = config.data_structure.schema.internal.graph_output
     labels_schema = config.data_structure.schema.internal.labeled_edges_output
 

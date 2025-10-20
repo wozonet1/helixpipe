@@ -4,6 +4,7 @@ import traceback
 
 # 导入我们的注册函数
 from configs.register_schemas import register_all_schemas
+from project_types import AppConfig
 
 # 在所有Hydra操作之前，执行注册
 try:
@@ -28,7 +29,7 @@ except Exception as e:
 
 
 @hydra.main(config_path="../conf", config_name="config", version_base=None)
-def main(cfg: DictConfig):  # <-- cfg 仍然是 DictConfig
+def main(cfg: AppConfig):
     # 【不再需要任何instantiate调用！】
     # 因为YAML继承了Schema，Hydra在加载时就已经自动完成了类型检查和默认值填充！
 
@@ -36,7 +37,7 @@ def main(cfg: DictConfig):  # <-- cfg 仍然是 DictConfig
     print(OmegaConf.to_yaml(cfg))
     print(f"Dataset name: {cfg.data_structure.primary_dataset}")
     print(
-        f"Internal schema for molecule: {cfg.data_structure.schema.internal.molecule_id}"
+        f"Internal schema for molecule: {cfg.data_structure.schema.internal.authoritative_dti.molecule_id}"
     )
 
 

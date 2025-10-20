@@ -1,6 +1,7 @@
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 from typing import List, Iterator, Tuple, TYPE_CHECKING, Union
-from types_1 import AppConfig
+from project_types import AppConfig
+import pandas as pd
 
 # 使用前向引用进行类型提示，避免循环导入问题
 if TYPE_CHECKING:
@@ -128,12 +129,27 @@ class DataSplitter:
                 ]
             else:  # "random" mode
                 labels = [p[1] for p in self.positive_pairs]
-                train_pairs, test_pairs = train_test_split(
-                    self.positive_pairs,
-                    test_size=self.test_fraction,
-                    random_state=self.seed,
-                    stratify=labels,
-                )
+                label_counts = pd.Series(labels).value_counts()
+                if (label_counts < 2).any():
+                    # 如果存在“孤独”的类别，则无法进行分层抽样
+                    print(
+                        "⚠️  Warning: The test set is too small or sparse to perform stratified sampling. Falling back to simple random sampling."
+                    )
+                    # 回退到不带 stratify 的普通随机抽样
+                    train_pairs, test_pairs = train_test_split(
+                        self.positive_pairs,
+                        test_size=self.test_fraction,
+                        random_state=self.seed,
+                        stratify=None,  # <--- 显式地设置为None
+                    )
+                else:
+                    # 如果所有类别的成员数都 >= 2，则安全地进行分层抽样
+                    train_pairs, test_pairs = train_test_split(
+                        self.positive_pairs,
+                        test_size=self.test_fraction,
+                        random_state=self.seed,
+                        stratify=labels,
+                    )
         return train_pairs, test_pairs
 
     def __iter__(self) -> "DataSplitter":

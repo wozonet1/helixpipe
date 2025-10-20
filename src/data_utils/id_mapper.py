@@ -189,9 +189,7 @@ class IDMapper:
 
         # 3. 保存
         # 这个路径现在也由配置驱动
-        output_path = rt.get_path(
-            config, "data_structure.paths.processed.common.nodes_metadata"
-        )
+        output_path = rt.get_path(config, "processed.common.nodes_metadata")
         rt.ensure_path_exists(output_path)
         nodes_df.to_csv(output_path, index=False)
 

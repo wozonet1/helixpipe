@@ -20,7 +20,7 @@ from .log_decorators import log_step
 # --------------------------------------------------------------------------
 
 
-class BindingDBProcessor(BaseDataProcessor):
+class BindingdbProcessor(BaseDataProcessor):
     # --- 将处理流程拆分为独立的、被装饰的步骤 ---
 
     @log_step("Initial Load & Filter")
@@ -28,7 +28,7 @@ class BindingDBProcessor(BaseDataProcessor):
         """步骤1：加载原始TSV文件，并进行初步的、特定于源的过滤。"""
         external_schema = self.config.data_structure.schema.external.bindingdb
 
-        tsv_path = rt.get_path(self.config, "data_structure.paths.raw.raw_tsv")
+        tsv_path = rt.get_path(self.config, "raw.raw_tsv")
         if not tsv_path.exists():
             raise FileNotFoundError(f"Raw TSV file not found at '{tsv_path}'")
 
@@ -121,7 +121,7 @@ class BindingDBProcessor(BaseDataProcessor):
     @log_step("Finalize and De-duplicate")
     def _step_5_finalize(self, df: pd.DataFrame) -> pd.DataFrame:
         """步骤5：添加Label，清理数据类型，并进行最终去重。"""
-        internal_schema = self.config.data_structure.schema.internal
+        internal_schema = self.config.data_structure.schema.internal.authoritative_dti
 
         # 选取最终需要的列
         final_df = df[
@@ -225,14 +225,14 @@ if __name__ == "__main__":
 
     # a. 实例化处理器 (config 现在是 DictConfig, 完全没问题)
     print("--- [Main] Instantiating processor: BindingDBProcessor ---")
-    processor = BindingDBProcessor(config=cfg)
+    processor = BindingdbProcessor(config=cfg)
 
     # b. 调用 process 方法来执行数据处理
     final_df = processor.process()
 
     # c. 保存和验证 (逻辑不变)
     if final_df is not None and not final_df.empty:
-        output_path = rt.get_path(cfg, "data_structure.paths.raw.authoritative_dti")
+        output_path = rt.get_path(cfg, "raw.authoritative_dti")
         rt.ensure_path_exists(output_path)
         final_df.to_csv(output_path, index=False)
         print(f"\n✅ 成功将权威DTI文件保存至: {output_path}")

@@ -21,7 +21,7 @@ def main(cfg: DictConfig):
     print("\n--- Current Data Params Config ---")
     print(OmegaConf.to_yaml(cfg.data_params))
 
-    final_dti_path = rt.get_path(cfg, "data_structure.paths.raw.authoritative_dti")
+    final_dti_path = rt.get_path(cfg, "raw.authoritative_dti")
 
     # ... 后续逻辑不变 ...
     main_df = pd.read_csv(final_dti_path)

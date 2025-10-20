@@ -1,7 +1,8 @@
 import torch
 from torch_geometric.data import HeteroData
 import torch_geometric.transforms as T
-from types_1 import AppConfig
+from project_types import AppConfig
+
 # 从同一包内的兄弟模块导入底层函数
 from .loaders import (
     load_graph_structure_from_files,

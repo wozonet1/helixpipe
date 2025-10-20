@@ -29,15 +29,9 @@ def analyze_similarity_distributions(cfg: DictConfig):
 
     try:
         # 使用get_path和正确的file_key来加载文件
-        nodes_df = pd.read_csv(
-            rt.get_path(cfg, "data_structure.paths.processed.common.nodes_metadata")
-        )
-        mol_sim_path = rt.get_path(
-            cfg, "data_structure.paths.processed.common.similarity_matrices.molecule"
-        )
-        prot_sim_path = rt.get_path(
-            cfg, "data_structure.paths.processed.common.similarity_matrices.protein"
-        )
+        nodes_df = pd.read_csv(rt.get_path(cfg, "processed.common.nodes_metadata"))
+        mol_sim_path = rt.get_path(cfg, "processed.common.similarity_matrices.molecule")
+        prot_sim_path = rt.get_path(cfg, "processed.common.similarity_matrices.protein")
 
         mol_sim_matrix = pkl.load(open(mol_sim_path, "rb"))
         prot_sim_matrix = pkl.load(open(prot_sim_path, "rb"))
@@ -87,7 +81,7 @@ def analyze_similarity_distributions(cfg: DictConfig):
             dd_sims,
             f"Drug-Drug Similarity\n(Dataset: {cfg.data_structure.name}, Params: {cfg.data_params.name})",
             "Embedding Cosine Similarity",
-            output_dir / "dd_similarity.png",
+            output_dir / "drug_drug_similarity.png",
         )
 
     # b) Protein-Protein Similarity (P-P)
@@ -96,7 +90,7 @@ def analyze_similarity_distributions(cfg: DictConfig):
         pp_sims,
         f"Protein-Protein Similarity\n(Dataset: {cfg.data_structure.name}, Params: {cfg.data_params.name})",
         "Embedding Cosine Similarity",
-        output_dir / "pp_similarity.png",
+        output_dir / "protein_protein_similarity.png",
     )
 
     # c) Ligand-Ligand Similarity (L-L)
@@ -107,7 +101,7 @@ def analyze_similarity_distributions(cfg: DictConfig):
             ll_sims,
             f"Ligand-Ligand Similarity\n(Dataset: {cfg.data_structure.name}, Params: {cfg.data_params.name})",
             "Embedding Cosine Similarity",
-            output_dir / "ll_similarity.png",
+            output_dir / "ligand_ligand_similarity.png",
         )
 
     # d) Drug-Ligand Similarity (D-L)
@@ -118,7 +112,7 @@ def analyze_similarity_distributions(cfg: DictConfig):
             dl_sims,
             f"Drug-Ligand Similarity\n(Dataset: {cfg.data_structure.name}, Params: {cfg.data_params.name})",
             "Embedding Cosine Similarity",
-            output_dir / "dl_similarity.png",
+            output_dir / "drug_ligand_similarity.png",
         )
 
     print("\n" + "=" * 80)

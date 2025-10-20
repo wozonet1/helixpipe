@@ -148,7 +148,7 @@ class TestGraphBuilder(unittest.TestCase):
 
         # 获取一个只开启交互边的配置
         cfg = self._get_test_config(
-            overrides=["relations=DPL_no_sim", "runtime.verbose=1"]
+            overrides=["relations=DPL_no_sim", "runtime.verbose=2"]
         )
 
         # 调用捕获函数

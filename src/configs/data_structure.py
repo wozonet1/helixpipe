@@ -23,8 +23,8 @@ class RawFilenames:
 class SimilarityMatrixFilenames:
     """定义 'processed/common/sim_matrixes' 目录下的文件名模板。"""
 
-    molecule: str = "sim_matrixes/dl_similarity_matrix.pkl"
-    protein: str = "sim_matrixes/prot_similarity_matrix.pkl"
+    molecule: str = "dl_similarity_matrix.pkl"
+    protein: str = "prot_similarity_matrix.pkl"
 
 
 @dataclass
@@ -165,7 +165,7 @@ class InternalSchemaConfig:  # <--- 新增一个层级
 
     authoritative_dti: AuthoritativeDTISchema = AuthoritativeDTISchema()
     graph_output: GraphOutputSchema = GraphOutputSchema()
-    labeled_edges: LabeledEdgesSchema = LabeledEdgesSchema()
+    labeled_edges_output: LabeledEdgesSchema = LabeledEdgesSchema()
 
 
 @dataclass

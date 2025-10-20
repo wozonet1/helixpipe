@@ -6,8 +6,8 @@ from pathlib import Path
 import hydra
 from omegaconf import DictConfig
 
-from data_processing.bindingdb_processor import BindingDBProcessor
-from data_processing.gtopdb_processor import GtoPdbProcessor
+from data_processing.bindingdb_processor import BindingdbProcessor
+from data_processing.gtopdb_processor import GtopdbProcessor
 import research_template as rt
 from configs.register_schemas import register_all_schemas
 
@@ -27,8 +27,8 @@ class TestProcessorFramework(unittest.TestCase):
         cfg_db.global_paths.data_root = str(Path.cwd() / "tests" / "fake_data_v2")
         cfg_gt.global_paths.data_root = str(Path.cwd() / "tests" / "fake_data_v2")
 
-        path_db = rt.get_path(cfg_db, "data_structure.paths.raw.authoritative_dti")
-        path_gt = rt.get_path(cfg_gt, "data_structure.paths.raw.authoritative_dti")
+        path_db = rt.get_path(cfg_db, "raw.authoritative_dti")
+        path_gt = rt.get_path(cfg_gt, "raw.authoritative_dti")
 
         for path in [path_db, path_gt]:
             if path.exists():
@@ -49,7 +49,7 @@ class TestProcessorFramework(unittest.TestCase):
         cfg = self._get_test_config(
             overrides=["data_structure=bindingdb", "runtime.verbose=2"]
         )
-        processor = BindingDBProcessor(config=cfg)
+        processor = BindingdbProcessor(config=cfg)
 
         # --- 1. 无缓存运行 ---
         result_df1 = processor.process()
@@ -61,15 +61,13 @@ class TestProcessorFramework(unittest.TestCase):
 
         # 验证缓存文件是否已在正确的位置创建
         # get_path会根据被我们修改过的cfg来计算路径
-        expected_cache_path = rt.get_path(
-            cfg, "data_structure.paths.raw.authoritative_dti"
-        )
+        expected_cache_path = rt.get_path(cfg, "raw.authoritative_dti")
         self.assertTrue(expected_cache_path.exists())
         print(f"  ✅ No-cache phase passed. Cache created at: {expected_cache_path}")
 
         # --- 2. 有缓存运行 ---
         # 创建一个新的processor实例来模拟一次全新的运行
-        processor_cached = BindingDBProcessor(config=cfg)
+        processor_cached = BindingdbProcessor(config=cfg)
         # 我们需要知道_process_raw_data是否被跳过
         with patch.object(processor_cached, "_process_raw_data") as spy_process_raw:
             result_df2 = processor_cached.process()
@@ -95,7 +93,7 @@ class TestProcessorFramework(unittest.TestCase):
             "data_processing.gtopdb_processor.fetch_sequences_from_uniprot",
             return_value={"P98765": "VALIDSEQ"},
         ) as mock_fetch:
-            processor = GtoPdbProcessor(config=cfg)
+            processor = GtopdbProcessor(config=cfg)
             result_df = processor.process()
 
             mock_fetch.assert_called_once()
