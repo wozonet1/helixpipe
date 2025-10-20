@@ -1,8 +1,7 @@
 import torch
 from torch_geometric.data import HeteroData
 import torch_geometric.transforms as T
-from omegaconf import DictConfig
-
+from types_1 import AppConfig
 # 从同一包内的兄弟模块导入底层函数
 from .loaders import (
     load_graph_structure_from_files,
@@ -12,7 +11,7 @@ from .loaders import (
 )
 
 
-def prepare_e2e_data(config: DictConfig, fold_idx: int) -> tuple:
+def prepare_e2e_data(config: AppConfig, fold_idx: int) -> tuple:
     """
     【总准备函数】为E2E工作流，执行所有的数据加载、转换和净化步骤。
     """

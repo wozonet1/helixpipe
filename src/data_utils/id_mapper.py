@@ -1,8 +1,8 @@
 import pandas as pd
-from omegaconf import DictConfig
 from typing import List, Dict, Set, Tuple
 from tqdm import tqdm
 import research_template as rt
+from project_types import AppConfig
 
 
 class IDMapper:
@@ -12,7 +12,7 @@ class IDMapper:
     """
 
     def __init__(
-        self, base_df: pd.DataFrame, extra_dfs: List[pd.DataFrame], config: "DictConfig"
+        self, base_df: pd.DataFrame, extra_dfs: List[pd.DataFrame], config: AppConfig
     ):
         """
         通过一个基础DataFrame和多个扩展DataFrame来初始化ID映射器。
@@ -20,7 +20,7 @@ class IDMapper:
         """
         print("--- [IDMapper] Initializing with entity type distinction...")
         self._config = config
-        schema = self._config.data_structure.schema.internal
+        schema = self._config.data_structure.schema.internal.authoritative_dti
 
         # --- 0. 初始化所有实例属性 ---
         # 将所有属性的定义都放在最前面，是一个好的编程习惯
@@ -150,7 +150,7 @@ class IDMapper:
         else:
             return "protein"
 
-    def save_maps_for_debugging(self, config: "DictConfig"):
+    def save_maps_for_debugging(self, config: AppConfig):
         """
         将IDMapper内部的所有核心映射关系保存到磁盘，
         以便于人类阅读、调试和后续分析。
@@ -213,7 +213,7 @@ class IDMapper:
                 - 一个包含所有正样本逻辑ID对的集合，用于快速查找。
         """
         print("--- [IDMapper] Mapping interaction pairs to logic IDs...")
-        schema = self._config.data_structure.schema.internal
+        schema = self._config.data_structure.schema.internal.authoritative_dti
 
         if not dataframes:
             return [], set()

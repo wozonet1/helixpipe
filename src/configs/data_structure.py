@@ -131,8 +131,8 @@ class PathsConfig:
 
 
 @dataclass
-class InternalSchema:
-    """定义项目内部黄金标准DataFrame的列名。"""
+class AuthoritativeDTISchema:
+    """定义项目内部黄金标准DataFrame的列名。(重命名，更清晰)"""
 
     molecule_id: str = "PubChem_CID"
     protein_id: str = "UniProt_ID"
@@ -142,9 +142,38 @@ class InternalSchema:
 
 
 @dataclass
+class GraphOutputSchema:
+    """【新增】定义图结构CSV文件的列名。"""
+
+    source_node: str = "source"
+    target_node: str = "target"
+    edge_type: str = "edge_type"
+
+
+@dataclass
+class LabeledEdgesSchema:
+    """【新增】定义标签文件CSV的列名。"""
+
+    source_node: str = "source"
+    target_node: str = "target"
+    label: str = "label"
+
+
+@dataclass
+class InternalSchemaConfig:  # <--- 新增一个层级
+    """组织所有项目内部使用的Schema定义。"""
+
+    authoritative_dti: AuthoritativeDTISchema = AuthoritativeDTISchema()
+    graph_output: GraphOutputSchema = GraphOutputSchema()
+    labeled_edges: LabeledEdgesSchema = LabeledEdgesSchema()
+
+
+@dataclass
 class SchemaConfig:
-    internal: InternalSchema = InternalSchema()
-    external: Dict[str, Any] = field(default_factory=dict)  # 只有开放的字典才用 factory
+    """顶层的 Schema 配置块。"""
+
+    internal: InternalSchemaConfig = InternalSchemaConfig()  # <--- 引用新的组织类
+    external: Dict[str, Any] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------

@@ -3,14 +3,14 @@ import numpy as np
 import pandas as pd
 import torch
 from torch_geometric.data import HeteroData
-from omegaconf import DictConfig
+from types_1 import AppConfig
 
 # [优化] 将 research_template 的导入也放在这里
 # 这样，所有与路径管理相关的依赖都集中在了这个文件中
 import research_template as rt
 
 
-def create_global_to_local_maps(config: DictConfig) -> dict:
+def create_global_to_local_maps(config: AppConfig) -> dict:
     """从nodes.csv创建全局到局部的ID映射字典。"""
     nodes_df = pd.read_csv(rt.get_path(config, "processed.common.nodes_metadata"))
     maps = {}
@@ -27,7 +27,7 @@ def create_global_to_local_maps(config: DictConfig) -> dict:
     return maps
 
 
-def create_global_id_to_type_map(config: DictConfig) -> dict:
+def create_global_id_to_type_map(config: AppConfig) -> dict:
     """
     【新增】从nodes.csv创建一个全局ID到节点类型的反向映射字典。
     """
@@ -36,7 +36,7 @@ def create_global_id_to_type_map(config: DictConfig) -> dict:
     return pd.Series(nodes_df.node_type.values, index=nodes_df.node_id).to_dict()
 
 
-def load_graph_structure_from_files(config: DictConfig, fold_idx: int) -> HeteroData:
+def load_graph_structure_from_files(config: AppConfig, fold_idx: int) -> HeteroData:
     """
     【底层】加载指定fold的图结构和节点特征，组装成一个原始的HeteroData对象。
     """
@@ -78,7 +78,7 @@ def load_graph_structure_from_files(config: DictConfig, fold_idx: int) -> Hetero
 
 
 def load_supervision_labels_for_fold(
-    config: DictConfig,
+    config: AppConfig,
     fold_idx: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """

@@ -1,8 +1,7 @@
 from torch_geometric.data import HeteroData
 import torch
-import research_template as rt
 import pandas as pd
-from omegaconf import DictConfig
+from types_1 import AppConfig
 from rdkit import Chem
 import re
 from tqdm import tqdm
@@ -17,7 +16,7 @@ from typing import List
 
 
 def validate_config_with_data(
-    cfg: DictConfig, base_df: pd.DataFrame, extra_dfs: List[pd.DataFrame]
+    cfg: AppConfig, base_df: pd.DataFrame, extra_dfs: List[pd.DataFrame]
 ) -> bool:
     """
     【V3 重构版】在数据加载后，对配置和数据进行深度的逻辑一致性检查。
@@ -65,7 +64,7 @@ def validate_config_with_data(
 
     # a. 检查 `extra_dfs` 是否真的引入了新的分子
     if extra_dfs:
-        schema = cfg.data_structure.schema.internal
+        schema = cfg.data_structure.schema.internal.authoritative_dti
         base_cids = set(base_df[schema.molecule_id].unique())
         extra_cids = set()
         for df in extra_dfs:
@@ -469,7 +468,7 @@ class bcolors:
 
 
 def validate_authoritative_dti_file(
-    config: DictConfig, df: Optional[pd.DataFrame] = None, verbose: int = 1
+    config: AppConfig, df: Optional[pd.DataFrame] = None, verbose: int = 1
 ):
     """
     一个通用的、严格的、带分级日志的验证函数。
@@ -510,7 +509,7 @@ def validate_authoritative_dti_file(
         f"验证失败: 文件缺少必需的列。需要: {required_columns}, 实际: {actual_columns}"
     )
     if verbose > 1:
-        print(f"  ✅ 列完整性: 所有必需列均存在。")
+        print("  ✅ 列完整性: 所有必需列均存在。")
 
     assert pd.api.types.is_integer_dtype(df["PubChem_CID"]), (
         "验证失败: 'PubChem_CID' 列应为整数类型。"
@@ -519,7 +518,7 @@ def validate_authoritative_dti_file(
         "验证失败: 'Label' 列应为整数类型。"
     )
     if verbose > 1:
-        print(f"  ✅ 数据类型: 关键列的数据类型正确。")
+        print("  ✅ 数据类型: 关键列的数据类型正确。")
 
     print(f"✅ {bcolors.OKGREEN}模式与结构: 通过。{bcolors.ENDC}")
 
@@ -532,7 +531,7 @@ def validate_authoritative_dti_file(
         f"验证失败: 在 ('PubChem_CID', 'UniProt_ID') 上发现 {duplicates} 条重复记录。"
     )
     if verbose > 1:
-        print(f"  ✅ 交互对唯一性: 所有 (药物, 靶点) 对都是唯一的。")
+        print("  ✅ 交互对唯一性: 所有 (药物, 靶点) 对都是唯一的。")
 
     print(f"✅ {bcolors.OKGREEN}数据唯一性: 通过。{bcolors.ENDC}")
 
@@ -578,7 +577,7 @@ def validate_authoritative_dti_file(
         f"验证失败: 发现 {len(invalid_uniprot_ids)} 个不符合标准格式的UniProt ID。例如: {invalid_uniprot_ids['UniProt_ID'].head().tolist()}"
     )
     if verbose > 1:
-        print(f"  ✅ UniProt ID格式: 所有ID均符合标准格式。")
+        print("  ✅ UniProt ID格式: 所有ID均符合标准格式。")
 
     # c. 蛋白质序列内容
     amino_acids = "ACDEFGHIKLMNPQRSTVWYU"  # 使用我们最终确定的严格标准
@@ -600,7 +599,7 @@ def validate_authoritative_dti_file(
         print("-" * 30)
         raise ValueError(f"数据集中存在 {num_invalid} 条无效的蛋白质序列。")
     if verbose > 1:
-        print(f"  ✅ 蛋白质序列内容: 所有序列均由合法的氨基酸字符组成。")
+        print("  ✅ 蛋白质序列内容: 所有序列均由合法的氨基酸字符组成。")
 
     print(f"✅ {bcolors.OKGREEN}内容有效性: 通过。{bcolors.ENDC}")
 

@@ -1,0 +1,11 @@
+defaults:
+  - base_relations
+  - _self_
+name: test_all_true
+flags:
+  dp_interaction: true
+  lp_interaction: true
+  dd_similarity: true
+  dl_similarity: true
+  ll_similarity: true
+  pp_similarity: true

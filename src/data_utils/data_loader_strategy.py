@@ -8,7 +8,7 @@ from typing import List, Tuple
 import hydra
 
 # 导入我们的抽象基类，用于类型检查和文档
-from src.data_processing.base_processor import BaseDataProcessor
+from data_processing.base_processor import BaseDataProcessor
 
 
 def _run_processor(name: str, config: DictConfig) -> pd.DataFrame:

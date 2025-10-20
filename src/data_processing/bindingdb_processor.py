@@ -98,7 +98,7 @@ class BindingDBProcessor(BaseDataProcessor):
     def _step_2_standardize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """步骤2：将列名重命名为项目内部的黄金标准。"""
         external_schema = self.config.data_structure.schema.external.bindingdb
-        internal_schema = self.config.data_structure.schema.internal
+        internal_schema = self.config.data_structure.schema.internal.authoritative_dti
         return df.rename(
             columns={
                 external_schema.molecule_id: internal_schema.molecule_id,

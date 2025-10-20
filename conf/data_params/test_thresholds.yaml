@@ -1,0 +1,9 @@
+defaults:
+  - base_data_params
+  - _self_
+name: test_thresholds
+similarity_thresholds:
+  drug_drug: 0.8
+  drug_ligand: 0.7
+  ligand_ligand: 0.9
+  protein_protein: 0.8

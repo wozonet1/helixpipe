@@ -5,7 +5,7 @@ import pandas as pd
 import research_template as rt
 from data_utils.debug_utils import validate_authoritative_dti_file
 from pathlib import Path
-from configs.register_schemas import AppConfig
+from types_1 import AppConfig
 
 
 class BaseDataProcessor(ABC):

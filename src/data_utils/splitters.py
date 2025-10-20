@@ -1,9 +1,9 @@
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 from typing import List, Iterator, Tuple, TYPE_CHECKING, Union
+from types_1 import AppConfig
 
 # 使用前向引用进行类型提示，避免循环导入问题
 if TYPE_CHECKING:
-    from omegaconf import DictConfig
     from .id_mapper import IDMapper
 
 
@@ -17,7 +17,7 @@ class DataSplitter:
 
     def __init__(
         self,
-        config: "DictConfig",
+        config: AppConfig,
         positive_pairs: List[Tuple[int, int]],
         id_mapper: "IDMapper",
     ):

@@ -102,7 +102,7 @@ class GtoPdbProcessor(BaseDataProcessor):
     def _step_3_standardize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """步骤3：将列名重命名为项目内部的黄金标准。"""
         gtopdb_schema = self.config.data_structure.schema.external.gtopdb
-        internal_schema = self.config.data_structure.schema.internal
+        internal_schema = self.config.data_structure.schema.internal.authoritative_dti
         return df.rename(
             columns={
                 gtopdb_schema.ligands.molecule_id: internal_schema.molecule_id,

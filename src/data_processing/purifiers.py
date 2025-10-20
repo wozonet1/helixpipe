@@ -6,7 +6,7 @@ from tqdm import tqdm
 from joblib import Parallel, delayed
 from rdkit.Chem import Descriptors
 from data_utils.canonicalizer import canonicalize_smiles
-from omegaconf import DictConfig
+from project_types import AppConfig
 
 # 让tqdm能和pandas的apply方法优雅地协作
 # 在并行化场景下，我们将主要用tqdm来包裹joblib的调用
@@ -64,7 +64,7 @@ def _purify_chunk(df_chunk: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def purify_dti_dataframe_parallel(df: pd.DataFrame, config) -> pd.DataFrame:
+def purify_dti_dataframe_parallel(df: pd.DataFrame, config: AppConfig) -> pd.DataFrame:
     """
     对一个包含DTI数据的DataFrame进行并行的深度清洗和标准化。
 
@@ -134,9 +134,7 @@ def _calculate_descriptors_for_chunk(smiles_series: pd.Series) -> pd.DataFrame:
 
 
 # TODO: 添加更多属性检查,到~1万左右
-def filter_molecules_by_properties(
-    df: pd.DataFrame, config: DictConfig
-) -> pd.DataFrame:
+def filter_molecules_by_properties(df: pd.DataFrame, config: AppConfig) -> pd.DataFrame:
     """
     【V2 并行版】根据配置中定义的分子理化性质规则，对DataFrame进行过滤。
     """
@@ -155,7 +153,7 @@ def filter_molecules_by_properties(
     )
 
     initial_count = len(df)
-    schema = config.data_structure.schema.internal
+    schema = config.data_structure.schema.internal.authoritative_dti
     smiles_col = schema.molecule_sequence
 
     # 2. 【核心变化】并行计算所有必需的分子描述符

@@ -1,4 +1,3 @@
-import pytest
 from omegaconf import OmegaConf
 
 # 导入要测试的类
