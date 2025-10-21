@@ -16,3 +16,4 @@ multirun/
 *.tsv
 *.md
 tests/fake*
+*.png
