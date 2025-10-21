@@ -9,6 +9,8 @@ import research_template as rt
 from nasnet.typing import AppConfig
 from nasnet.utils import get_path, validate_authoritative_dti_file
 
+from ..services import get_human_uniprot_whitelist, get_valid_pubchem_cids
+
 
 class BaseDataProcessor(ABC):
     def __init__(self, config: AppConfig):
@@ -65,12 +67,12 @@ class BaseDataProcessor(ABC):
 
         # a. 验证 UniProt IDs
         all_pids = set(raw_df[schema.protein_id].dropna().unique())
-        valid_pids = get_human_uniprot_whitelist(all_pids, self.config)  # type: ignore # noqa: F821
+        valid_pids = get_human_uniprot_whitelist(all_pids, self.config)
         df_filtered = raw_df[raw_df[schema.protein_id].isin(valid_pids)]
 
         # b. 验证 PubChem CIDs
         all_cids = set(df_filtered[schema.molecule_id].dropna().unique())
-        valid_cids = get_valid_pubchem_cids(all_cids, self.config)  # type: ignore  # noqa: F821
+        valid_cids = get_valid_pubchem_cids(all_cids, self.config)
         df_filtered = df_filtered[df_filtered[schema.molecule_id].isin(valid_cids)]
 
         print(f"--> After ID whitelisting, {len(df_filtered)} rows remain.")

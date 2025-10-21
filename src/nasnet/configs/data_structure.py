@@ -78,12 +78,20 @@ class CacheFilenames:
 
 
 @dataclass
+class AssetsFilenames:
+    """定义 'assets' 目录下所有文件的文件名模板。"""
+
+    uniprot_proteome_tsv: str = "uniprotkb_proteome_UP000005640.tsv"
+
+
+@dataclass
 class FilenamesConfig:
     """顶层的 Filenames 配置块。"""
 
     raw: RawFilenames = RawFilenames()
     processed: ProcessedFilenames = ProcessedFilenames()
     cache: CacheFilenames = CacheFilenames()
+    assets: AssetsFilenames = AssetsFilenames()
 
 
 # --- Paths相关
@@ -157,10 +165,18 @@ class CachePaths:
 
 
 @dataclass
+class AssetPaths:
+    """定义 'assets' 目录下所有文件的路径插值模板。"""
+
+    uniprot_proteome_tsv: str = "${path:assets.uniprot_proteome_tsv}"
+
+
+@dataclass
 class PathsConfig:
     raw: RawPaths = RawPaths()
     processed: ProcessedPaths = ProcessedPaths()
     cache: CachePaths = CachePaths()
+    assets: AssetPaths = field(default_factory=AssetPaths)
 
 
 # --- Schema相关的Dataclasses ---
@@ -208,7 +224,7 @@ class InternalSchemaConfig:  # <--- 新增一个层级
 class SchemaConfig:
     """顶层的 Schema 配置块。"""
 
-    internal: InternalSchemaConfig = InternalSchemaConfig()  # <--- 引用新的组织类
+    internal: InternalSchemaConfig = InternalSchemaConfig()
     external: Dict[str, Any] = field(default_factory=dict)
 
 

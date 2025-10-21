@@ -11,7 +11,7 @@ from hydra import compose, initialize
 from omegaconf import DictConfig
 from tqdm import tqdm
 
-from nasnet.utils import get_path
+from .pathing import get_path
 
 # --- 私有辅助函数 ---
 

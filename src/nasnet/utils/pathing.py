@@ -5,6 +5,7 @@ from typing import Generator, Tuple
 
 import research_template as rt
 from omegaconf import DictConfig, ListConfig, OmegaConf
+from omegaconf.errors import InterpolationResolutionError
 from research_template import check_paths_exist as generic_check_paths_exist
 
 
@@ -124,12 +125,20 @@ def get_path(cfg: DictConfig, short_key: str, **kwargs) -> Path:
     try:
         # select 会触发 ${path:...} 解析器的执行
         resolved_path_str = OmegaConf.select(cfg, full_key)
-    except rt.ConfigKeyError as e:
+    except (rt.ConfigPathError, InterpolationResolutionError) as e:
+        # `e` 对象通常会包含导致问题的最深层次的键
+        # 我们可以尝试从复杂的错误消息中提取它
+        missing_key_guess = str(e).splitlines()[0]  # 取第一行错误信息作为猜测
+
+        # 对于 InterpolationResolutionError，我们可以深入挖掘原因
+        if isinstance(e, InterpolationResolutionError) and e.__cause__:
+            missing_key_guess = f"{type(e.__cause__).__name__}: {e.__cause__}"
+
         raise rt.ConfigPathError(
-            message=f"Missing config key '{e.full_key}'",
-            missing_key=e.full_key,
+            message=f"Error resolving key '{full_key}'. Cause: {missing_key_guess}",
+            missing_key=missing_key_guess,  # 记录我们能找到的最深层的原因
             file_key=full_key,
-        ) from e  # 使用 `from e` 保留原始的异常链，以便深度调试
+        ) from e
 
     if resolved_path_str is None:
         raise ValueError(f"Failed to find {full_key}\n")

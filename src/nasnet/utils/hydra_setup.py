@@ -39,6 +39,21 @@ def path_resolver(key: str, *, _root_: DictConfig) -> str:
             )
 
         return str(base_dir / filename_or_template)
+
+    elif key.startswith("assets."):
+        base_dir = Path(cfg.global_paths.assets_dir)
+        # key: "assets.uniprot_proteome_tsv" -> sub_key: "uniprot_proteome_tsv"
+        sub_key = key.split(".", 1)[1]
+
+        filename_key_path = f"data_structure.filenames.assets.{sub_key}"
+        filename = OmegaConf.select(cfg, filename_key_path)
+
+        if filename is None:
+            raise KeyError(
+                f"Filename for asset key '{key}' not found at '{filename_key_path}'."
+            )
+
+        return str(base_dir / filename)
     # --- 逻辑 B: 构建特定于实验的路径 (默认) ---
     else:
         # a. 动态上下文注入 (在解析器内部完成)
