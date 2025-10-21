@@ -1,16 +1,20 @@
 # 文件: src/data_processing/base_processor.py (V3 - 终极解耦版)
 
 from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Dict
+
 import pandas as pd
 import research_template as rt
+
 from data_utils.debug_utils import validate_authoritative_dti_file
-from pathlib import Path
 from project_types import AppConfig
 
 
 class BaseDataProcessor(ABC):
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, whitelists: Dict[str, set] = None):
         self.config = config
+        self.whitelists = whitelists or {}
         self.verbose = config.runtime.verbose
         if self.verbose > 0:
             print(

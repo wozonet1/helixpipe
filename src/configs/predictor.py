@@ -1,7 +1,7 @@
 # 文件: src/configs/predictor.py
 
 from dataclasses import dataclass, field
-from typing import Dict, Any
+from typing import Any, Dict
 
 
 @dataclass

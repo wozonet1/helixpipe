@@ -1,7 +1,7 @@
 # 文件: src/configs/analysis.py (全新)
 
 from dataclasses import dataclass, field
-from typing import List, Union, Optional
+from typing import List, Optional, Union
 
 
 @dataclass

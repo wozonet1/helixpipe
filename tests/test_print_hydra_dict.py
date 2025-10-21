@@ -1,6 +1,7 @@
-import hydra
-from omegaconf import DictConfig, OmegaConf
 import traceback
+
+import hydra
+from omegaconf import OmegaConf
 
 # 导入我们的注册函数
 from configs.register_schemas import register_all_schemas

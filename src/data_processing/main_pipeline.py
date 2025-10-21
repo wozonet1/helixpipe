@@ -1,17 +1,18 @@
+import pickle as pkl
 import random
+from typing import Dict, List
+
 import numpy as np
 import pandas as pd
-import pickle as pkl
 import research_template as rt
-from tqdm import tqdm
-from project_types import AppConfig
 import torch
-from data_utils.id_mapper import IDMapper
+from tqdm import tqdm
+
 from data_utils.graph_builder import GraphBuilder
-from typing import List, Dict
+from data_utils.id_mapper import IDMapper
 from data_utils.splitters import DataSplitter
-from features import extractors
-from features import sim_calculators
+from features import extractors, sim_calculators
+from project_types import AppConfig
 
 
 def process_data(

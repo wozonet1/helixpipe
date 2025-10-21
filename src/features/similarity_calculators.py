@@ -1,13 +1,13 @@
+import numpy as np
+import torch
 from Bio import Align
 from Bio.Align import substitution_matrices
 from joblib import Parallel, delayed
+from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
-import numpy as np
-from tqdm import tqdm
-from rdkit import Chem
 from sklearn.metrics.pairwise import cosine_similarity
-import torch
+from tqdm import tqdm
 
 
 def calculate_drug_fingerprint_similarity(drug_list):

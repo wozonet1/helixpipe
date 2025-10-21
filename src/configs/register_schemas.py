@@ -1,22 +1,25 @@
 # 文件: src/configs/register_schemas.py (V4.0 - 最终稳定版)
 
-from pathlib import Path
-from dataclasses import dataclass, field
-from typing import Dict, Any, List
 import dataclasses
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, List
+
 from hydra.core.config_store import ConfigStore
+
+from .analysis import AnalysisConfig
+from .data_params import DataParamsConfig
 
 # --- 1. 静态地、明确地导入所有Config组件 ---
 # 这使得AppConfig可以被静态分析，并被外部导入
 from .data_structure import DataStructureConfig
-from .data_params import DataParamsConfig
-from .relations import RelationsConfig
-from .predictor import PredictorConfig
-from .training import TrainingConfig
-from .runtime import RuntimeConfig
-from .analysis import AnalysisConfig
 from .global_paths import GlobalPathsConfig
 from .mlflow import MlflowConfig
+from .predictor import PredictorConfig
+from .relations import RelationsConfig
+from .runtime import RuntimeConfig
+from .training import TrainingConfig
+from .validators import ValidatorsConfig
 
 
 # --------------------------------------------------------------------------
@@ -37,6 +40,7 @@ class AppConfig:
     data_params: DataParamsConfig = field(default_factory=DataParamsConfig)
     relations: RelationsConfig = field(default_factory=RelationsConfig)
     predictor: PredictorConfig = field(default_factory=PredictorConfig)
+    validators: ValidatorsConfig = field(default_factory=ValidatorsConfig)
 
     # --- 明确列出所有顶层字段 ---
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -44,9 +48,6 @@ class AppConfig:
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     global_paths: GlobalPathsConfig = field(default_factory=GlobalPathsConfig)
     mlflow: MlflowConfig = field(default_factory=MlflowConfig)
-
-    # hydra节点我们依然让它保持为 untyped dict
-    hydra: Dict[str, Any] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------
@@ -70,6 +71,7 @@ def register_all_schemas():
         "relations": RelationsConfig,
         "predictor": PredictorConfig,
         "analysis": AnalysisConfig,
+        "validators": ValidatorsConfig,
         # 注意：training, runtime等顶层节点没有“组”的概念，所以不在这里注册
     }
 

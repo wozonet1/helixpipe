@@ -1,20 +1,22 @@
-import numpy as np
-import torch.nn.functional as F
-from torch_geometric.data import HeteroData
-import torch
-import research_template as rt
-from omegaconf import DictConfig
-import torch.utils.data
-import mlflow
 import traceback
+
 import hydra  # noqa: F401
-from tqdm import tqdm
-from predictors.rgcn_link_predictor import RGCNLinkPredictor
-from sklearn.metrics import roc_auc_score, average_precision_score
+import mlflow
+import numpy as np
+import research_template as rt
+import torch
+import torch.nn.functional as F
+import torch.utils.data
+from omegaconf import DictConfig
+from sklearn.metrics import average_precision_score, roc_auc_score
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch_geometric.data import HeteroData
 from torch_geometric.loader import LinkNeighborLoader
+from tqdm import tqdm
+
 from data_utils.debug_utils import run_optional_diagnostics
 from data_utils.preparers import prepare_e2e_data
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from predictors.rgcn_link_predictor import RGCNLinkPredictor
 
 target_edge_type = ("drug", "drug_protein_interaction", "protein")
 

@@ -1,13 +1,16 @@
 # 文件: src/data_utils/graph_builder.py (全新)
 
-import pandas as pd
-import numpy as np
 from collections import defaultdict
-from project_types import AppConfig
-from tqdm import tqdm
+
+import numpy as np
+import pandas as pd
 
 # 导入我们需要的自定义模块
 import research_template as rt
+from tqdm import tqdm
+
+from project_types import AppConfig
+
 from .id_mapper import IDMapper
 
 

@@ -1,12 +1,13 @@
-from rdkit import Chem
-import pubchempy as pcp
-from tqdm import tqdm
-import time
 import pickle as pkl
-from pathlib import Path
-import pandas as pd
-import requests
 import re
+import time
+from pathlib import Path
+
+import pandas as pd
+import pubchempy as pcp
+import requests
+from rdkit import Chem
+from tqdm import tqdm
 
 
 def canonicalize_smiles(smiles):

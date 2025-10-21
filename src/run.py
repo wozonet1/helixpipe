@@ -1,13 +1,17 @@
 import hydra
-from omegaconf import OmegaConf
-from data_utils.debug_utils import validate_config_with_data
 import research_template as rt
+from omegaconf import OmegaConf
+
+from configs.register_schemas import AppConfig, register_all_schemas
+from data_processing.id_validator import generate_id_whitelists
 from data_processing.main_pipeline import process_data
-from train import train  # noqa: F401
-from configs.register_schemas import register_all_schemas, AppConfig
-from .data_utils.data_loader_strategy import (
+from data_utils.data_loader_strategy import (
     load_datasets,
-)  # <--- 导入我们的新策略函数
+)
+
+# <--- 导入我们的新策略函数
+from data_utils.debug_utils import validate_config_with_data
+from train import train  # noqa: F401
 
 # from src.train import train # (暂时注释)
 register_all_schemas()
@@ -20,7 +24,7 @@ def run_experiment(cfg: AppConfig):
     项目主实验流程的顶层入口。
     """
     print(OmegaConf.to_yaml(cfg))
-
+    generate_id_whitelists(cfg)
     # --- 阶段 1: 调用策略函数加载数据 ---
     # 这一行代码取代了所有之前的数据加载逻辑
     base_df, extra_dfs = load_datasets(cfg)

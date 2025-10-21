@@ -1,20 +1,22 @@
 # 文件: tests/test_main_pipeline.py (全新)
 
-import unittest
-from unittest.mock import patch
-import pandas as pd
-import numpy as np
-from pathlib import Path
 import shutil
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
 import hydra
-from omegaconf import DictConfig
+import numpy as np
+import pandas as pd
+import research_template as rt
 import torch
+from omegaconf import DictConfig
+
+from configs.register_schemas import register_all_schemas
+from data_processing.main_pipeline import process_data
 
 # 导入我们需要测试的主函数和所有相关模块
 from data_utils.data_loader_strategy import load_datasets
-from data_processing.main_pipeline import process_data
-from configs.register_schemas import register_all_schemas
-import research_template as rt
 
 # 在所有测试开始前，全局执行一次注册
 register_all_schemas()

@@ -1,7 +1,7 @@
 # 文件: src/configs/data_structure.py
 
 from dataclasses import dataclass, field
-from typing import Dict, Any
+from typing import Any, Dict
 
 # --------------------------------------------------------------------------
 # 这些是嵌套在主 DataStructureConfig 内部的、更小的配置块
@@ -34,6 +34,8 @@ class CommonProcessedFilenames:
     nodes_metadata: str = "nodes.csv"
     node_features: str = "node_features.npy"
     similarity_matrices: SimilarityMatrixFilenames = SimilarityMatrixFilenames()
+    uniprot_whitelist: str = "uniprot_whitelist.txt"
+    cid_whitelist: str = "cid_whitelist.txt"
 
 
 @dataclass
@@ -97,6 +99,8 @@ class CommonProcessedPaths:
     nodes_metadata: str = "${path:processed.common.nodes_metadata}"
     node_features: str = "${path:processed.common.node_features}"
     similarity_matrices: SimilarityMatrixPaths = SimilarityMatrixPaths()
+    uniprot_whitelist: str = "${path:processed.common.uniprot_whitelist}"
+    cid_whitelist: str = "${path:processed.common.cid_whitelist}"
 
 
 @dataclass

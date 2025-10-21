@@ -1,7 +1,7 @@
 # 文件: src/configs/data_params.py (完整修正版)
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 
 # --------------------------------------------------------------------------
 # 嵌套的 Dataclasses (这部分保持不变)

@@ -1,17 +1,17 @@
 # 文件: src/data_processing/bindingdb_processor.py
 
 import pandas as pd
-from tqdm import tqdm
+import research_template as rt
+from hydra import compose
 from omegaconf import OmegaConf
+from tqdm import tqdm
 
 # 导入我们新创建的基类和需要的辅助模块
 from data_processing.base_processor import BaseDataProcessor
 from data_processing.purifiers import (
-    purify_dti_dataframe_parallel,
     filter_molecules_by_properties,
+    purify_dti_dataframe_parallel,
 )
-import research_template as rt
-from hydra import compose
 
 from .log_decorators import log_step
 
@@ -185,9 +185,9 @@ if __name__ == "__main__":
 # Config Store模式下的独立运行入口 (最终版)
 # --------------------------------------------------------------------------
 if __name__ == "__main__":
+    # 导入我们的注册函数和顶层Config类型
     from hydra import compose, initialize_config_dir
 
-    # 导入我们的注册函数和顶层Config类型
     from configs.register_schemas import register_all_schemas
 
     # 1. 在所有Hydra操作之前，执行注册

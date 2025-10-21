@@ -1,7 +1,8 @@
 # analysis/debug_minimal_loader.py
 
-import torch
 import random
+
+import torch
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import LinkNeighborLoader
 

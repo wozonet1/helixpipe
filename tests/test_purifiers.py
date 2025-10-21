@@ -1,12 +1,12 @@
 # 文件: tests/test_purifiers.py (最终权威版)
 
 import unittest
+
 import pandas as pd
-from rdkit import Chem, RDLogger
+from rdkit import RDLogger
 
 # 导入我们需要直接测试的函数
 from data_processing.purifiers import _purify_chunk
-from data_utils.canonicalizer import canonicalize_smiles
 
 
 class TestPurifiers(unittest.TestCase):
@@ -16,120 +16,122 @@ class TestPurifiers(unittest.TestCase):
         print("\n" + "=" * 80)
 
         self.input_data = {
+            # --- 分组1: 完全有效的记录 ---
+            "PubChem_CID": [
+                101,  # 1. 完全有效
+                102,  # 2. 完全有效
+                103,  # 3. 有效, 但SMILES是非规范形式
+            ],
             "SMILES": [
-                "CCO",  # 1. 存活
-                "CCC",  # 2. 存活
-                "INVALID-SMILES",  # 3. ❌ 无效SMILES
-                "CCCCCC",  # 4. ❌ 序列无效
-                "C(C)O",  # 5. 存活 (非规范SMILES)
-                "CC(=O)O",  # 6. ❌ 序列含非法字符
-                "CCOC",  # 7. ❌ 序列为None
-                "",  # 8. ❌ 空SMILES
-                None,  # 9. ❌ None SMILES
+                "CCO",  # 1.
+                "CCC",  # 2.
+                "C(C)O",  # 3.
             ],
             "Sequence": [
-                "MKTFY",  # 1. 存活
-                "ASDFG",  # 2. 存活
-                "GHJKL",  # 3. (SMILES无效)
-                "POIUYTX",  # 4. ❌ 含X (我们决定将其视为非法)
-                "DIFFERENTSEQ",  # 5. 存活
-                "VBNMZ",  # 6. ❌ 含B,Z (我们决定将其视为非法)
-                None,  # 7. ❌ None序列
-                "ATGC",  # 8. (SMILES无效)
-                "ATGC",  # 9. (SMILES无效)
+                "MKTFY",  # 1.
+                "ASDFG",  # 2.
+                "DIFFERENTSEQ",  # 3.
             ],
-            "PubChem_CID": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+            "UniProt_ID": [
+                "P12345",  # 1.
+                "Q9Y261",  # 2.
+                "A0A024R1R8",  # 3.
+            ],
+            "Description": [
+                "Should PASS all checks.",
+                "Should PASS all checks.",
+                "Should PASS all checks, and SMILES will be canonicalized.",
+            ],
         }
+
+        # --- 分组2: CID 无效的记录 ---
+        self.input_data["PubChem_CID"] += ["abc", -10, 3.14, None, " ", 0]
+        self.input_data["SMILES"] += ["C"] * 6
+        self.input_data["Sequence"] += ["A"] * 6
+        self.input_data["UniProt_ID"] += ["P00001"] * 6
+        self.input_data["Description"] += [
+            "Should be filtered by invalid CID (string).",
+            "Should be filtered by invalid CID (negative).",
+            "Should be filtered by invalid CID (float).",
+            "Should be filtered by invalid CID (None).",
+            "Should be filtered by invalid CID (whitespace).",
+            "Should be filtered by invalid CID (zero).",
+        ]
+
+        # --- 分组3: SMILES 无效的记录 ---
+        self.input_data["PubChem_CID"] += [201, 202, 203]
+        self.input_data["SMILES"] += ["INVALID-SMILES", "", None]
+        self.input_data["Sequence"] += ["A"] * 3
+        self.input_data["UniProt_ID"] += ["P00002"] * 3
+        self.input_data["Description"] += [
+            "Should be filtered by invalid SMILES (bad format).",
+            "Should be filtered by invalid SMILES (empty string).",
+            "Should be filtered by invalid SMILES (None).",
+        ]
+
+        # --- 分组4: Sequence 无效的记录 ---
+        self.input_data["PubChem_CID"] += [301, 302, 303]
+        self.input_data["SMILES"] += ["C"] * 3
+        self.input_data["Sequence"] += ["SEQ-WITH-X", "SEQ-WITH-123", None]
+        self.input_data["UniProt_ID"] += ["P00003"] * 3
+        self.input_data["Description"] += [
+            "Should be filtered by invalid Sequence (contains X).",
+            "Should be filtered by invalid Sequence (contains numbers).",
+            "Should be filtered by invalid Sequence (None).",
+        ]
+
+        # --- 分组5: UniProt ID 无效的记录 ---
+        self.input_data["PubChem_CID"] += [401, 402, 403]
+        self.input_data["SMILES"] += ["C"] * 3
+        self.input_data["Sequence"] += ["A"] * 3
+        self.input_data["UniProt_ID"] += ["P1234", "INVALID-ID", None]
+        self.input_data["Description"] += [
+            "Should be filtered by invalid UniProt ID (too short).",
+            "Should be filtered by invalid UniProt ID (bad format).",
+            "Should be filtered by invalid UniProt ID (None).",
+        ]
+
         self.input_df = pd.DataFrame(self.input_data)
 
-    def test_purify_chunk_step_by_step(self):
+    def test_purify_chunk_comprehensively(self):
         """
-        对 _purify_chunk 函数进行精细的、分步骤的验证。
+        对 _purify_chunk 函数进行全面的、黑盒式的输入/输出验证。
         """
-        print("--- Running Test: _purify_chunk step-by-step ---")
-        print("\n--- [Step 0] Initial Input DataFrame ---")
-        print(self.input_df.to_string())
-        self.assertEqual(len(self.input_df), 9)
+        print("--- Running Test: _purify_chunk comprehensively ---")
+        print("\n--- [Step 0] Comprehensive Input DataFrame ---")
+        print(f"Total rows to process: {len(self.input_df)}")
+        # print(self.input_df.to_string()) # (可选) 打印完整输入
 
-        # --- 模拟第一步：SMILES净化 ---
-        print("\n--- [Step 1] SMILES Purification ---")
+        # 调用我们正在测试的真实函数
+        output_df = _purify_chunk(self.input_df)
 
-        # a. 验证 (过滤空/None/无效)
-        smiles_mask = self.input_df["SMILES"].apply(
-            lambda s: isinstance(s, str)
-            and s.strip() != ""
-            and Chem.MolFromSmiles(s) is not None
-        )
-        df_after_smiles_validation = self.input_df[smiles_mask].copy()
-        print("\nDataFrame after SMILES validation:")
-        print(df_after_smiles_validation.to_string())
-        # 预期：过滤掉第3, 8, 9条
-        self.assertEqual(len(df_after_smiles_validation), 6)
+        print("\n--- [Final Step] Output DataFrame from _purify_chunk ---")
+        print(output_df.to_string())
 
-        # b. 标准化
-        df_after_smiles_validation["SMILES"] = df_after_smiles_validation[
-            "SMILES"
-        ].apply(canonicalize_smiles)
-        df_after_canonicalization = df_after_smiles_validation.dropna(subset=["SMILES"])
-        print("\nDataFrame after SMILES canonicalization:")
-        print(df_after_canonicalization.to_string())
-        # 预期：不应有任何行因标准化失败而被丢弃
-        self.assertEqual(len(df_after_canonicalization), 6)
+        # --- 最终断言 ---
 
-        # --- 模拟第二步：序列净化 ---
-        print("\n--- [Step 2] Sequence Purification ---")
-
-        # a. 过滤None值
-        df_to_check_seq = df_after_canonicalization.dropna(subset=["Sequence"])
-        print("\nDataFrame after dropping None Sequences:")
-        print(df_to_check_seq.to_string())
-        # 预期：过滤掉第7条
-        self.assertEqual(len(df_to_check_seq), 5)
-
-        # b. 验证字符集 (采用严格的21种氨基酸标准)
-        VALID_SEQ_CHARS = "ACDEFGHIKLMNPQRSTVWYU"
-        invalid_char_pattern = f"[^{VALID_SEQ_CHARS}]"
-        seq_series = df_to_check_seq["Sequence"].astype(str).str.upper()
-        sequence_mask = ~seq_series.str.contains(
-            invalid_char_pattern, regex=True, na=False
-        )
-
-        df_after_seq_validation = df_to_check_seq[sequence_mask]
-        print("\nDataFrame after Sequence validation:")
-        print(df_after_seq_validation.to_string())
-
-        # 预期：过滤掉含'X'(CID 4)和含'B','Z'(CID 6)的记录
-        self.assertEqual(len(df_after_seq_validation), 3)
-
-        # --- 最终调用真实函数进行黑盒对比 ---
-        print("\n--- [Final Blackbox Test] Calling the real _purify_chunk function ---")
-
-        # 为了测试真实函数，我们需要给它一个干净的输入副本
-        input_df_for_blackbox = pd.DataFrame(self.input_data)
-        final_output_df = _purify_chunk(input_df_for_blackbox)
-
-        print("\nFinal output from _purify_chunk:")
-        print(final_output_df.to_string())
-
-        # 【最终断言】根据我们严格的净化规则，预期只有3条记录能存活
+        # 1. 断言最终的数量
+        #    根据我们的设计，只有分组1中的3条记录应该存活下来。
         self.assertEqual(
-            len(final_output_df),
-            3,
-            "The real _purify_chunk function returned an incorrect number of rows.",
+            len(output_df), 3, "Final count of purified data is incorrect."
         )
 
-        # 验证存活的是否是正确的记录
-        expected_cids = {1, 2, 5}
-        output_cids = set(final_output_df["PubChem_CID"])
-        self.assertSetEqual(output_cids, expected_cids)
+        # 2. 断言存活记录的身份
+        #    检查留下的记录的CID是否就是我们期望的那3个。
+        expected_cids = {101, 102, 103}
+        output_cids = set(output_df["PubChem_CID"])
+        self.assertSetEqual(
+            output_cids, expected_cids, "The CIDs in the output are not as expected."
+        )
 
-        # 验证'C(C)O'是否被正确标准化
-        smiles_of_cid_5 = final_output_df[final_output_df["PubChem_CID"] == 5][
-            "SMILES"
-        ].iloc[0]
-        self.assertEqual(smiles_of_cid_5, "CCO")
+        # 3. 断言SMILES标准化的效果
+        #    检查CID=103 (原始SMILES是'C(C)O') 的记录，其SMILES是否被正确标准化为'CCO'。
+        smiles_of_cid_103 = output_df[output_df["PubChem_CID"] == 103]["SMILES"].iloc[0]
+        self.assertEqual(
+            smiles_of_cid_103, "CCO", "SMILES canonicalization failed for 'C(C)O'."
+        )
 
-        print("\n✅ All assertions for purify function passed!")
+        print("\n✅ All comprehensive assertions for _purify_chunk passed!")
 
 
 if __name__ == "__main__":

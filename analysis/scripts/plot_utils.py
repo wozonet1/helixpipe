@@ -1,9 +1,10 @@
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 from pathlib import Path
-import research_template as rt
+
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+import research_template as rt
+import seaborn as sns
 
 
 def plot_side_by_side_bar_chart(

@@ -1,18 +1,19 @@
-from torch_geometric.data import HeteroData
-import torch
-import pandas as pd
-from project_types import AppConfig
-from rdkit import Chem
 import re
-from tqdm import tqdm
-from typing import Optional
 import time
-import requests
-from collections import namedtuple, Counter
-from joblib import Parallel, delayed
+from collections import Counter, namedtuple
 
 # run.py 或 utils/config_validator.py
-from typing import List
+from typing import List, Optional
+
+import pandas as pd
+import requests
+import torch
+from joblib import Parallel, delayed
+from rdkit import Chem
+from torch_geometric.data import HeteroData
+from tqdm import tqdm
+
+from project_types import AppConfig
 
 
 def validate_config_with_data(
@@ -577,7 +578,9 @@ def validate_authoritative_dti_file(
         )
 
     # b. UniProt ID 格式
-    uniprot_pattern = re.compile(r"^[A-Z0-9]+$")
+    uniprot_pattern = re.compile(
+        r"([OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2})"
+    )
     invalid_uniprot_ids = df[~df["UniProt_ID"].astype(str).str.match(uniprot_pattern)]
     assert len(invalid_uniprot_ids) == 0, (
         f"验证失败: 发现 {len(invalid_uniprot_ids)} 个不符合标准格式的UniProt ID。例如: {invalid_uniprot_ids['UniProt_ID'].head().tolist()}"

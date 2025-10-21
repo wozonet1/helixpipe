@@ -1,10 +1,10 @@
-import torch
-from transformers import AutoTokenizer, AutoModel
-from tqdm import tqdm
 from pathlib import Path
-from transformers import EsmModel
-from typing import List, Dict
+from typing import Dict, List
+
 import research_template as rt
+import torch
+from tqdm import tqdm
+from transformers import AutoModel, AutoTokenizer, EsmModel
 
 # ------------------- 模型加载与初始化 -------------------
 

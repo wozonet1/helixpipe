@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
-from torch_geometric.nn import HeteroConv, GATv2Conv
 from torch_geometric.data import HeteroData
+from torch_geometric.nn import GATv2Conv, HeteroConv
 
 
 class RGCNLinkPredictor(torch.nn.Module):

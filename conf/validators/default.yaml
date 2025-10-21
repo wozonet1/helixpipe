@@ -1,0 +1,22 @@
+# 定义验证步骤的具体参数
+defaults:
+  - _base
+  - _self_
+
+name: default
+
+uniprot:
+  # UniProt ID Mapping API 的基础URL
+  api_url: "https://rest.uniprot.org/idmapping"
+  # 每次批量提交给API的ID数量。太大可能超时，太小效率低。
+  batch_size: 500
+  # 我们只关心人类的蛋白质。9606是人类的NCBI物种分类ID。
+  taxon_id: 9606
+
+pubchem:
+  # PUG REST API 的基础URL
+  api_url: "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
+  # 每次批量查询的ID数量
+  batch_size: 100
+# 【核心】我们也可以在这里为IDValidator添加一个自己的force_restart开关
+# force_restart_validator: ${runtime.force_restart} # 可以直接链接到全局开关

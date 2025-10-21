@@ -1,19 +1,21 @@
 # 文件: tests/test_graph_builder.py (最终可靠版 V2)
 
 import unittest
-from unittest.mock import MagicMock, patch
-import pandas as pd
-import numpy as np
 from pathlib import Path
+from unittest.mock import MagicMock, patch
+
 import hydra
+import numpy as np
+import pandas as pd
+import research_template as rt
 from omegaconf import DictConfig
-from project_types import AppConfig
+
+from configs.register_schemas import register_all_schemas
 
 # 导入我们需要测试的类和模块
 from data_utils.graph_builder import GraphBuilder
 from data_utils.id_mapper import IDMapper
-import research_template as rt
-from configs.register_schemas import register_all_schemas
+from project_types import AppConfig
 
 # 在所有测试开始前，全局执行一次注册
 register_all_schemas()

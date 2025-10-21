@@ -5,3 +5,25 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dti_project" # 给您的项目起个名字
 version = "0.1.0"
+
+[tool.ruff]
+
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501",]
+[tool.mypy]
+# 忽略所有已安装的第三方库中缺失的类型提示
+# (例如，如果你导入了requests，mypy不会抱怨requests没有类型提示)
+ignore_missing_imports = true
+
+# 【核心配置】
+# 不要因为一个模块没有 py.typed 就跳过它
+follow_imports = "normal" 
+
+# 明确告诉mypy你的源代码在哪里
+files = ["src", "tests", "analysis/scripts"]
+
+# 增加一些严格的检查选项 (推荐)
+warn_return_any = true
+warn_unused_configs = true

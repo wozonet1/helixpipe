@@ -1,7 +1,9 @@
+from typing import Dict, List, Set, Tuple
+
 import pandas as pd
-from typing import List, Dict, Set, Tuple
-from tqdm import tqdm
 import research_template as rt
+from tqdm import tqdm
+
 from project_types import AppConfig
 
 

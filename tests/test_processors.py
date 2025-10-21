@@ -1,15 +1,16 @@
 # 文件: tests/test_processors.py (最终极简黑盒版)
 
 import unittest
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
+
 import hydra
+import research_template as rt
 from omegaconf import DictConfig
 
+from configs.register_schemas import register_all_schemas
 from data_processing.bindingdb_processor import BindingdbProcessor
 from data_processing.gtopdb_processor import GtopdbProcessor
-import research_template as rt
-from configs.register_schemas import register_all_schemas
 
 register_all_schemas()
 rt.register_hydra_resolvers()

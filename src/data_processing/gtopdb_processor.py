@@ -1,15 +1,17 @@
 # 文件: src/data_processing/gtopdb_processor.py (全新/重构)
 
-import pandas as pd
 from argparse import ArgumentParser
+
+import pandas as pd
+import research_template as rt
+
+from configs.register_schemas import register_all_schemas
 
 # 导入我们的新基类和所有需要的辅助模块
 from data_processing.base_processor import BaseDataProcessor
+from data_processing.log_decorators import log_step
 from data_processing.purifiers import purify_dti_dataframe_parallel
 from data_utils.canonicalizer import fetch_sequences_from_uniprot
-import research_template as rt
-from configs.register_schemas import register_all_schemas
-from data_processing.log_decorators import log_step
 
 register_all_schemas()
 rt.register_hydra_resolvers()

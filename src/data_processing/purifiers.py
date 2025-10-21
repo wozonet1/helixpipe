@@ -1,10 +1,12 @@
-import pandas as pd
+import re
+
 import numpy as np
-from rdkit import Chem
-from rdkit import RDLogger
-from tqdm import tqdm
+import pandas as pd
 from joblib import Parallel, delayed
+from rdkit import Chem, RDLogger
 from rdkit.Chem import Descriptors
+from tqdm import tqdm
+
 from data_utils.canonicalizer import canonicalize_smiles
 from project_types import AppConfig
 
@@ -13,6 +15,7 @@ from project_types import AppConfig
 tqdm.pandas()
 
 
+# TODO:独立出来
 def _purify_chunk(df_chunk: pd.DataFrame) -> pd.DataFrame:
     if df_chunk.empty:
         return df_chunk
@@ -21,8 +24,28 @@ def _purify_chunk(df_chunk: pd.DataFrame) -> pd.DataFrame:
     logger.setLevel(RDLogger.CRITICAL)
 
     df = df_chunk.copy()
+    # --- 1. 【新增】PubChem_CID 净化 ---
+    # a. 过滤掉None/NaN值
+    df.dropna(subset=["PubChem_CID"], inplace=True)
+    if df.empty:
+        return df
 
-    # --- 1. SMILES 净化 (我们的逻辑更严格，保持不变) ---
+    # b. 尝试将CID转换为整数，无法转换的行将被设为NaN
+    #    errors='coerce' 是这里的关键，它会把所有“坏”数据变成NaN
+    df["PubChem_CID"] = pd.to_numeric(df["PubChem_CID"], errors="coerce")
+
+    # c. 再次过滤掉转换失败的行
+    df.dropna(subset=["PubChem_CID"], inplace=True)
+    if df.empty:
+        return df
+
+    # d. 确保CID是整数且大于0
+    df = df[df["PubChem_CID"] > 0]
+    df["PubChem_CID"] = df["PubChem_CID"].astype(int)  # 确保最终是int类型
+    if df.empty:
+        return df
+
+    # --- 2. SMILES 净化 (我们的逻辑更严格，保持不变) ---
     smiles_mask_initial = df["SMILES"].apply(
         lambda s: isinstance(s, str) and s.strip() != ""
     )
@@ -35,7 +58,7 @@ def _purify_chunk(df_chunk: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # --- 2. 序列 净化 (借鉴DeepPurpose) ---
+    # --- 3. 序列 净化 (借鉴DeepPurpose) ---
     # a. 过滤掉None/NaN或非字符串
     df.dropna(subset=["Sequence"], inplace=True)
     df = df[df["Sequence"].apply(isinstance, args=(str,))]
@@ -57,10 +80,26 @@ def _purify_chunk(df_chunk: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # --- 3. SMILES 标准化 (在所有过滤之后) ---
+    # --- 4. 【新增】UniProt ID 净化 ---
+    # a. 过滤掉None/NaN或非字符串
+    df.dropna(subset=["UniProt_ID"], inplace=True)
+    df = df[df["UniProt_ID"].apply(isinstance, args=(str,))]
+    if df.empty:
+        return df
+
+    # b. 使用严格的正则表达式进行格式验证
+    #    这个表达式匹配P12345, Q9Y261, A0A024R1R8等标准格式
+    uniprot_pattern = re.compile(
+        r"([OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2})"
+    )
+    valid_uniprot_mask = df["UniProt_ID"].str.match(uniprot_pattern)
+    df = df[valid_uniprot_mask]
+    if df.empty:
+        return df
+
+    # --- 5. SMILES 标准化 (现在是最后一步) ---
     df["SMILES"] = df["SMILES"].apply(canonicalize_smiles)
     df.dropna(subset=["SMILES"], inplace=True)
-
     return df
 
 

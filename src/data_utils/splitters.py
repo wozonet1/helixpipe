@@ -1,7 +1,9 @@
-from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
-from typing import List, Iterator, Tuple, TYPE_CHECKING, Union
-from project_types import AppConfig
+from typing import TYPE_CHECKING, Iterator, List, Tuple, Union
+
 import pandas as pd
+from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
+
+from project_types import AppConfig
 
 # 使用前向引用进行类型提示，避免循环导入问题
 if TYPE_CHECKING:

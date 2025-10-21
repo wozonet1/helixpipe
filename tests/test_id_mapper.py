@@ -1,5 +1,5 @@
 import pandas as pd
-from hydra import initialize, compose
+from hydra import compose, initialize
 
 # 导入我们要测试的类
 from data_utils.id_mapper import IDMapper

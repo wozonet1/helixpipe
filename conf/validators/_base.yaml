@@ -1,0 +1,3 @@
+# 这个文件只做一件事：引用在Python中注册的dataclass Schema
+defaults:
+  - base_validators
