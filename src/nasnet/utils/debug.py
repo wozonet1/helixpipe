@@ -480,16 +480,13 @@ def validate_authoritative_dti_file(
     config: AppConfig, df: Optional[pd.DataFrame] = None, verbose: int = 1
 ):
     """
-    一个通用的、严格的、带分级日志的验证函数。
+    一个通用的、严格的、带分级日志的验证函数 (V2 - 健壮版)。
+    能够处理SMILES/Sequence列中包含None值的情况。
     """
-    # 从配置中获取verbose级别，如果不存在则默认为1
     verbose = config.runtime.get("verbose", 1)
-
-    # 【核心逻辑】verbose=0时，直接跳过所有验证
     if verbose == 0:
         return
 
-    # --- 打印标题 ---
     if verbose > 0:
         print("\n" + "=" * 80)
         print(
@@ -500,19 +497,25 @@ def validate_authoritative_dti_file(
         )
         print("=" * 80)
 
-    # --- 1. 加载数据 ---
     if df is None:
-        # ... (加载数据的逻辑不变)
+        # (加载数据的逻辑，如果需要的话)
         pass
 
     if verbose > 1:
         print(f"--> 使用已传入的DataFrame进行检验 (共 {len(df)} 行)。")
 
-    # --- 2. 模式和结构验证 ---
+    # --- 模式和结构验证 ---
     if verbose > 1:
         print("\n" + "-" * 30 + " 1. 模式与结构验证 " + "-" * 29)
 
-    required_columns = {"PubChem_CID", "UniProt_ID", "SMILES", "Sequence", "Label"}
+    internal_schema = config.data_structure.schema.internal.authoritative_dti
+    required_columns = {
+        internal_schema.molecule_id,
+        internal_schema.protein_id,
+        internal_schema.molecule_sequence,
+        internal_schema.protein_sequence,
+        internal_schema.label,
+    }
     actual_columns = set(df.columns)
     assert required_columns.issubset(actual_columns), (
         f"验证失败: 文件缺少必需的列。需要: {required_columns}, 实际: {actual_columns}"
@@ -520,100 +523,115 @@ def validate_authoritative_dti_file(
     if verbose > 1:
         print("  ✅ 列完整性: 所有必需列均存在。")
 
-    assert pd.api.types.is_integer_dtype(df["PubChem_CID"]), (
-        "验证失败: 'PubChem_CID' 列应为整数类型。"
+    assert pd.api.types.is_integer_dtype(df[internal_schema.molecule_id]), (
+        f"验证失败: '{internal_schema.molecule_id}' 列应为整数类型。"
     )
-    assert pd.api.types.is_integer_dtype(df["Label"]), (
-        "验证失败: 'Label' 列应为整数类型。"
+    assert pd.api.types.is_integer_dtype(df[internal_schema.label]), (
+        f"验证失败: '{internal_schema.label}' 列应为整数类型。"
     )
     if verbose > 1:
         print("  ✅ 数据类型: 关键列的数据类型正确。")
 
     print(f"✅ {bcolors.OKGREEN}模式与结构: 通过。{bcolors.ENDC}")
 
-    # --- 3. 数据唯一性验证 ---
+    # --- 数据唯一性验证 ---
     if verbose > 1:
         print("\n" + "-" * 30 + " 2. 数据唯一性验证 " + "-" * 29)
 
-    duplicates = df.duplicated(subset=["PubChem_CID", "UniProt_ID"]).sum()
+    duplicates = df.duplicated(
+        subset=[internal_schema.molecule_id, internal_schema.protein_id]
+    ).sum()
     assert duplicates == 0, (
-        f"验证失败: 在 ('PubChem_CID', 'UniProt_ID') 上发现 {duplicates} 条重复记录。"
+        f"验证失败: 在 ('{internal_schema.molecule_id}', '{internal_schema.protein_id}') 上发现 {duplicates} 条重复记录。"
     )
     if verbose > 1:
         print("  ✅ 交互对唯一性: 所有 (药物, 靶点) 对都是唯一的。")
 
     print(f"✅ {bcolors.OKGREEN}数据唯一性: 通过。{bcolors.ENDC}")
 
-    # --- 4. 内容有效性验证 ---
+    # --- 内容有效性验证 ---
     if verbose > 1:
         print("\n" + "-" * 30 + " 3. 内容有效性验证 " + "-" * 30)
 
-    # a. SMILES 有效性
-    sample_size = min(len(df), 5000)
-    # 只有在verbose>1时才显示tqdm进度条
-    disable_tqdm = verbose <= 1
-    sampled_smiles = df["SMILES"].sample(
-        n=sample_size, random_state=config.runtime.seed
-    )
+    # a. SMILES 有效性 (核心修正)
+    smiles_col = internal_schema.molecule_sequence
+    # 【核心修正】: 使用 .apply() 来为每个元素生成布尔值，而不是 .loc
+    smiles_to_check = df[smiles_col].dropna()
+    is_string_mask = smiles_to_check.apply(lambda s: isinstance(s, str))
+    valid_smiles_series = smiles_to_check[is_string_mask]
 
-    invalid_smiles_count = 0
-    # 使用一个生成器表达式，更高效
-    invalid_smiles_count = sum(
-        1
-        for smiles in tqdm(
-            sampled_smiles, desc="  检验SMILES有效性", disable=disable_tqdm
+    if not valid_smiles_series.empty:
+        sample_size = min(len(valid_smiles_series), 5000)
+        disable_tqdm = verbose <= 1
+        sampled_smiles = valid_smiles_series.sample(
+            n=sample_size, random_state=config.runtime.seed
         )
-        if Chem.MolFromSmiles(smiles) is None
-    )
 
-    invalidation_rate = (
-        (invalid_smiles_count / sample_size) * 100 if sample_size > 0 else 0
-    )
-    assert invalidation_rate < 0.1, (
-        f"验证失败: SMILES有效性过低。在{sample_size}个样本中发现 {invalid_smiles_count} ({invalidation_rate:.2f}%) 个无效SMILES。"
-    )
-    if verbose > 1:
-        print(
-            f"  ✅ SMILES有效性: 在{sample_size}个样本中，无效比例为 {invalidation_rate:.2f}% (通过)。"
+        # 2. 对筛选后的样本进行验证
+        invalid_smiles_count = sum(
+            1
+            for smiles in tqdm(
+                sampled_smiles, desc="  检验SMILES有效性", disable=disable_tqdm
+            )
+            if Chem.MolFromSmiles(smiles) is None
         )
+
+        invalidation_rate = (invalid_smiles_count / sample_size) * 100
+        assert invalidation_rate < 0.1, (
+            f"验证失败: SMILES有效性过低。在{sample_size}个样本中发现 {invalid_smiles_count} ({invalidation_rate:.2f}%) 个无效SMILES。"
+        )
+        if verbose > 1:
+            print(
+                f"  ✅ SMILES有效性: 在{sample_size}个非空样本中，无效比例为 {invalidation_rate:.2f}% (通过)。"
+            )
+    elif verbose > 1:
+        print("  🟡 SMILES有效性: 未找到可供验证的非空SMILES字符串 (跳过)。")
 
     # b. UniProt ID 格式
+    uniprot_col = internal_schema.protein_id
     uniprot_pattern = re.compile(
         r"([OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2})"
     )
-    invalid_uniprot_ids = df[~df["UniProt_ID"].astype(str).str.match(uniprot_pattern)]
+    invalid_uniprot_ids = df[~df[uniprot_col].astype(str).str.match(uniprot_pattern)]
     assert len(invalid_uniprot_ids) == 0, (
-        f"验证失败: 发现 {len(invalid_uniprot_ids)} 个不符合标准格式的UniProt ID。例如: {invalid_uniprot_ids['UniProt_ID'].head().tolist()}"
+        f"验证失败: 发现 {len(invalid_uniprot_ids)} 个不符合标准格式的UniProt ID。例如: {invalid_uniprot_ids[uniprot_col].head().tolist()}"
     )
     if verbose > 1:
         print("  ✅ UniProt ID格式: 所有ID均符合标准格式。")
 
-    # c. 蛋白质序列内容
-    amino_acids = "ACDEFGHIKLMNPQRSTVWYU"  # 使用我们最终确定的严格标准
-    invalid_char_pattern = f"[^{amino_acids}]"
-    invalid_seq_df = df[
-        df["Sequence"]
-        .str.upper()
-        .str.contains(invalid_char_pattern, regex=True, na=False)
-    ]
+    # c. 蛋白质序列内容 (核心修正)
+    seq_col = internal_schema.protein_sequence
+    # 【核心修正】: 同样，使用 .apply()
+    seq_to_check = df[seq_col].dropna()
+    is_string_mask_seq = seq_to_check.apply(lambda s: isinstance(s, str))
+    valid_seq_series = seq_to_check[is_string_mask_seq]
 
-    if not invalid_seq_df.empty:
-        num_invalid = len(invalid_seq_df)
-        # 失败时的详细信息总是要打印的
-        print(
-            f"❌ {bcolors.FAIL}验证失败: 发现 {num_invalid} 条蛋白质序列包含非法字符。{bcolors.ENDC}"
-        )
-        print("--- 无效序列样本 (前5条): ---")
-        print(invalid_seq_df[["Sequence"]].head().to_string())
-        print("-" * 30)
-        raise ValueError(f"数据集中存在 {num_invalid} 条无效的蛋白质序列。")
-    if verbose > 1:
-        print("  ✅ 蛋白质序列内容: 所有序列均由合法的氨基酸字符组成。")
+    if not valid_seq_series.empty:
+        amino_acids = "ACDEFGHIKLMNPQRSTVWYU"
+        invalid_char_pattern = f"[^{amino_acids}]"
+        invalid_seq_df = valid_seq_series[
+            valid_seq_series.str.upper().str.contains(
+                invalid_char_pattern, regex=True, na=False
+            )
+        ].to_frame()
+
+        if not invalid_seq_df.empty:
+            num_invalid = len(invalid_seq_df)
+            print(
+                f"❌ {bcolors.FAIL}验证失败: 发现 {num_invalid} 条蛋白质序列包含非法字符。{bcolors.ENDC}"
+            )
+            print("--- 无效序列样本 (前5条): ---")
+            print(invalid_seq_df.head().to_string())
+            print("-" * 30)
+            raise ValueError(f"数据集中存在 {num_invalid} 条无效的蛋白质序列。")
+        if verbose > 1:
+            print("  ✅ 蛋白质序列内容: 所有非空序列均由合法的氨基酸字符组成。")
+    elif verbose > 1:
+        print("  🟡 蛋白质序列内容: 未找到可供验证的非空序列字符串 (跳过)。")
 
     print(f"✅ {bcolors.OKGREEN}内容有效性: 通过。{bcolors.ENDC}")
 
-    # --- 5. 最终总结 ---
-
+    # --- 最终总结 ---
     print(
         f"{bcolors.OKGREEN}{bcolors.BOLD}"
         + " " * 25

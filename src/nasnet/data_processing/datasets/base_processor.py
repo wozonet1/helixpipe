@@ -58,7 +58,6 @@ class BaseDataProcessor(ABC):
         """
         output_target = self.output_path
         if output_target.exists() and not self.config.runtime.force_restart:
-            # ... (缓存命中逻辑不变)
             return pd.read_csv(output_target)
 
         # --- 1. 加载原始数据 ---

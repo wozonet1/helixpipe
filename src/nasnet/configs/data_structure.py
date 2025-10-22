@@ -14,6 +14,7 @@ class RawFilenames:
 
     authoritative_dti: str = "default_interactions.csv"
     raw_tsv: str = "default_raw.tsv"
+    raw_json: str = "default_raw.json"
     dummy_file_to_get_dir: str = "dummy.txt"
     interactions: str = "interactions_default.csv"
     ligands: str = "ligands_default.csv"
@@ -67,6 +68,9 @@ class CacheIdsFilenames:
 
     uniprot_whitelist: str = "human_uniprot_whitelist.txt"
     cid_whitelist: str = "pubchem_cid_whitelist.txt"
+    brenda_name_to_cid: str = "pubchem_name_to_cid.pkl"
+    enriched_protein_sequences: str = "enriched_protein_sequences.pkl"
+    enriched_molecule_smiles: str = "enriched_molecule_smiles.pkl"
 
 
 @dataclass
@@ -103,6 +107,7 @@ class RawPaths:
 
     authoritative_dti: str = "${path:raw.authoritative_dti}"
     raw_tsv: str = "${path:raw.raw_tsv}"
+    raw_json: str = "${path:raw.raw_json}"
     dummy_file_to_get_dir: str = "${path:raw.dummy_file_to_get_dir}"
     interactions: str = "${path:raw.interactions}"
     ligands: str = "${path:raw.ligands}"
@@ -154,6 +159,9 @@ class CacheIdsPaths:
 
     uniprot_whitelist: str = "${path:cache.ids.uniprot_whitelist}"
     cid_whitelist: str = "${path:cache.ids.cid_whitelist}"
+    brenda_name_to_cid: str = "${path:cache.ids.brenda_name_to_cid}"
+    enriched_protein_sequences: str = "${path:cache.ids.enriched_protein_sequences}"
+    enriched_molecule_smiles: str = "${path:cache.ids.enriched_molecule_smiles}"
 
 
 @dataclass

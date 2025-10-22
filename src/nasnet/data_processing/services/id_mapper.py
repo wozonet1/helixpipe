@@ -1,3 +1,4 @@
+import pickle as pkl
 from typing import Dict, List, Set, Tuple
 
 import pandas as pd
@@ -6,6 +7,8 @@ from tqdm import tqdm
 
 from nasnet.typing import AppConfig
 from nasnet.utils import get_path
+
+from .canonicalizer import fetch_sequences_from_uniprot, fetch_smiles_from_pubchem
 
 
 class IDMapper:
@@ -164,6 +167,220 @@ class IDMapper:
             return "ligand"
         else:
             return "protein"
+
+    def to_dataframe(self) -> pd.DataFrame:
+        """
+        【新增】将IDMapper内部的所有实体及其结构信息导出为一个DataFrame。
+        这个DataFrame的格式将与 authoritative_dti 兼容，可用于全局净化。
+        """
+        print("--- [IDMapper] Exporting internal state to DataFrame... ---")
+        schema = self._config.data_structure.schema.internal.authoritative_dti
+
+        all_entities = []
+
+        # 1. 导出所有分子 (drugs + ligands)
+        for cid, smiles in self._cid_to_smiles.items():
+            # 我们只需要ID和结构列，其他列留空
+            all_entities.append(
+                {
+                    schema.molecule_id: cid,
+                    schema.molecule_sequence: smiles,
+                    schema.protein_id: None,  # 占位
+                    schema.protein_sequence: None,  # 占位
+                }
+            )
+
+        # 2. 导出所有蛋白质
+        for pid, sequence in self._uniprot_to_sequence.items():
+            all_entities.append(
+                {
+                    schema.molecule_id: None,  # 占位
+                    schema.molecule_sequence: None,  # 占位
+                    schema.protein_id: pid,
+                    schema.protein_sequence: sequence,
+                }
+            )
+
+        if not all_entities:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(all_entities)
+        print(f"--> Exported {len(df)} total unique entities (molecules and proteins).")
+        return df
+
+    def update_from_dataframe(self, df: pd.DataFrame):
+        """
+        【新增】使用一个净化后的DataFrame来完全重建IDMapper的内部状态。
+        这确保了IDMapper在进入下游任务前，其内部数据是最终纯净的。
+        """
+        print("\n--- [IDMapper] Re-initializing state from purified DataFrame... ---")
+        schema = self._config.data_structure.schema.internal.authoritative_dti
+
+        # --- 1. 清空并重新收集所有唯一的、净化后的实体 ---
+
+        # a. 收集净化后的分子
+        purified_mols = df.dropna(subset=[schema.molecule_id])
+        self._cid_to_smiles = pd.Series(
+            purified_mols[schema.molecule_sequence].values,
+            index=purified_mols[schema.molecule_id].astype(int),
+        ).to_dict()
+
+        # b. 收集净化后的蛋白质
+        purified_prots = df.dropna(subset=[schema.protein_id])
+        self._uniprot_to_sequence = pd.Series(
+            purified_prots[schema.protein_sequence].values,
+            index=purified_prots[schema.protein_id],
+        ).to_dict()
+
+        # c. 重新确定 drug 和 ligand 的身份
+        #    注意：这里的逻辑需要小心处理。一个简化的方法是，
+        #    我们仍然保留初始化时的 drug_cids 集合，只用它来区分类型。
+        #    净化过程只会移除实体，不会改变它们的“drug”身份。
+        purified_cids = set(self._cid_to_smiles.keys())
+        self._drug_cids = self._drug_cids & purified_cids
+        self._ligand_cids = purified_cids - self._drug_cids
+
+        # --- 2. 完全重建所有映射关系 (这部分逻辑与 __init__ 中类似) ---
+        all_uniprot_ids = set(self._uniprot_to_sequence.keys())
+
+        self._sorted_drugs = sorted(list(self._drug_cids))
+        self._sorted_ligands = sorted(list(self._ligand_cids))
+        self._sorted_proteins = sorted(list(all_uniprot_ids))
+
+        # 重新分配逻辑ID
+        current_id = 0
+        self.drug_to_id = {
+            cid: i + current_id for i, cid in enumerate(self._sorted_drugs)
+        }
+        current_id += len(self._sorted_drugs)
+
+        self.ligand_to_id = {
+            cid: i + current_id for i, cid in enumerate(self._sorted_ligands)
+        }
+        current_id += len(self._sorted_ligands)
+
+        self.protein_to_id = {
+            pid: i + current_id for i, pid in enumerate(self._sorted_proteins)
+        }
+
+        # 重新创建统一和反向的映射
+        self.molecule_to_id = {**self.drug_to_id, **self.ligand_to_id}
+        self.cid_to_id = self.molecule_to_id
+        self.uniprot_to_id = self.protein_to_id
+
+        self.id_to_drug = {i: cid for cid, i in self.drug_to_id.items()}
+        self.id_to_ligand = {i: cid for cid, i in self.ligand_to_id.items()}
+        self.id_to_protein = {i: pid for pid, i in self.protein_to_id.items()}
+
+        self.id_to_cid = {**self.id_to_drug, **self.id_to_ligand}
+        self.id_to_uniprot = self.id_to_protein
+
+        print("--- [IDMapper] State successfully updated. Final counts: ---")
+        print(f"  - Found {self.num_drugs} unique drugs.")
+        print(f"  - Found {self.num_ligands} unique pure ligands.")
+        print(f"  - Found {self.num_proteins} unique proteins.")
+        print(f"  - Total entities: {self.num_total_entities}")
+
+    def enrich_structures(self, config: AppConfig, force_restart: bool = False):
+        """
+        【新增-核心方法】主导结构数据（SMILES/序列）的丰富化过程。
+        该方法内部实现了带增量更新的缓存逻辑。
+        """
+        print("\n--- [IDMapper] Starting structure enrichment process... ---")
+        verbose_level = config.runtime.verbose
+
+        # --- 1. 丰富化蛋白质序列 ---
+        self._enrich_single_entity_type(
+            config=config,
+            force_restart=force_restart,
+            entity_type_name="Protein Sequences",
+            cache_file_key="cache.ids.enriched_protein_sequences",
+            internal_dict=self._uniprot_to_sequence,
+            fetch_function=fetch_sequences_from_uniprot,
+            verbose=verbose_level,
+        )
+
+        # --- 2. 丰富化小分子SMILES ---
+        self._enrich_single_entity_type(
+            config=config,
+            force_restart=force_restart,
+            entity_type_name="Molecule SMILES",
+            cache_file_key="cache.ids.enriched_molecule_smiles",
+            internal_dict=self._cid_to_smiles,
+            fetch_function=fetch_smiles_from_pubchem,
+            verbose=verbose_level,
+        )
+
+    def _enrich_single_entity_type(
+        self,
+        *,
+        config,
+        force_restart,
+        entity_type_name,
+        cache_file_key,
+        internal_dict,
+        fetch_function,
+        verbose,
+    ):
+        """【新增-私有模板方法】处理单个实体类型的丰富化和缓存逻辑。"""
+
+        cache_path = get_path(config, cache_file_key)
+
+        # 1. 加载现有缓存 (如果存在且不强制重启)
+        cached_data = {}
+        if cache_path.exists() and not force_restart:
+            if verbose > 0:
+                print(
+                    f"\n--> [Cache Hit] for {entity_type_name}. Loading from '{cache_path.name}'..."
+                )
+            with open(cache_path, "rb") as f:
+                cached_data = pkl.load(f)
+        else:
+            if verbose > 0:
+                print(
+                    f"\n--> [Cache Miss] for {entity_type_name}. Will perform fetch if needed."
+                )
+
+        # 2. 识别需要补充信息的ID (增量逻辑)
+        # 找出存在于 internal_dict (IDMapper的当前状态) 但不存在于缓存，
+        # 或者在 internal_dict 中值为空的ID。
+        ids_in_mapper = set(internal_dict.keys())
+        ids_in_cache = set(cached_data.keys())
+
+        ids_to_fetch = list(
+            (ids_in_mapper - ids_in_cache)
+            | {k for k, v in internal_dict.items() if not v or pd.isna(v)}
+        )
+
+        # 3. 如果有需要补充的ID，则发起网络请求
+        if ids_to_fetch:
+            print(
+                f"--> Found {len(ids_to_fetch)} {entity_type_name} requiring data fetch."
+            )
+            newly_fetched_data = fetch_function(ids_to_fetch)
+
+            # 将新获取的数据合并到缓存数据中
+            cached_data.update(newly_fetched_data)
+
+            # 【关键】将更新后的完整缓存写回磁盘
+            print(
+                f"--> Saving updated {entity_type_name} map back to cache: '{cache_path.name}'"
+            )
+            with open(cache_path, "wb") as f:
+                pkl.dump(cached_data, f)
+        else:
+            if verbose > 0:
+                print(
+                    f"--> All {entity_type_name} are already present in the cache. No fetch needed."
+                )
+
+        # 4. 无论是否获取了新数据，都用最完整的缓存数据来更新IDMapper的内部状态
+        #    这确保了即使没有网络请求，IDMapper也能从缓存中被正确填充。
+        internal_dict.update(cached_data)
+        if verbose > 0:
+            print(
+                f"--> IDMapper's {entity_type_name} state updated. Total items: {len(internal_dict)}"
+            )
 
     def save_maps_for_debugging(self, config: AppConfig):
         """

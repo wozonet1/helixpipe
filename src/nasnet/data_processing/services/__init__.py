@@ -1,7 +1,11 @@
 # src/nasnet/data_processing/services/__init__.py
 
 # 从各个具体的服务模块中，导入我们希望公开的核心功能
-from .canonicalizer import canonicalize_smiles, fetch_sequences_from_uniprot
+from .canonicalizer import (
+    canonicalize_smiles,
+    fetch_sequences_from_uniprot,
+    fetch_smiles_from_pubchem,
+)
 from .graph_builder import GraphBuilder
 from .id_mapper import IDMapper
 from .id_validation_service import get_human_uniprot_whitelist, get_valid_pubchem_cids
@@ -24,4 +28,5 @@ __all__ = [
     create_global_id_to_type_map,
     canonicalize_smiles,
     fetch_sequences_from_uniprot,
+    fetch_smiles_from_pubchem,
 ]

@@ -1,15 +1,31 @@
-import re
-
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 from rdkit import Chem, RDLogger
-from rdkit.Chem import Descriptors
+
+# 【核心】导入SA Score的计算器和PAINS的过滤器
+# 【核心】导入SA Score的计算器和PAINS的过滤器
+from rdkit.Chem import QED, Descriptors, FilterCatalog
+
+# 现在，我们可以直接像导入顶层模块一样导入它
+from rdkit.Contrib.SA_Score import sascorer  # type: ignore
 from tqdm import tqdm
 
 from nasnet.typing import AppConfig
 
 from .canonicalizer import canonicalize_smiles
+
+# --- 全局初始化 (在模块级别执行一次，避免在每个并行进程中重复加载) ---
+
+# a. 初始化PAINS过滤器
+#    这是一个比较耗时的操作，放在全局可以显著提速
+params = FilterCatalog.FilterCatalogParams()
+# 我们选择最常见的 PAINS A, B, C 三个集合
+params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_A)
+params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_B)
+params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_C)
+PAINS_CATALOG = FilterCatalog.FilterCatalog(params)
+print("--> [Purifiers] PAINS filter catalog initialized globally.")
 
 # 让tqdm能和pandas的apply方法优雅地协作
 # 在并行化场景下，我们将主要用tqdm来包裹joblib的调用
@@ -25,28 +41,8 @@ def _purify_chunk(df_chunk: pd.DataFrame) -> pd.DataFrame:
     logger.setLevel(RDLogger.CRITICAL)
 
     df = df_chunk.copy()
-    # --- 1. 【新增】PubChem_CID 净化 ---
-    # a. 过滤掉None/NaN值
-    df.dropna(subset=["PubChem_CID"], inplace=True)
-    if df.empty:
-        return df
-
-    # b. 尝试将CID转换为整数，无法转换的行将被设为NaN
-    #    errors='coerce' 是这里的关键，它会把所有“坏”数据变成NaN
-    df["PubChem_CID"] = pd.to_numeric(df["PubChem_CID"], errors="coerce")
-
-    # c. 再次过滤掉转换失败的行
-    df.dropna(subset=["PubChem_CID"], inplace=True)
-    if df.empty:
-        return df
-
-    # d. 确保CID是整数且大于0
-    df = df[df["PubChem_CID"] > 0]
-    df["PubChem_CID"] = df["PubChem_CID"].astype(int)  # 确保最终是int类型
-    if df.empty:
-        return df
-
-    # --- 2. SMILES 净化 (我们的逻辑更严格，保持不变) ---
+    # 有关id的在之前已经进行过了,这里只针对SMILES/序列信息进行筛选
+    # --- 1. SMILES 净化 (我们的逻辑更严格，保持不变) ---
     smiles_mask_initial = df["SMILES"].apply(
         lambda s: isinstance(s, str) and s.strip() != ""
     )
@@ -59,7 +55,7 @@ def _purify_chunk(df_chunk: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # --- 3. 序列 净化 (借鉴DeepPurpose) ---
+    # --- 32 序列 净化 (借鉴DeepPurpose) ---
     # a. 过滤掉None/NaN或非字符串
     df.dropna(subset=["Sequence"], inplace=True)
     df = df[df["Sequence"].apply(isinstance, args=(str,))]
@@ -81,24 +77,7 @@ def _purify_chunk(df_chunk: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # --- 4. 【新增】UniProt ID 净化 ---
-    # a. 过滤掉None/NaN或非字符串
-    df.dropna(subset=["UniProt_ID"], inplace=True)
-    df = df[df["UniProt_ID"].apply(isinstance, args=(str,))]
-    if df.empty:
-        return df
-
-    # b. 使用严格的正则表达式进行格式验证
-    #    这个表达式匹配P12345, Q9Y261, A0A024R1R8等标准格式
-    uniprot_pattern = re.compile(
-        r"([OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2})"
-    )
-    valid_uniprot_mask = df["UniProt_ID"].str.match(uniprot_pattern)
-    df = df[valid_uniprot_mask]
-    if df.empty:
-        return df
-
-    # --- 5. SMILES 标准化 (现在是最后一步) ---
+    # --- 3. SMILES 标准化 (现在是最后一步) ---
     df["SMILES"] = df["SMILES"].apply(canonicalize_smiles)
     df.dropna(subset=["SMILES"], inplace=True)
     return df
@@ -154,19 +133,46 @@ def purify_dti_dataframe_parallel(df: pd.DataFrame, config: AppConfig) -> pd.Dat
 
 def _calculate_descriptors_for_chunk(smiles_series: pd.Series) -> pd.DataFrame:
     """
-    一个“工人”函数，为一小块(chunk)SMILES数据计算分子描述符。
-    它被设计为可以在独立的进程中运行。
+    一个“工人”函数，为一小块(chunk)SMILES数据计算所有需要的分子描述符。
+    包括：MW, LogP, HBD, HBA, QED, SA_Score, 以及是否为PAINS。
     """
     results = []
     for smiles in smiles_series:
         mol = Chem.MolFromSmiles(smiles)
+
+        # 初始化一个包含默认“失败”值的字典
+        descriptor_dict = {
+            "MW": np.nan,
+            "LogP": np.nan,
+            "HBD": np.nan,  # Hydrogen Bond Donors
+            "HBA": np.nan,  # Hydrogen Bond Acceptors
+            "QED": np.nan,
+            "SA_Score": np.nan,
+            "is_pains": True,  # 默认视为PAINS，只有成功通过检查的才设为False
+        }
+
         if mol:
-            mw = Descriptors.MolWt(mol)
-            logp = Descriptors.MolLogP(mol)
-            results.append({"MW": mw, "LogP": logp})
-        else:
-            # 对于无效的SMILES，返回NaN，以便后续可以轻松过滤掉
-            results.append({"MW": np.nan, "LogP": np.nan})
+            try:
+                descriptor_dict["MW"] = Descriptors.MolWt(mol)
+                descriptor_dict["LogP"] = Descriptors.MolLogP(mol)
+                descriptor_dict["HBD"] = Descriptors.NumHDonors(mol)
+                descriptor_dict["HBA"] = Descriptors.NumHAcceptors(mol)
+                descriptor_dict["QED"] = QED.qed(mol)
+                descriptor_dict["SA_Score"] = sascorer.calculateScore(mol)
+                descriptor_dict["is_pains"] = PAINS_CATALOG.HasMatch(mol)
+            except Exception as e:
+                # 容忍单个分子的计算失败
+                if len(smiles) < 100:  # 只打印较短的SMILES以避免刷屏
+                    print(
+                        f"    - WARNING: Descriptor calculation failed for SMILES '{smiles}'. Error: {e}"
+                    )
+                else:
+                    print(
+                        f"    - WARNING: Descriptor calculation failed for a long SMILES string. Error: {e}"
+                    )
+
+        results.append(descriptor_dict)
+
     return pd.DataFrame(results)
 
 
@@ -174,18 +180,20 @@ def _calculate_descriptors_for_chunk(smiles_series: pd.Series) -> pd.DataFrame:
 
 
 # TODO: 添加更多属性检查,到~1万左右
-def filter_molecules_by_properties(df: pd.DataFrame, config: AppConfig) -> pd.DataFrame:
+def filter_molecules_by_properties(
+    df: pd.DataFrame, config: "AppConfig"
+) -> pd.DataFrame:
     """
-    【V2 并行版】根据配置中定义的分子理化性质规则，对DataFrame进行过滤。
+    【V3 最终版】根据配置，应用一个多阶段的、并行的分子理化性质过滤流水线。
     """
-    # 1. 检查总开关 (逻辑不变)
+    # 1. 检查总开关
     try:
         filter_cfg = config.data_params.filtering
         if not filter_cfg.get("enabled", False):
-            print("--> Molecular property filtering is disabled. Skipping.")
+            print("--> [Molecule Filter] Disabled by config. Skipping.")
             return df
     except Exception:
-        print("--> No 'filtering' config found. Skipping molecular property filtering.")
+        print("--> [Molecule Filter] No 'filtering' config found. Skipping.")
         return df
 
     print(
@@ -193,68 +201,105 @@ def filter_molecules_by_properties(df: pd.DataFrame, config: AppConfig) -> pd.Da
     )
 
     initial_count = len(df)
+    if initial_count == 0:
+        return df
+
     schema = config.data_structure.schema.internal.authoritative_dti
     smiles_col = schema.molecule_sequence
 
-    # 2. 【核心变化】并行计算所有必需的分子描述符
-    print(
-        f"    - Calculating molecular descriptors for {len(df)} molecules in parallel..."
-    )
+    # --- 2. 并行计算所有描述符 ---
+    print(f"    - Step 1: Calculating descriptors for {initial_count} molecules...")
 
-    # a. 确定并行核心数
-    n_jobs = config.runtime.get("cpus", -1)
-
-    # b. 将SMILES列分割成多个块(chunks)
-    #    选择合适的块数量，通常是CPU核心数的几倍，以实现负载均衡
+    n_jobs = config.runtime.cpus
     num_chunks = min(len(df) // 1000, n_jobs * 4) if len(df) > 1000 else n_jobs
     if num_chunks <= 0:
         num_chunks = 1
 
     smiles_chunks = np.array_split(df[smiles_col], num_chunks)
 
-    # c. 使用 joblib 并行执行“工人”函数
     with Parallel(n_jobs=n_jobs) as parallel:
         descriptor_dfs = parallel(
             delayed(_calculate_descriptors_for_chunk)(chunk)
-            for chunk in tqdm(smiles_chunks, desc="      Descriptor Chunks")
+            for chunk in tqdm(
+                smiles_chunks,
+                desc="      - Descriptor Chunks",
+                disable=config.runtime.verbose == 0,
+            )
         )
 
-    # d. 合并结果，并将其与原始DataFrame对齐
     descriptors_df = pd.concat(descriptor_dfs).reset_index(drop=True)
-    df = df.reset_index(drop=True)  # 确保原始df的索引也是连续的
-    df[["MW", "LogP"]] = descriptors_df
+    df_with_props = df.reset_index(drop=True).join(descriptors_df)
 
     # 移除计算失败的分子
-    df.dropna(subset=["MW", "LogP"], inplace=True)
+    df_with_props.dropna(subset=["MW", "LogP", "QED", "SA_Score"], inplace=True)
 
-    # 3. 逐条应用过滤规则 (逻辑不变，但在大数据上会快很多)
-    print("    - Applying filters...")
+    # --- 3. 应用过滤流水线 ---
+    print("    - Step 2: Applying filter pipeline...")
+    filtered_df = df_with_props
 
-    # a. 分子量
-    if "molecular_weight" in filter_cfg:
-        mw_cfg = filter_cfg.molecular_weight
-        df = df[
-            df["MW"].between(
-                mw_cfg.get("min", -float("inf")), mw_cfg.get("max", float("inf"))
+    # a. PAINS 过滤
+    if filter_cfg.get("apply_pains_filter", False):
+        filtered_df = filtered_df[~filtered_df["is_pains"]]
+        if config.runtime.verbose > 0:
+            print(f"      - After PAINS filter: {len(filtered_df)} molecules remain.")
+
+    # b. 分子量
+    if (mw_cfg := filter_cfg.get("molecular_weight")) is not None:
+        filtered_df = filtered_df[
+            filtered_df["MW"].between(
+                mw_cfg.get("min", -np.inf), mw_cfg.get("max", np.inf)
             )
         ]
+        if config.runtime.verbose > 0:
+            print(f"      - After MW filter: {len(filtered_df)} molecules remain.")
 
-    # b. LogP
-    if "logp" in filter_cfg:
-        logp_cfg = filter_cfg.logp
-        df = df[
-            df["LogP"].between(
-                logp_cfg.get("min", -float("inf")), logp_cfg.get("max", float("inf"))
+    # c. LogP
+    if (logp_cfg := filter_cfg.get("logp")) is not None:
+        filtered_df = filtered_df[
+            filtered_df["LogP"].between(
+                logp_cfg.get("min", -np.inf), logp_cfg.get("max", np.inf)
             )
         ]
+        if config.runtime.verbose > 0:
+            print(f"      - After LogP filter: {len(filtered_df)} molecules remain.")
 
-    final_count = len(df)
-    print(f"    - Filtering complete. {final_count} molecules remain.")
+    # d. 氢键供体
+    if (hbd_cfg := filter_cfg.get("h_bond_donors")) is not None:
+        filtered_df = filtered_df[filtered_df["HBD"] <= hbd_cfg.get("max", np.inf)]
+        if config.runtime.verbose > 0:
+            print(f"      - After HBD filter: {len(filtered_df)} molecules remain.")
 
-    # 4. 清理并返回 (逻辑不变)
-    df.drop(columns=["MW", "LogP"], inplace=True)
+    # e. 氢键受体
+    if (hba_cfg := filter_cfg.get("h_bond_acceptors")) is not None:
+        filtered_df = filtered_df[filtered_df["HBA"] <= hba_cfg.get("max", np.inf)]
+        if config.runtime.verbose > 0:
+            print(f"      - After HBA filter: {len(filtered_df)} molecules remain.")
+
+    # f. QED 评分
+    if (qed_cfg := filter_cfg.get("qed")) is not None:
+        filtered_df = filtered_df[filtered_df["QED"] >= qed_cfg.get("min", -np.inf)]
+        if config.runtime.verbose > 0:
+            print(f"      - After QED filter: {len(filtered_df)} molecules remain.")
+
+    # g. SA Score
+    if (sa_score_cfg := filter_cfg.get("sa_score")) is not None:
+        filtered_df = filtered_df[
+            filtered_df["SA_Score"] <= sa_score_cfg.get("max", np.inf)
+        ]
+        if config.runtime.verbose > 0:
+            print(
+                f"      - After SA Score filter: {len(filtered_df)} molecules remain."
+            )
+
+    final_count = len(filtered_df)
+
+    # --- 4. 清理并返回 ---
+    # 只保留原始列，丢弃我们添加的属性列
+    final_df = filtered_df[df.columns]
 
     num_removed = initial_count - final_count
-    print(f"--- [Molecule Filter] Complete. Removed {num_removed} molecules. ---")
+    print(
+        f"--- [Molecule Filter] Complete. Removed {num_removed} of {initial_count} molecules. ---"
+    )
 
-    return df
+    return final_df

@@ -4,10 +4,7 @@ import pandas as pd
 import research_template as rt
 
 from nasnet.configs import register_all_schemas
-from nasnet.data_processing.services.canonicalizer import fetch_sequences_from_uniprot
 from nasnet.utils import get_path, log_step, register_hydra_resolvers
-
-from ..services.purifiers import purify_dti_dataframe_parallel
 
 # 导入基类和所有需要的辅助模块
 from .base_processor import BaseDataProcessor
@@ -117,48 +114,23 @@ class GtopdbProcessor(BaseDataProcessor):
         df.dropna(subset=[gtopdb_schema.interactions.affinity], inplace=True)
         return df[df[gtopdb_schema.interactions.affinity] <= affinity_threshold].copy()
 
-    @log_step("Fetch & Add Protein Sequences")
-    def _transform_step_2_fetch_and_add_sequences(
-        self, df: pd.DataFrame
-    ) -> pd.DataFrame:
-        """【新】转换步骤2：在所有行过滤之后，在线获取序列。"""
-        internal_schema = self.config.data_structure.schema.internal.authoritative_dti
-
-        # df 中现在已经有了 'UniProt_ID' 列
-        unique_pids = df[internal_schema.protein_id].dropna().unique().tolist()
-        if not unique_pids:
-            return pd.DataFrame()
-
-        uniprot_to_sequence_map = fetch_sequences_from_uniprot(unique_pids)
-
-        # 将序列映射为一个新列，并使用【内部黄金标准】列名
-        df[internal_schema.protein_sequence] = df[internal_schema.protein_id].map(
-            uniprot_to_sequence_map
-        )
-
-        return df.dropna(subset=[internal_schema.protein_sequence])
-
-    @log_step("Purify Data (SMILES/Sequence)")
-    def _transform_step_3_purify(self, df: pd.DataFrame) -> pd.DataFrame:
-        """转换步骤4：调用通用的净化模块，进行深度清洗。"""
-        # 注意：GtoPdb数据量小，并行可能开销更大，但为保持一致性我们仍使用并行版本
-        return purify_dti_dataframe_parallel(df, self.config)
-
     @log_step("Finalize and De-duplicate")
-    def _transform_step_4_finalize(self, df: pd.DataFrame) -> pd.DataFrame:
-        """转换步骤5：添加Label，清理数据类型，并进行最终去重。"""
+    def _transform_step_2_finalize(self, df: pd.DataFrame) -> pd.DataFrame:
         internal_schema = self.config.data_structure.schema.internal.authoritative_dti
 
+        # GtoPdb的SMILES是自带的，所以我们保留它
         final_df = df[
             [
                 internal_schema.molecule_id,
                 internal_schema.protein_id,
-                internal_schema.molecule_sequence,
-                internal_schema.protein_sequence,
+                internal_schema.molecule_sequence,  # <-- 保留SMILES
             ]
         ].copy()
 
         final_df[internal_schema.label] = 1
+        # 【新增】添加空的Sequence占位列
+        final_df[internal_schema.protein_sequence] = None
+
         final_df[internal_schema.molecule_id] = (
             pd.to_numeric(final_df[internal_schema.molecule_id], errors="coerce")
             .dropna()
@@ -169,7 +141,16 @@ class GtopdbProcessor(BaseDataProcessor):
             subset=[internal_schema.molecule_id, internal_schema.protein_id],
             inplace=True,
         )
-        return final_df
+
+        # 重新排列以符合标准
+        final_cols = [
+            internal_schema.molecule_id,
+            internal_schema.protein_id,
+            internal_schema.molecule_sequence,
+            internal_schema.protein_sequence,
+            internal_schema.label,
+        ]
+        return final_df.reindex(columns=final_cols)
 
     def _transform_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -182,9 +163,7 @@ class GtopdbProcessor(BaseDataProcessor):
 
         pipeline = [
             self._transform_step_1_filter,
-            self._transform_step_2_fetch_and_add_sequences,
-            self._transform_step_3_purify,
-            self._transform_step_4_finalize,
+            self._transform_step_2_finalize,
         ]
 
         for step_func in pipeline:

@@ -9,6 +9,8 @@ from .services import (
     DataSplitter,
     GraphBuilder,
     IDMapper,
+    fetch_sequences_from_uniprot,
+    fetch_smiles_from_pubchem,
     filter_molecules_by_properties,
     get_human_uniprot_whitelist,
     get_valid_pubchem_cids,
@@ -25,4 +27,6 @@ __all__ = [
     filter_molecules_by_properties,
     get_human_uniprot_whitelist,
     get_valid_pubchem_cids,
+    fetch_sequences_from_uniprot,
+    fetch_smiles_from_pubchem,
 ]

@@ -1,13 +1,20 @@
+import json
 import pickle as pkl
 import re
 import time
 from pathlib import Path
+from typing import Dict, List, Optional
 
 import pandas as pd
 import pubchempy as pcp
 import requests
 from rdkit import Chem
+from requests.adapters import HTTPAdapter, Retry
 from tqdm import tqdm
+
+session = requests.Session()
+retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
+session.mount("https://", HTTPAdapter(max_retries=retries))
 
 
 def canonicalize_smiles(smiles):
@@ -142,7 +149,7 @@ def fetch_sequences_from_uniprot(uniprot_ids):
         }
 
         try:
-            response = requests.get(base_url, params=params)
+            response = session.get(base_url, params=params)
 
             # 检查请求是否成功
             if response.status_code == 200:
@@ -173,7 +180,7 @@ def fetch_sequences_from_uniprot(uniprot_ids):
                         "format": "fasta",
                     }
                     try:
-                        single_response = requests.get(
+                        single_response = session.get(
                             base_url, params=single_params, timeout=10
                         )
                         if single_response.status_code == 200:
@@ -209,3 +216,59 @@ def fetch_sequences_from_uniprot(uniprot_ids):
 
     print(f"-> FINAL: Successfully fetched {len(sequences_map)} sequences.")
     return sequences_map
+
+
+def fetch_smiles_from_pubchem(
+    cids: List[int], batch_size: int = 100, proxies: Optional[Dict[str, str]] = None
+) -> Dict[int, str]:
+    """
+    【V8 - 最终修正版】
+    使用requests GET请求，并使用正确的JSON键名(ConnectivitySMILES)来解析响应。
+    """
+    if not cids:
+        return {}
+
+    print(
+        f"--> [PubChem Fetcher] Querying SMILES for {len(cids)} CIDs using direct GET requests..."
+    )
+    if proxies:
+        print(f"    - Using proxies: {proxies}")
+
+    # 【核心修正1】我们请求的属性可以是 CanonicalSMILES，但响应的键可能是不同的。
+    # 为了更精确，我们可以同时请求 CanonicalSMILES 和 ConnectivitySMILES
+    properties_to_fetch = "CanonicalSMILES,ConnectivitySMILES"
+
+    cid_to_smiles_map: Dict[int, str] = {}
+
+    for i in tqdm(range(0, len(cids), batch_size), desc="   - Fetching SMILES batches"):
+        batch_cids = cids[i : i + batch_size]
+        cids_str = ",".join(map(str, batch_cids))
+
+        url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cids_str}/property/{properties_to_fetch}/JSON"
+
+        try:
+            response = session.get(url, proxies=proxies, timeout=60)
+            response.raise_for_status()
+
+            data = response.json()
+            results = data.get("PropertyTable", {}).get("Properties", [])
+
+            for item in results:
+                cid = item.get("CID")
+                # 【核心修正2】优先使用 CanonicalSMILES，如果不存在，则回退到 ConnectivitySMILES
+                smiles = item.get("CanonicalSMILES") or item.get("ConnectivitySMILES")
+                if cid and smiles:
+                    cid_to_smiles_map[int(cid)] = canonicalize_smiles(smiles)
+
+        except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+            print(
+                f"\n    - ❌ NETWORK/JSON/PROXY ERROR for batch starting with CID {batch_cids[0]}: {e}"
+            )
+            continue
+
+        time.sleep(0.25)
+
+    print(
+        f"--> [PubChem Fetcher] Successfully fetched canonicalized SMILES for {len(cid_to_smiles_map)} CIDs."
+    )
+    return cid_to_smiles_map

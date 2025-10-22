@@ -1,0 +1,31 @@
+# 文件: conf/data_structure/brenda.yaml
+
+defaults:
+  - _base # 继承基础 schema
+  - _self_
+
+name: "brenda"
+primary_dataset: "brenda" # 顶层目录名
+
+filenames:
+  raw:
+    # 覆盖 _base.yaml 中的 authoritative_dti
+    authoritative_dti: "brenda_interactions.csv"
+    # 新增 brenda 专属的文件名
+    raw_json: "brenda_2025_1.json"
+
+schema:
+  external:
+    brenda:
+      # 定义蛋白质信息中的键
+      protein_organism_key: "organism"
+      protein_accessions_key: "accessions"
+      target_organism_value: "homo sapiens" # 使用小写以方便代码处理
+
+      # 定义我们感兴趣的配体相关字段及其对应的关系类型
+      ligand_fields:
+        inhibitor: "inhibitor"
+        ki_value: "inhibitor"
+        ic50_value: "inhibitor"
+        km_value: "substrate"
+        turnover_number: "substrate"

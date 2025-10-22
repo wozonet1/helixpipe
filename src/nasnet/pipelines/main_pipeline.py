@@ -1,6 +1,5 @@
-import pickle as pkl
 import random
-from typing import Callable, Dict, List
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
@@ -8,7 +7,12 @@ import research_template as rt
 import torch
 from tqdm import tqdm
 
-from nasnet.data_processing import DataSplitter, GraphBuilder, IDMapper
+from nasnet.data_processing import (
+    DataSplitter,
+    GraphBuilder,
+    IDMapper,
+    purify_dti_dataframe_parallel,
+)
 from nasnet.features import extractors, sim_calculators
 from nasnet.typing import AppConfig
 from nasnet.utils import get_path
@@ -27,7 +31,18 @@ def process_data(
         raise ValueError("Cannot process data: Input dataframe list is empty.")
 
     id_mapper = IDMapper(base_df, extra_dfs, config)
+    id_mapper.enrich_structures(config=config, force_restart=restart_flag)
 
+    # --- 【新】Stage 1.7: 全局后置净化 (Global Post-Purification) ---
+    print("\n--- [Stage 1.7] Performing global post-enrichment purification... ---")
+    # 从IDMapper中重建一个包含所有实体和最新结构信息的完整DataFrame
+    all_entities_df = id_mapper.to_dataframe()  # 假设IDMapper有这个新方法
+
+    # 对这个完整的数据集进行最终的、全局的净化
+    purified_entities_df = purify_dti_dataframe_parallel(all_entities_df, config)
+
+    # 用净化后的数据，重新构建或更新IDMapper，确保其内部状态是最终干净的
+    id_mapper.update_from_dataframe(purified_entities_df)  # 假设IDMapper有这个新方法
     if config.runtime.verbose > 0:
         id_mapper.save_maps_for_debugging(config)
 
@@ -45,11 +60,11 @@ def process_data(
             restart_flag=restart_flag,
         )
     )
-    all_dfs_for_pairs = [base_df] + (extra_dfs if extra_dfs else [])
+    all_positive_pairs_df = purified_entities_df[purified_entities_df["Label"] == 1]
     _stage_4_split_data_and_build_graphs(
         config,
         id_mapper,
-        all_dfs_for_pairs,
+        [all_positive_pairs_df],  # 传递一个包含所有干净正样本的DataFrame
         dl_similarity_matrix,
         prot_similarity_matrix,
     )
@@ -195,55 +210,6 @@ def _generate_or_load_embeddings(
     return features_dict
 
 
-# ... (imports)
-
-
-# 新增的模板函数
-def _cached_operation(
-    config: "AppConfig",
-    file_key: str,
-    restart_flag: bool,
-    calculation_func: Callable,
-    func_kwargs: dict,
-    operation_name: str = "operation",
-) -> any:
-    """
-    一个通用的、带缓存的模板函数，用于执行任何可能耗时的计算。
-
-    Args:
-        config: 全局配置。
-        file_key: 用于在config中查找缓存文件路径的短键。
-        restart_flag: 是否强制重新计算。
-        calculation_func: 如果缓存未命中，要调用的计算函数。
-        func_kwargs: 要传递给计算函数的关键字参数字典。
-        operation_name: 用于日志打印的操作名称。
-
-    Returns:
-        any: 计算或加载的结果。
-    """
-    matrix_path = get_path(config, file_key)
-
-    if not matrix_path.exists() or restart_flag:
-        print(f"\n--> Cache miss for '{operation_name}'. Calculating...")
-        # 【核心】动态调用计算函数
-        result = calculation_func(**func_kwargs)
-
-        rt.ensure_path_exists(matrix_path)
-        with open(matrix_path, "wb") as f:
-            pkl.dump(result, f)
-        print(
-            f"--> Result for '{operation_name}' saved to cache: '{matrix_path.name}'."
-        )
-    else:
-        print(
-            f"\n--> Cache hit for '{operation_name}'. Loading from '{matrix_path.name}'..."
-        )
-        with open(matrix_path, "rb") as f:
-            result = pkl.load(f)
-
-    return result
-
-
 def _stage_3_calculate_similarity_matrices(
     config: "AppConfig",
     molecule_embeddings: torch.Tensor,
@@ -254,25 +220,32 @@ def _stage_3_calculate_similarity_matrices(
     【V3.1 模板化重构版】计算所有必需的相似性矩阵。
     """
     print("\n--- [Stage 3] Calculating similarity matrices... ---")
+    verbose_level = config.runtime.verbose
 
     # 1. 计算分子相似性矩阵
-    dl_similarity_matrix = _cached_operation(
-        config=config,
-        file_key="processed.common.similarity_matrices.molecule",
-        restart_flag=restart_flag,
+    # a. 首先，获取最终的缓存文件路径
+    mol_sim_path = get_path(config, "processed.common.similarity_matrices.molecule")
+
+    # b. 然后，将路径和计算逻辑传递给通用缓存函数
+    dl_similarity_matrix = rt.run_cached_operation(
+        cache_path=mol_sim_path,
         calculation_func=sim_calculators.calculate_embedding_similarity,
         func_kwargs={"embeddings": molecule_embeddings, "batch_size": 1024},
+        force_restart=restart_flag,
         operation_name="Molecule Similarity",
+        verbose=verbose_level,
     )
 
     # 2. 计算蛋白质相似性矩阵
-    prot_similarity_matrix = _cached_operation(
-        config=config,
-        file_key="processed.common.similarity_matrices.protein",
-        restart_flag=restart_flag,
+    prot_sim_path = get_path(config, "processed.common.similarity_matrices.protein")
+
+    prot_similarity_matrix = rt.run_cached_operation(
+        cache_path=prot_sim_path,
         calculation_func=sim_calculators.calculate_embedding_similarity,
         func_kwargs={"embeddings": protein_embeddings, "batch_size": 1024},
+        force_restart=restart_flag,
         operation_name="Protein Similarity",
+        verbose=verbose_level,
     )
 
     return dl_similarity_matrix, prot_similarity_matrix

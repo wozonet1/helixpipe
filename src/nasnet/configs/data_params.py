@@ -18,12 +18,54 @@ class FeatureExtractorConfig:
 
 
 @dataclass
-class FilteringConfig:
-    """定义分子理化性质过滤的规则。"""
+class RangeFilterConfig:
+    """定义一个范围过滤器 (min, max)。"""
 
+    min: Optional[float] = None
+    max: Optional[float] = None
+
+
+@dataclass
+class MinValueFilterConfig:
+    """定义一个最小值过滤器 (value >= min)。"""
+
+    min: float = 0.0
+
+
+@dataclass
+class MaxValueFilterConfig:
+    """定义一个最大值过滤器 (value <= max)。"""
+
+    max: float = 10.0
+
+
+# --- 【核心修改】重构顶层的 FilteringConfig ---
+
+
+@dataclass
+class FilteringConfig:
+    """
+    【V2 重构版】定义分子理化性质过滤的所有规则。
+    每个字段都是一个嵌套的dataclass，提供了清晰的结构和默认值。
+    """
+
+    # 总开关
     enabled: bool = False
-    molecular_weight: Optional[Dict[str, float]] = None
-    logp: Optional[Dict[str, float]] = None
+
+    # --- 阶段一: 结构警报 ---
+    apply_pains_filter: bool = False
+    apply_bms_filter: bool = False  # 为未来预留
+
+    # --- 阶段二: 类药性范围 ---
+    # 使用 field(default=None) 表示这些规则是可选的
+    molecular_weight: Optional[RangeFilterConfig] = None
+    logp: Optional[RangeFilterConfig] = None
+    h_bond_donors: Optional[MaxValueFilterConfig] = None
+    h_bond_acceptors: Optional[MaxValueFilterConfig] = None
+
+    # --- 阶段三: 高级评分 ---
+    qed: Optional[MinValueFilterConfig] = None
+    sa_score: Optional[MaxValueFilterConfig] = None
 
 
 # --------------------------------------------------------------------------
