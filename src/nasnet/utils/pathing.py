@@ -1,12 +1,14 @@
 import shutil
 from collections import defaultdict
+from functools import partial
 from pathlib import Path
-from typing import Generator, Tuple
+from typing import Callable, Generator, Tuple, Union
 
 import research_template as rt
 from omegaconf import DictConfig, ListConfig, OmegaConf
-from omegaconf.errors import InterpolationResolutionError
+from omegaconf.errors import ConfigKeyError, InterpolationResolutionError
 from research_template import check_paths_exist as generic_check_paths_exist
+from research_template.errors import ConfigPathError
 
 
 def _walk_config(
@@ -114,40 +116,82 @@ def setup_dataset_directories(config: DictConfig) -> None:
         ) from e
 
 
-def get_path(cfg: DictConfig, short_key: str, **kwargs) -> Path:
+def get_path(
+    cfg: DictConfig, short_key: str, **kwargs
+) -> Union[Path, Callable[..., Path]]:
     """
-    【V8 终极优雅版】直接从已解析的配置中获取路径。
-    所有复杂的路径构建逻辑都已封装在自定义的 'path' 解析器中。
+    【V11 路径工厂最终版】一个智能的、双模式的路径获取函数。
+
+    - **模式1 (静态路径)**: 如果解析出的路径是一个完整的路径（不含'{'占位符），
+      它会直接返回一个【绝对路径的 Path 对象】。
+
+    - **模式2 (路径工厂)**: 如果解析出的路径是一个模板（包含'{'占位符），
+      它会返回一个【可调用的“路径工厂”函数】。这个工厂函数接收关键字参数来
+      填充模板，并返回最终的绝对路径 Path 对象。
+
+    Args:
+        cfg (DictConfig): 完整的Hydra配置对象。
+        short_key (str): 点分隔的短键，例如 "raw.authoritative_dti"。
+        **kwargs: (可选) 用于立即填充模板的一部分参数。
+
+    Returns:
+        Union[Path, Callable[..., Path]]:
+            - 一个Path对象（对于静态路径）。
+            - 一个可调用对象（对于路径模板）。
     """
-    # 【注意】我们不再需要在这里注入任何运行时变量！
-    # 因为解析器在被调用时，可以访问到完整的、最新的cfg对象。
     full_key = f"data_structure.paths.{short_key}"
     try:
-        # select 会触发 ${path:...} 解析器的执行
         resolved_path_str = OmegaConf.select(cfg, full_key)
-    except (rt.ConfigPathError, InterpolationResolutionError) as e:
-        # `e` 对象通常会包含导致问题的最深层次的键
-        # 我们可以尝试从复杂的错误消息中提取它
-        missing_key_guess = str(e).splitlines()[0]  # 取第一行错误信息作为猜测
 
-        # 对于 InterpolationResolutionError，我们可以深入挖掘原因
+    except (ConfigKeyError, InterpolationResolutionError) as e:
+        # 统一的、用户友好的错误包装 (保持不变)
+        missing_key_guess = str(e).splitlines()[0]
         if isinstance(e, InterpolationResolutionError) and e.__cause__:
             missing_key_guess = f"{type(e.__cause__).__name__}: {e.__cause__}"
-
-        raise rt.ConfigPathError(
-            message=f"Error resolving key '{full_key}'. Cause: {missing_key_guess}",
-            missing_key=missing_key_guess,  # 记录我们能找到的最深层的原因
+        raise ConfigPathError(
+            message=f"Error resolving path key '{full_key}'.",
+            missing_key=missing_key_guess,
             file_key=full_key,
         ) from e
 
-    if resolved_path_str is None:
-        raise ValueError(f"Failed to find {full_key}\n")
-    # 格式化 **kwargs (prefix, suffix) - 这部分仍然需要
-    if kwargs:
-        format_args = defaultdict(str, **kwargs)
-        resolved_path_str = resolved_path_str.format_map(format_args)
+    if not isinstance(resolved_path_str, str):
+        raise TypeError(
+            f"Resolved path for key '{full_key}' is not a string, but {type(resolved_path_str)}."
+        )
 
-    return rt.get_project_root() / resolved_path_str
+    # --- 核心的、双模式逻辑 ---
+
+    project_root = rt.get_project_root()
+
+    # 1. 检查解析出的字符串是否是一个需要后续格式化的模板
+    if "{" in resolved_path_str:
+        # 定义一个闭包函数作为我们的“路径工厂”
+        def path_factory(**factory_kwargs) -> Path:
+            # 使用 format_map 和 defaultdict，可以安全地处理不完整的参数
+            final_str = resolved_path_str.format_map(defaultdict(str, factory_kwargs))
+            if "{" in final_str:
+                # 检查格式化后是否还有未填充的占位符
+                print(
+                    f"Warning: Path template for key '{short_key}' may be incompletely formatted: {final_str}"
+                )
+            return project_root / final_str
+
+        # 2. 如果在调用 get_path 时已经提供了 kwargs，则使用 functools.partial
+        #    来“预填充”这些参数，返回一个新的、参数更少的函数。
+        if kwargs:
+            return partial(path_factory, **kwargs)
+        else:
+            # 否则，直接返回原始的工厂函数
+            return path_factory
+
+    else:
+        # 3. 如果是静态路径，直接返回最终的 Path 对象
+        #    如果此时传入了 kwargs，它们将被忽略，可以打印一个警告
+        if kwargs:
+            print(
+                f"Warning: kwargs {kwargs} were provided for a static path key '{short_key}' and will be ignored."
+            )
+        return project_root / resolved_path_str
 
 
 def check_project_files_exist(config: "DictConfig", *file_keys: str) -> bool:

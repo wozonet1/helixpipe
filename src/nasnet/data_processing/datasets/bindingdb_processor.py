@@ -8,6 +8,7 @@ from hydra import compose
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
+from nasnet.configs import register_all_schemas
 from nasnet.typing import AppConfig
 from nasnet.utils import get_path, log_step, register_hydra_resolvers
 
@@ -39,7 +40,6 @@ class BindingdbProcessor(BaseDataProcessor):
             f"--- [{self.__class__.__name__}] Step: Loading and Standardizing raw data... ---"
         )
         external_schema = self.config.data_structure.schema.external.bindingdb
-        internal_schema = self.config.data_structure.schema.internal.authoritative_dti
 
         tsv_path = get_path(self.config, "raw.raw_tsv")
         if not tsv_path.exists():
@@ -94,6 +94,12 @@ class BindingdbProcessor(BaseDataProcessor):
             return pd.DataFrame()
 
         df = pd.concat(loaded_chunks, ignore_index=True)
+        print(f"--> Loaded  {len(df)} raw rows for processing.")
+        return df
+
+    def _standardize_columns(self, df) -> pd.DataFrame:
+        external_schema = self.config.data_structure.schema.external.bindingdb
+        internal_schema = self.config.data_structure.schema.internal.authoritative_dti
         df.rename(
             columns={
                 external_schema.molecule_id: internal_schema.molecule_id,
@@ -103,11 +109,7 @@ class BindingdbProcessor(BaseDataProcessor):
             },
             inplace=True,
         )
-
-        print(f"--> Loaded and Standardized {len(df)} raw rows for processing.")
         return df
-
-    # --- 数据转换的子步骤，由 @log_step 装饰 ---
 
     @log_step("Process & Filter by Affinity")
     def _transform_step_1_affinity(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -236,7 +238,7 @@ if __name__ == "__main__":
     # a. 在所有Hydra操作之前，确保解析器已注册
     #    (rt 是 research_template)
     register_hydra_resolvers()
-
+    register_all_schemas()
     # b. 使用 initialize_config_dir 和 compose 来构建最终的配置对象
     try:
         # get_project_root 在非Hydra应用下会使用 Path.cwd()

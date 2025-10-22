@@ -94,21 +94,18 @@ def extract_esm_protein_embeddings(
     results_dict: Dict[str, torch.Tensor] = {}
     missed_ids = []
     missed_sequences = []
-
+    safe_model_name = model_name.replace("/", "_")
+    cache_path_factory = get_path(
+        config,
+        "cache.feature_template",
+        entity_type="proteins",
+        model_name=safe_model_name,
+    )
     # --- 1. 缓存命中阶段 ---
     if not force_regenerate:
         for pid, seq in zip(authoritative_ids, sequences):
             # 构造全局缓存路径
-            cache_template_str = get_path(
-                config, "data_structure.paths.cache.feature_template"
-            )
-            cache_path = Path(
-                str(cache_template_str).format(
-                    entity_type="proteins",
-                    model_name=model_name.replace("/", "_"),
-                    authoritative_id=pid,
-                )
-            )
+            cache_path = cache_path_factory(authoritative_id=pid)
 
             if cache_path.exists():
                 results_dict[pid] = torch.load(cache_path, map_location="cpu")
@@ -153,16 +150,7 @@ def extract_esm_protein_embeddings(
                 results_dict[pid] = sequence_level_repr
 
                 # b. 保存到全局缓存
-                cache_template_str = get_path(
-                    config, "data_structure.paths.cache.feature_template"
-                )
-                cache_path = Path(
-                    str(cache_template_str).format(
-                        entity_type="proteins",
-                        model_name=model_name.replace("/", "_"),
-                        authoritative_id=pid,
-                    )
-                )
+                cache_path = cache_path_factory(authoritative_id=pid)
                 rt.ensure_path_exists(cache_path)
                 torch.save(sequence_level_repr, cache_path)
 
@@ -198,6 +186,7 @@ def _get_chemberta_model_and_tokenizer(
 # ------------------- 嵌入提取核心逻辑 -------------------
 
 
+# TODO: 添加lru装饰器
 def extract_chemberta_molecule_embeddings(
     authoritative_ids: List[int],  # <-- 签名变化: 接收 CID 列表
     smiles_list: List[str],  # <-- 签名变化: 与ID一一对应
@@ -232,22 +221,19 @@ def extract_chemberta_molecule_embeddings(
     results_dict: Dict[int, torch.Tensor] = {}
     missed_ids = []
     missed_smiles = []
-
+    safe_model_name = model_name.replace("/", "_")
+    cache_path_factory = get_path(
+        config,
+        "cache.feature_template",
+        entity_type="molecules",
+        model_name=safe_model_name,
+    )
     # --- 1. 缓存命中阶段 ---
     if not force_regenerate:
         for cid, smiles in zip(authoritative_ids, smiles_list):
-            cache_template_str = get_path(
-                config, "data_structure.paths.cache.feature_template"
-            )
             # model_name中包含'/'，需要替换为'_'以作为合法的文件夹名
-            safe_model_name = model_name.replace("/", "_")
-            cache_path = Path(
-                str(cache_template_str).format(
-                    entity_type="molecules",
-                    model_name=safe_model_name,
-                    authoritative_id=cid,
-                )
-            )
+
+            cache_path: Path = cache_path_factory(authoritative_id=cid)
 
             if cache_path.exists():
                 results_dict[cid] = torch.load(cache_path, map_location="cpu")
@@ -294,17 +280,7 @@ def extract_chemberta_molecule_embeddings(
                 results_dict[cid] = embedding
 
                 # b. 保存到全局缓存
-                cache_template_str = get_path(
-                    config, "data_structure.paths.cache.feature_template"
-                )
-                safe_model_name = model_name.replace("/", "_")
-                cache_path = Path(
-                    str(cache_template_str).format(
-                        entity_type="molecules",
-                        model_name=safe_model_name,
-                        authoritative_id=cid,
-                    )
-                )
+                cache_path = cache_path_factory(authoritative_id=cid)
                 rt.ensure_path_exists(cache_path)
                 torch.save(embedding, cache_path)
 

@@ -38,6 +38,13 @@ class BaseDataProcessor(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def _standardize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        【新抽象方法】子类必须实现，负责将原始列名映射到内部标准列名。
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def _transform_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         【新抽象方法】子类必须实现这个方法，负责所有特定于源的转换逻辑。
@@ -58,7 +65,7 @@ class BaseDataProcessor(ABC):
         raw_df = self._load_raw_data()
         if raw_df.empty:
             return pd.DataFrame()
-
+        standardized_df = self._standardize_columns(raw_df)
         # --- 2. 【核心变化】执行全局ID验证 ---
         print(
             f"--- [{self.__class__.__name__}] Performing ID whitelist filtering... ---"
@@ -66,7 +73,7 @@ class BaseDataProcessor(ABC):
         schema = self.config.data_structure.schema.internal.authoritative_dti
 
         # a. 验证 UniProt IDs
-        all_pids = set(raw_df[schema.protein_id].dropna().unique())
+        all_pids = set(standardized_df[schema.protein_id].dropna().unique())
         valid_pids = get_human_uniprot_whitelist(all_pids, self.config)
         df_filtered = raw_df[raw_df[schema.protein_id].isin(valid_pids)]
 

@@ -135,6 +135,18 @@ class IDMapper:
     def num_total_entities(self) -> int:
         return self.num_molecules + self.num_proteins
 
+    @property
+    def sorted_drug_cids(self) -> List[int]:
+        return self._sorted_drugs
+
+    @property
+    def sorted_ligand_cids(self) -> List[int]:
+        return self._sorted_ligands
+
+    @property
+    def sorted_protein_ids(self) -> List[str]:
+        return self._sorted_proteins
+
     def get_ordered_smiles(self) -> List[str]:
         """按 [drugs, ligands] 的逻辑ID顺序返回SMILES列表。"""
         ordered_cids = self._sorted_drugs + self._sorted_ligands

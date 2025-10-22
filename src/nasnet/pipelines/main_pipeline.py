@@ -1,6 +1,6 @@
 import pickle as pkl
 import random
-from typing import Dict, List
+from typing import Callable, Dict, List
 
 import numpy as np
 import pandas as pd
@@ -45,11 +45,11 @@ def process_data(
             restart_flag=restart_flag,
         )
     )
-    dataframes_to_process = [base_df] + extra_dfs
+    all_dfs_for_pairs = [base_df] + (extra_dfs if extra_dfs else [])
     _stage_4_split_data_and_build_graphs(
         config,
         id_mapper,
-        dataframes_to_process,
+        all_dfs_for_pairs,
         dl_similarity_matrix,
         prot_similarity_matrix,
     )
@@ -68,9 +68,9 @@ def _stage_2_generate_features(
 
     if not final_features_path.exists() or restart_flag:
         # 1. 从 id_mapper 获取有序的权威ID和序列/SMILES列表
-        ordered_cids = id_mapper._sorted_drugs + id_mapper._sorted_ligands
+        ordered_cids = id_mapper.sorted_drug_cids + id_mapper.sorted_ligand_cids
         ordered_smiles = id_mapper.get_ordered_smiles()
-        ordered_pids = id_mapper._sorted_proteins
+        ordered_pids = id_mapper.sorted_protein_ids
         ordered_sequences = id_mapper.get_ordered_sequences()
 
         # 2. 调用新的特征提取器，获取特征字典
@@ -195,56 +195,86 @@ def _generate_or_load_embeddings(
     return features_dict
 
 
+# ... (imports)
+
+
+# 新增的模板函数
+def _cached_operation(
+    config: "AppConfig",
+    file_key: str,
+    restart_flag: bool,
+    calculation_func: Callable,
+    func_kwargs: dict,
+    operation_name: str = "operation",
+) -> any:
+    """
+    一个通用的、带缓存的模板函数，用于执行任何可能耗时的计算。
+
+    Args:
+        config: 全局配置。
+        file_key: 用于在config中查找缓存文件路径的短键。
+        restart_flag: 是否强制重新计算。
+        calculation_func: 如果缓存未命中，要调用的计算函数。
+        func_kwargs: 要传递给计算函数的关键字参数字典。
+        operation_name: 用于日志打印的操作名称。
+
+    Returns:
+        any: 计算或加载的结果。
+    """
+    matrix_path = get_path(config, file_key)
+
+    if not matrix_path.exists() or restart_flag:
+        print(f"\n--> Cache miss for '{operation_name}'. Calculating...")
+        # 【核心】动态调用计算函数
+        result = calculation_func(**func_kwargs)
+
+        rt.ensure_path_exists(matrix_path)
+        with open(matrix_path, "wb") as f:
+            pkl.dump(result, f)
+        print(
+            f"--> Result for '{operation_name}' saved to cache: '{matrix_path.name}'."
+        )
+    else:
+        print(
+            f"\n--> Cache hit for '{operation_name}'. Loading from '{matrix_path.name}'..."
+        )
+        with open(matrix_path, "rb") as f:
+            result = pkl.load(f)
+
+    return result
+
+
 def _stage_3_calculate_similarity_matrices(
-    config: AppConfig,
+    config: "AppConfig",
     molecule_embeddings: torch.Tensor,
     protein_embeddings: torch.Tensor,
     restart_flag: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
-    checkpoint_files_dict = {
-        "molecule_similarity_matrix": "processed.common.similarity_matrices.molecule",
-        "protein_similarity_matrix": "processed.common.similarity_matrices.protein",
-    }
-    if (
-        not rt.check_files_exist(config, *checkpoint_files_dict.values())
-        or restart_flag
-    ):
-        print("\n--- [Stage 3b] Calculating similarity matrices... ---")
-        dl_similarity_matrix = sim_calculators.calculate_embedding_similarity(
-            embeddings=molecule_embeddings, batch_size=1024
-        )
-        prot_similarity_matrix = sim_calculators.calculate_embedding_similarity(
-            embeddings=protein_embeddings, batch_size=1024
-        )
-        # --- 保存相似度矩阵 ---
-        mol_sim_path = get_path(config, "processed.common.similarity_matrices.molecule")
-        # 【核心修正】在写入文件之前，确保其父目录存在！
-        rt.ensure_path_exists(mol_sim_path)
-        # 现在可以安全地写入了
-        with open(mol_sim_path, "wb") as f:
-            pkl.dump(dl_similarity_matrix, f)
+    """
+    【V3.1 模板化重构版】计算所有必需的相似性矩阵。
+    """
+    print("\n--- [Stage 3] Calculating similarity matrices... ---")
 
-        # b. 获取蛋白质相似度矩阵的路径
-        prot_sim_path = get_path(config, "processed.common.similarity_matrices.protein")
-        # 【核心修正】同样确保目录存在
-        rt.ensure_path_exists(prot_sim_path)
-        with open(prot_sim_path, "wb") as f:
-            pkl.dump(prot_similarity_matrix, f)
-        print("-> Similarity matrices saved successfully.")
-    else:
-        print("\n--- [Stage 3b] Loading similarity matrices from cache... ---")
-        dl_similarity_matrix = pkl.load(
-            open(
-                get_path(config, checkpoint_files_dict["molecule_similarity_matrix"]),
-                "rb",
-            )
-        )
-        prot_similarity_matrix = pkl.load(
-            open(
-                get_path(config, checkpoint_files_dict["protein_similarity_matrix"]),
-                "rb",
-            )
-        )
+    # 1. 计算分子相似性矩阵
+    dl_similarity_matrix = _cached_operation(
+        config=config,
+        file_key="processed.common.similarity_matrices.molecule",
+        restart_flag=restart_flag,
+        calculation_func=sim_calculators.calculate_embedding_similarity,
+        func_kwargs={"embeddings": molecule_embeddings, "batch_size": 1024},
+        operation_name="Molecule Similarity",
+    )
+
+    # 2. 计算蛋白质相似性矩阵
+    prot_similarity_matrix = _cached_operation(
+        config=config,
+        file_key="processed.common.similarity_matrices.protein",
+        restart_flag=restart_flag,
+        calculation_func=sim_calculators.calculate_embedding_similarity,
+        func_kwargs={"embeddings": protein_embeddings, "batch_size": 1024},
+        operation_name="Protein Similarity",
+    )
+
     return dl_similarity_matrix, prot_similarity_matrix
 
 
