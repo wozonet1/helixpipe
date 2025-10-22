@@ -1,10 +1,11 @@
+# 文件: src/nasnet/data_processing/datasets/gtopdb_processor.py (最终架构版)
 from typing import TYPE_CHECKING
 
 import pandas as pd
 import research_template as rt
 
 from nasnet.configs import register_all_schemas
-from nasnet.utils import get_path, log_step, register_hydra_resolvers
+from nasnet.utils import get_path, register_hydra_resolvers
 
 # 导入基类和所有需要的辅助模块
 from .base_processor import BaseDataProcessor
@@ -13,21 +14,22 @@ if TYPE_CHECKING:
     from nasnet.configs import AppConfig
 
 
+from nasnet.configs import AppConfig
+
+
 class GtopdbProcessor(BaseDataProcessor):
     """
     一个专门负责处理Guide to PHARMACOLOGY原始数据的处理器。
-    【V2 重构版】：实现了清晰的加载/转换分离，并采用了带日志的流水线步骤。
+    【V5 - 最终架构版】：严格实现BaseProcessor定义的六步流水线。
     """
 
-    def _load_raw_data(self) -> pd.DataFrame:
-        """
-        【契约实现】只负责从GtoPdb的原始CSV文件中加载数据，并进行初步合并。
-        """
-        print(
-            f"--- [{self.__class__.__name__}] Step: Loading raw data from CSVs... ---"
-        )
-        gtopdb_schema = self.config.data_structure.schema.external.gtopdb
+    def __init__(self, config: AppConfig):
+        super().__init__(config)
+        self.external_schema = self.config.data_structure.schema.external.gtopdb
 
+    # --- 步骤 1: 实现数据加载 ---
+    def _load_raw_data(self) -> pd.DataFrame:
+        """从GtoPdb的原始CSV文件中加载数据并进行初步合并。"""
         try:
             interactions_path = get_path(self.config, "raw.interactions")
             ligands_path = get_path(self.config, "raw.ligands")
@@ -38,59 +40,54 @@ class GtopdbProcessor(BaseDataProcessor):
         except FileNotFoundError as e:
             raise FileNotFoundError(f"GtoPdb原始CSV文件未找到! {e}")
 
-        # 清洗配体信息 (只保留有SMILES和CID的)
+        # 在合并前，预先过滤掉没有SMILES或CID的配体，以减小处理体积
         ligands_df.dropna(
             subset=[
-                gtopdb_schema.ligands.molecule_sequence,
-                gtopdb_schema.ligands.molecule_id,
+                self.external_schema.ligands.molecule_sequence,
+                self.external_schema.ligands.molecule_id,
             ],
             inplace=True,
         )
 
         # 合并交互数据和配体数据
-        df = pd.merge(
+        merged_df = pd.merge(
             interactions_df,
             ligands_df,
-            left_on=gtopdb_schema.interactions.ligand_id,
-            right_on=gtopdb_schema.ligands.ligand_id,
+            left_on=self.external_schema.interactions.ligand_id,
+            right_on=self.external_schema.ligands.ligand_id,
         )
-        print(f"--> Loaded and merged {len(df)} raw rows for transformation.")
-        return df
+        return merged_df
 
-    def _standardize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+    # --- 步骤 2: 实现关系提取 ---
+    def _extract_relations(self, raw_data: pd.DataFrame) -> pd.DataFrame:
         """
-        【契约实现】【V2 修正版】
-        只重命名那些在 _load_raw_data 阶段就已经存在的列。
-        'protein_sequence' 列此时还不存在，所以我们不在这里处理它。
+        对于GtoPdb，加载的数据已经是关系格式，直接返回即可。
         """
-        if self.verbose > 0:
-            print(
-                f"--- [{self.__class__.__name__}] Step: Standardizing initial column names... ---"
-            )
+        return raw_data
 
-        gtopdb_schema = self.config.data_structure.schema.external.gtopdb
-        internal_schema = self.config.data_structure.schema.internal.authoritative_dti
-
-        # GtoPdb的UniProt ID可能包含多个，在这里处理
-        df[internal_schema.protein_id] = (
-            df[gtopdb_schema.interactions.target_id].str.split("|").str[0]
+    # --- 步骤 3: 实现ID和结构标准化 ---
+    def _standardize_ids(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        重命名ID和SMILES列，并清洗UniProt ID格式。
+        """
+        # 清洗UniProt ID (e.g., 'P12345|...')
+        df[self.schema.protein_id] = (
+            df[self.external_schema.interactions.target_id].str.split("|").str[0]
         )
 
-        df.rename(
+        # 重命名列
+        return df.rename(
             columns={
-                gtopdb_schema.ligands.molecule_id: internal_schema.molecule_id,
-                gtopdb_schema.ligands.molecule_sequence: internal_schema.molecule_sequence,
-                # 注意：不在这里重命名 'protein_sequence'
-            },
-            inplace=True,
+                self.external_schema.ligands.molecule_id: self.schema.molecule_id,
+                self.external_schema.ligands.molecule_sequence: self.schema.molecule_sequence,
+            }
         )
-        return df
 
-    # --- 数据转换的子步骤，由 @log_step 装饰 ---
-
-    @log_step("Filter Endogenous & by Affinity")
-    def _transform_step_1_filter(self, df: pd.DataFrame) -> pd.DataFrame:
-        """转换步骤1：筛选内源性交互并根据亲和力阈值过滤。"""
+    # --- 步骤 4 (覆盖): 实现业务规则过滤 ---
+    def _filter_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        【覆盖实现 - 诊断版】执行特定于GtoPdb的业务规则过滤，并增加详细日志。
+        """
         gtopdb_schema = self.config.data_structure.schema.external.gtopdb
 
         # a. 筛选内源性交互
@@ -113,70 +110,6 @@ class GtopdbProcessor(BaseDataProcessor):
         )
         df.dropna(subset=[gtopdb_schema.interactions.affinity], inplace=True)
         return df[df[gtopdb_schema.interactions.affinity] <= affinity_threshold].copy()
-
-    @log_step("Finalize and De-duplicate")
-    def _transform_step_2_finalize(self, df: pd.DataFrame) -> pd.DataFrame:
-        internal_schema = self.config.data_structure.schema.internal.authoritative_dti
-
-        # GtoPdb的SMILES是自带的，所以我们保留它
-        final_df = df[
-            [
-                internal_schema.molecule_id,
-                internal_schema.protein_id,
-                internal_schema.molecule_sequence,  # <-- 保留SMILES
-            ]
-        ].copy()
-
-        final_df[internal_schema.label] = 1
-        # 【新增】添加空的Sequence占位列
-        final_df[internal_schema.protein_sequence] = None
-
-        final_df[internal_schema.molecule_id] = (
-            pd.to_numeric(final_df[internal_schema.molecule_id], errors="coerce")
-            .dropna()
-            .astype(int)
-        )
-
-        final_df.drop_duplicates(
-            subset=[internal_schema.molecule_id, internal_schema.protein_id],
-            inplace=True,
-        )
-
-        # 重新排列以符合标准
-        final_cols = [
-            internal_schema.molecule_id,
-            internal_schema.protein_id,
-            internal_schema.molecule_sequence,
-            internal_schema.protein_sequence,
-            internal_schema.label,
-        ]
-        return final_df.reindex(columns=final_cols)
-
-    def _transform_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        【契约实现】GtoPdb数据转换流水线的编排器。
-        """
-        if self.verbose > 0:
-            print(
-                f"--- [{self.__class__.__name__}] Step: Transforming {len(df)} whitelisted rows... ---"
-            )
-
-        pipeline = [
-            self._transform_step_1_filter,
-            self._transform_step_2_finalize,
-        ]
-
-        for step_func in pipeline:
-            df = step_func(df)
-            if df.empty:
-                print(
-                    f"  - Pipeline halted after step '{step_func.__name__}' because DataFrame became empty."
-                )
-                return pd.DataFrame()
-
-        if self.verbose > 0:
-            print(f"\n✅ [{self.__class__.__name__}] Transformation pipeline complete.")
-        return df
 
 
 if __name__ == "__main__":

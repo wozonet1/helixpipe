@@ -1,123 +1,181 @@
-# 文件: src/data_processing/base_processor.py (V3 - 终极解耦版)
+# 文件: src/nasnet/data_processing/datasets/base_processor.py (最终流水线编排版)
 
 from abc import ABC, abstractmethod
-from pathlib import Path
+from typing import Any, List
 
 import pandas as pd
+
+# 【注意】我们不再需要 log_pipeline_step 装饰器，因为日志将直接在 process 中处理
 import research_template as rt
 
-from nasnet.typing import AppConfig
-from nasnet.utils import get_path, validate_authoritative_dti_file
-
-from ..services import get_human_uniprot_whitelist, get_valid_pubchem_cids
+from nasnet.configs import AppConfig
+from nasnet.data_processing.services import (
+    get_human_uniprot_whitelist,
+    get_valid_pubchem_cids,
+)
+from nasnet.utils import get_path
 
 
 class BaseDataProcessor(ABC):
+    """
+    【最终架构版 v2】数据处理器的抽象基类，使用模板方法和流水线编排风格。
+    """
+
     def __init__(self, config: AppConfig):
         self.config = config
         self.verbose = config.runtime.verbose
-        if self.verbose > 0:
-            print(
-                f"--- [{self.__class__.__name__}] Initialized (Verbose Level: {self.verbose}). ---"
-            )
-        else:
-            print(f"--- [{self.__class__.__name__}] Initialized. ---")
+        self.schema = self.config.data_structure.schema.internal.authoritative_dti
+        print(
+            f"--- [{self.__class__.__name__}] Initialized (Verbose Level: {self.verbose}). ---"
+        )
 
-    @property
-    def output_path(self) -> Path:
-        """
-        【契约实现】直接使用self.config来动态解析路径。
-        """
-        return get_path(self.config, "raw.authoritative_dti")
-
-    @abstractmethod
-    def _load_raw_data(self) -> pd.DataFrame:
-        """
-        【新抽象方法】子类必须实现这个方法，只负责从磁盘加载原始数据。
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def _standardize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        【新抽象方法】子类必须实现，负责将原始列名映射到内部标准列名。
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def _transform_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        【新抽象方法】子类必须实现这个方法，负责所有特定于源的转换逻辑。
-        它接收的是已经过白名单过滤的DataFrame。
-        """
-        raise NotImplementedError
+    # --- 模板方法 (Template Method) ---
 
     def process(self) -> pd.DataFrame:
         """
-        【V2 模板方法】外部统一入口，现在包含了ID验证的核心逻辑。
+        不可覆盖的最终处理流程。它以流水线风格编排所有数据处理步骤。
         """
-        output_target = self.output_path
+        output_target = get_path(self.config, "raw.authoritative_dti")
         if output_target.exists() and not self.config.runtime.force_restart:
+            if self.verbose > 0:
+                print(
+                    f"--> [Cache Hit] Loading processed data from: '{output_target.name}'"
+                )
             return pd.read_csv(output_target)
 
-        # --- 1. 加载原始数据 ---
-        raw_df = self._load_raw_data()
-        if raw_df.empty:
-            return pd.DataFrame()
-        standardized_df = self._standardize_columns(raw_df)
-        # --- 2. 【核心变化】执行全局ID验证 ---
+        # --- 流水线定义 ---
+        # 每个步骤都是一个元组 (step_name, step_function)
+        pipeline = [
+            ("Load Raw Data", self._load_raw_data),
+            ("Extract Relations", self._extract_relations),
+            ("Standardize IDs", self._standardize_ids),
+            ("Filter by Whitelist", self._filter_by_whitelist),
+            ("Filter Data", self._filter_data),
+            ("Finalize & Deduplicate Columns", self._finalize_columns),
+        ]
+
+        # --- 流水线执行 ---
+        # 'data' 变量将在流水线中流动，其类型可能会变化
+        data: Any = None
+
+        for step_name, step_func in pipeline:
+            if self.verbose > 0:
+                print(f"\n-> Entering Step: '{step_name}'...")
+                if self.verbose > 1 and isinstance(
+                    data, (pd.DataFrame, dict, list, set)
+                ):
+                    print(f"  - Input size: {len(data)} items")
+
+            # 执行步骤
+            data = step_func(data) if data is not None else step_func()
+
+            # 记录输出并检查是否为空
+            if isinstance(data, pd.DataFrame):
+                if self.verbose > 0:
+                    print(f"  - Output size: {len(data)} items")
+                if data.empty:
+                    print(
+                        f"  - Pipeline halted after step '{step_name}' because DataFrame became empty."
+                    )
+                    return pd.DataFrame()
+            elif data is None or (isinstance(data, (dict, list, set)) and not data):
+                print(
+                    f"  - Pipeline halted after step '{step_name}' because data became empty."
+                )
+                return pd.DataFrame()
+
+        # 确保最终结果是DataFrame
+        if not isinstance(data, pd.DataFrame):
+            raise TypeError(
+                f"The pipeline should end with a pandas DataFrame, but got {type(data)}."
+            )
+
+        final_df = data
+
+        # --- 保存与验证 ---
         print(
-            f"--- [{self.__class__.__name__}] Performing ID whitelist filtering... ---"
-        )
-        schema = self.config.data_structure.schema.internal.authoritative_dti
-
-        # a. 验证 UniProt IDs
-        all_pids = set(standardized_df[schema.protein_id].dropna().unique())
-        valid_pids = get_human_uniprot_whitelist(all_pids, self.config)
-        df_filtered = raw_df[raw_df[schema.protein_id].isin(valid_pids)]
-
-        # b. 验证 PubChem CIDs
-        all_cids = set(df_filtered[schema.molecule_id].dropna().unique())
-        valid_cids = get_valid_pubchem_cids(all_cids, self.config)
-        df_filtered = df_filtered[df_filtered[schema.molecule_id].isin(valid_cids)]
-
-        print(f"--> After ID whitelisting, {len(df_filtered)} rows remain.")
-        if df_filtered.empty:
-            return pd.DataFrame()
-
-        # --- 3. 执行特定于子类的转换逻辑 ---
-        final_df = self._transform_data(df_filtered)
-
-        if final_df is None or final_df.empty:
-            return pd.DataFrame()
-
-        print(
-            f"--> [{self.__class__.__name__}] Saving processed data to cache: '{output_target.name}'..."
+            f"\n--> [{self.__class__.__name__}] Saving processed data to cache: '{output_target.name}'..."
         )
         rt.ensure_path_exists(output_target)
         final_df.to_csv(output_target, index=False)
 
-        self.validate(final_df, output_target, is_cached=False)
+        if self.verbose > 0:
+            print(
+                f"--- [{self.__class__.__name__}] Final authoritative file is ready. ---"
+            )
+            expected_cols_subset = {
+                self.schema.molecule_id,
+                self.schema.protein_id,
+                self.schema.label,
+            }
+            assert expected_cols_subset.issubset(set(final_df.columns))
 
         return final_df
 
-    def validate(self, df: pd.DataFrame, file_path: Path, is_cached: bool = False):
-        """验证工具函数，现在也接收文件路径用于删除损坏文件。"""
-        # ... (validate的逻辑基本不变，只是错误处理时使用传入的file_path)
-        if self.verbose == 0:  # 0级时完全跳过验证的打印
-            return
+    # --- 子类需要实现的抽象方法 (现在带有输入参数签名) ---
 
-        if is_cached:
-            print(
-                f"--- [{self.__class__.__name__}] Running quick validation on cached data... ---"
-            )
-        else:
-            print(
-                f"\n--- [{self.__class__.__name__}] Running full validation on newly processed data... ---"
-            )
-        try:
-            validate_authoritative_dti_file(self.config, df=df, verbose=self.verbose)
-        except Exception as e:
-            if file_path.exists():
-                file_path.unlink()
-            raise e
+    @abstractmethod
+    def _load_raw_data(self) -> Any:
+        """从磁盘加载特定格式的原始数据。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def _extract_relations(self, raw_data: Any) -> pd.DataFrame:
+        """从原始数据中解析并提取出关系DataFrame。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def _standardize_ids(self, df: pd.DataFrame) -> pd.DataFrame:
+        """对DataFrame中的ID列进行标准化。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def _filter_data(self) -> Any:
+        """应用data_params里的进行筛选"""
+        raise NotImplementedError
+
+    # --- Base类提供的通用、可复用的步骤 ---
+
+    def _filter_by_whitelist(self, df: pd.DataFrame) -> pd.DataFrame:
+        # ... (此方法代码不变) ...
+        # a. 验证 UniProt IDs
+        all_pids = set(df[self.schema.protein_id].dropna().unique())
+        valid_pids = get_human_uniprot_whitelist(all_pids, self.config)
+        df = df[df[self.schema.protein_id].isin(valid_pids)]
+        if df.empty:
+            return pd.DataFrame()
+
+        # b. 验证 PubChem CIDs
+        all_cids = set(df[self.schema.molecule_id].dropna().unique())
+        valid_cids = get_valid_pubchem_cids(all_cids, self.config)
+        df = df[df[self.schema.molecule_id].isin(valid_cids)]
+
+        return df
+
+    def _get_final_columns(self) -> List[str]:
+        # ... (此方法代码不变) ...
+        return [
+            self.schema.molecule_id,
+            self.schema.protein_id,
+            self.schema.label,
+            # TODO: 加入relation
+        ]
+
+    def _finalize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        # ... (此方法代码不变) ...
+        if self.schema.label not in df.columns:
+            df[self.schema.label] = 1
+
+        final_cols = self._get_final_columns()
+        existing_cols = [col for col in final_cols if col in df.columns]
+        # 允许 'relation_type' 等额外列存在
+        for col in df.columns:
+            if col not in existing_cols:
+                existing_cols.append(col)
+
+        final_df = df[existing_cols].copy()
+        final_df.drop_duplicates(
+            subset=[self.schema.molecule_id, self.schema.protein_id], inplace=True
+        )
+
+        return final_df

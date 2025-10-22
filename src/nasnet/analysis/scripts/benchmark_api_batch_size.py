@@ -1,18 +1,18 @@
 # 文件: src/nasnet/analysis/scripts/benchmark_api_batch_sizes.py (全新)
 
 import argparse
+import gzip
 import random
-import sys
 import time
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import research_template as rt
+from tqdm import tqdm
 
 # --- 动态路径设置 ---
 try:
-    PROJECT_ROOT = Path(__file__).resolve().parents[3]
-    sys.path.insert(0, str(PROJECT_ROOT / "src"))
+    PROJECT_ROOT = rt.get_project_root()
 except IndexError:
     raise RuntimeError("Could not determine project root.")
 
@@ -134,6 +134,52 @@ def get_pubchem_cid_pool(size=2000) -> list:
     return [random.randint(1, 100000) for _ in range(size)]
 
 
+def load_uniprot_id_pool_from_assets() -> list:
+    """从 data/assets/uniprotkb_proteome...tsv 文件中加载真实的UniProt ID。"""
+    filepath = PROJECT_ROOT / "data" / "assets" / "uniprotkb_proteome_UP000005640.tsv"
+    if not filepath.exists():
+        raise FileNotFoundError(f"UniProt proteome file not found at: {filepath}")
+
+    print(f"\n--> Loading REAL UniProt ID pool from: {filepath.name}...")
+    df = pd.read_csv(filepath, sep="\t", usecols=["Entry", "Reviewed", "Organism (ID)"])
+    df_human_reviewed = df[
+        (df["Organism (ID)"] == 9606) & (df["Reviewed"] == "reviewed")
+    ]
+    ids = df_human_reviewed["Entry"].unique().tolist()
+
+    print(f"--> Loaded {len(ids)} unique, reviewed, human UniProt IDs.")
+    return ids
+
+
+def load_pubchem_cid_pool_from_assets(sample_size: int = 50000) -> list:
+    """从 data/assets/CID-Synonym-filtered.gz 中随机抽样真实的PubChem CID。"""
+    filepath = PROJECT_ROOT / "data" / "assets" / "CID-Synonym-filtered.gz"
+    if not filepath.exists():
+        raise FileNotFoundError(f"PubChem synonym file not found at: {filepath}")
+
+    print(f"\n--> Loading REAL PubChem CID pool by sampling from: {filepath.name}...")
+
+    # 由于文件巨大，我们不读取全部，而是进行随机抽样
+    cids = set()
+    with gzip.open(filepath, "rt", encoding="utf-8") as f:
+        # 估算总行数以进行合理的随机抽样
+        estimated_total = 300_000_000
+        # 我们希望采样大约0.1%的行来获得足够多的ID
+        sampling_rate = sample_size / estimated_total
+
+        for line in tqdm(f, total=estimated_total, desc="   - Sampling CIDs"):
+            if random.random() < sampling_rate:
+                try:
+                    cid_str, _ = line.strip().split("\t", 1)
+                    cids.add(int(cid_str))
+                except (ValueError, IndexError):
+                    continue
+
+    ids = list(cids)
+    print(f"--> Sampled {len(ids)} unique PubChem CIDs.")
+    return ids
+
+
 # ==============================================================================
 # 3. 主协调函数
 # ==============================================================================
@@ -141,7 +187,7 @@ def get_pubchem_cid_pool(size=2000) -> list:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Benchmark API batch sizes for UniProt and PubChem."
+        description="Benchmark API batch sizes using real IDs from data/assets."
     )
     parser.add_argument(
         "target", choices=["uniprot", "pubchem"], help="The API to benchmark."
@@ -152,39 +198,43 @@ def main():
     print(" " * 20 + f"STARTING BATCH SIZE BENCHMARK FOR: {args.target.upper()}")
     print("=" * 80)
 
-    # --- 配置测试参数 ---
-    BATCH_SIZES_TO_TEST = [25, 50, 100, 200, 400, 500]
+    BATCH_SIZES_TO_TEST = [50, 100, 200, 400, 500]
     NUM_TRIALS_PER_SIZE = 3
 
+    # --- 自动加载ID池 ---
     if args.target == "uniprot":
-        id_pool = get_uniprot_id_pool()
+        id_pool = load_uniprot_id_pool_from_assets()
         benchmark_func = benchmark_uniprot
+        success_col_name = "api_response_rate_%"
     else:  # pubchem
-        id_pool = get_pubchem_cid_pool()
+        id_pool = load_pubchem_cid_pool_from_assets()
         benchmark_func = benchmark_pubchem
+        success_col_name = "success_rate_%"
 
-    # --- 运行基准测试 ---
     all_results = []
     for size in BATCH_SIZES_TO_TEST:
         result = benchmark_func(size, NUM_TRIALS_PER_SIZE, id_pool)
         all_results.append(result)
 
-    # --- 打印最终报告 ---
     print("\n\n" + "=" * 80)
     print(" " * 30 + "Benchmark Summary")
     print("=" * 80)
 
     results_df = pd.DataFrame(all_results)
-    # 计算吞吐量 (每秒处理的ID数)
     results_df["throughput_id_per_sec"] = (
         results_df["batch_size"] / results_df["avg_time_s"]
     )
 
+    # 调整列名以反映新的成功率定义
+    if args.target == "uniprot":
+        results_df.rename(
+            columns={"api_response_rate_%": "response_rate_%"}, inplace=True
+        )
+
     print(results_df.to_string(index=False, float_format="%.2f"))
 
     # --- 推荐最佳选择 ---
-    # 筛选出成功率高于95%的选项
-    reliable_options = results_df[results_df["success_rate_%"] > 95]
+    reliable_options = results_df[results_df[success_col_name] > 98]
     if not reliable_options.empty:
         best_choice = reliable_options.loc[
             reliable_options["throughput_id_per_sec"].idxmax()
@@ -192,12 +242,12 @@ def main():
         print("\n" + "=" * 80)
         print(f"🏆 Recommended Batch Size: {int(best_choice['batch_size'])}")
         print(
-            "   This size offers the best throughput while maintaining a high success rate (>95%)."
+            "   This size offers the best throughput while maintaining a high response rate (>98%)."
         )
     else:
         print("\n" + "=" * 80)
         print(
-            "⚠️ No batch size achieved a high success rate. Consider smaller sizes or check network stability."
+            "⚠️ No batch size achieved a high response rate. Check for API issues or network throttling."
         )
 
 

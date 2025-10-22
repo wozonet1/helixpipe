@@ -11,7 +11,8 @@ from nasnet.data_processing import (
     DataSplitter,
     GraphBuilder,
     IDMapper,
-    purify_dti_dataframe_parallel,
+    InteractionStore,
+    StructureProvider,
 )
 from nasnet.features import extractors, sim_calculators
 from nasnet.typing import AppConfig
@@ -29,24 +30,29 @@ def process_data(
     restart_flag = config.runtime.get("force_restart", False)
     if base_df is None or base_df.empty:
         raise ValueError("Cannot process data: Input dataframe list is empty.")
-
+    all_raw_interactions_dfs = [base_df] + (extra_dfs if extra_dfs else [])
+    interaction_store = InteractionStore(all_raw_interactions_dfs, config)  # noqa: F841
+    structure_provider = StructureProvider(config, proxies=None)
     id_mapper = IDMapper(base_df, extra_dfs, config)
-    id_mapper.enrich_structures(config=config, force_restart=restart_flag)
+    # === Stage 2: 结构丰富化 (Enrichment) ===
+    all_pids = list(id_mapper.uniprot_to_id.keys())
+    all_cids = list(id_mapper.cid_to_id.keys())
 
-    # --- 【新】Stage 1.7: 全局后置净化 (Global Post-Purification) ---
-    print("\n--- [Stage 1.7] Performing global post-enrichment purification... ---")
-    # 从IDMapper中重建一个包含所有实体和最新结构信息的完整DataFrame
-    all_entities_df = id_mapper.to_dataframe()  # 假设IDMapper有这个新方法
+    complete_sequences = structure_provider.get_sequences(
+        all_pids, force_restart=restart_flag
+    )
+    complete_smiles = structure_provider.get_smiles(
+        all_cids, force_restart=restart_flag
+    )
 
-    # 对这个完整的数据集进行最终的、全局的净化
-    purified_entities_df = purify_dti_dataframe_parallel(all_entities_df, config)
+    # 注入数据
+    id_mapper.update_sequences(complete_sequences)
+    id_mapper.update_smiles(complete_smiles)
+    # --- 后续阶段现在接收 id_mapper 对象 ---
 
-    # 用净化后的数据，重新构建或更新IDMapper，确保其内部状态是最终干净的
-    id_mapper.update_from_dataframe(purified_entities_df)  # 假设IDMapper有这个新方法
+    # 直接进入下游处理，现在的id_mapper已经是最终状态
     if config.runtime.verbose > 0:
         id_mapper.save_maps_for_debugging(config)
-
-    # --- 后续阶段现在接收 id_mapper 对象 ---
 
     molecule_embeddings, protein_embeddings = _stage_2_generate_features(
         config, id_mapper, restart_flag=restart_flag
@@ -60,15 +66,15 @@ def process_data(
             restart_flag=restart_flag,
         )
     )
-    all_positive_pairs_df = purified_entities_df[purified_entities_df["Label"] == 1]
-    _stage_4_split_data_and_build_graphs(
-        config,
-        id_mapper,
-        [all_positive_pairs_df],  # 传递一个包含所有干净正样本的DataFrame
-        dl_similarity_matrix,
-        prot_similarity_matrix,
-    )
-    print("\n✅ All data processing stages completed successfully!")
+    # all_positive_pairs_df = purified_entities_df[purified_entities_df["Label"] == 1]
+    # _stage_4_split_data_and_build_graphs(
+    #     config,
+    #     id_mapper,
+    #     [all_positive_pairs_df],  # 传递一个包含所有干净正样本的DataFrame
+    #     dl_similarity_matrix,
+    #     prot_similarity_matrix,
+    # )
+    # print("\n✅ All data processing stages completed successfully!")
 
 
 def _stage_2_generate_features(
@@ -226,27 +232,37 @@ def _stage_3_calculate_similarity_matrices(
     # a. 首先，获取最终的缓存文件路径
     mol_sim_path = get_path(config, "processed.common.similarity_matrices.molecule")
 
-    # b. 然后，将路径和计算逻辑传递给通用缓存函数
-    dl_similarity_matrix = rt.run_cached_operation(
+    # 分子
+    def mol_sim_calculator_wrapper_final(ids_to_fetch):
+        matrix = sim_calculators.calculate_embedding_similarity(molecule_embeddings)
+        return {"matrix": matrix}  # 返回一个带固定键的字典
+
+    mol_sim_result = rt.run_cached_operation(
         cache_path=mol_sim_path,
-        calculation_func=sim_calculators.calculate_embedding_similarity,
-        func_kwargs={"embeddings": molecule_embeddings, "batch_size": 1024},
+        calculation_func=mol_sim_calculator_wrapper_final,
+        ids_to_process=["matrix"],  # 我们现在请求 "matrix" 这个键
         force_restart=restart_flag,
-        operation_name="Molecule Similarity",
+        operation_name="Molecule Similarity Matrix",
         verbose=verbose_level,
     )
+    dl_similarity_matrix = mol_sim_result["matrix"]
 
-    # 2. 计算蛋白质相似性矩阵
+    # 蛋白质
+    def prot_sim_calculator_wrapper_final(ids_to_fetch):
+        matrix = sim_calculators.calculate_embedding_similarity(protein_embeddings)
+        return {"matrix": matrix}
+
     prot_sim_path = get_path(config, "processed.common.similarity_matrices.protein")
 
-    prot_similarity_matrix = rt.run_cached_operation(
+    prot_sim_result = rt.run_cached_operation(
         cache_path=prot_sim_path,
-        calculation_func=sim_calculators.calculate_embedding_similarity,
-        func_kwargs={"embeddings": protein_embeddings, "batch_size": 1024},
+        calculation_func=prot_sim_calculator_wrapper_final,
+        ids_to_process=["matrix"],
         force_restart=restart_flag,
-        operation_name="Protein Similarity",
+        operation_name="Protein Similarity Matrix",
         verbose=verbose_level,
     )
+    prot_similarity_matrix = prot_sim_result["matrix"]
 
     return dl_similarity_matrix, prot_similarity_matrix
 

@@ -3,15 +3,16 @@
 # 从各个具体的服务模块中，导入我们希望公开的核心功能
 from .canonicalizer import (
     canonicalize_smiles,
-    fetch_sequences_from_uniprot,
-    fetch_smiles_from_pubchem,
 )
+from .filter import filter_molecules_by_properties
 from .graph_builder import GraphBuilder
 from .id_mapper import IDMapper
 from .id_validation_service import get_human_uniprot_whitelist, get_valid_pubchem_cids
+from .interaction_store import InteractionStore
 from .loaders import create_global_id_to_type_map, create_global_to_local_maps
-from .purifiers import filter_molecules_by_properties, purify_dti_dataframe_parallel
+from .purifiers import purify_dti_dataframe_parallel
 from .splitter import DataSplitter
+from .structure_provider import StructureProvider
 
 # ... 其他您希望暴露的服务 ...
 
@@ -27,6 +28,6 @@ __all__ = [
     create_global_to_local_maps,
     create_global_id_to_type_map,
     canonicalize_smiles,
-    fetch_sequences_from_uniprot,
-    fetch_smiles_from_pubchem,
+    StructureProvider,
+    InteractionStore,
 ]

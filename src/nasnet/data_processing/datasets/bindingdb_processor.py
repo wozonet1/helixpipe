@@ -2,207 +2,137 @@
 
 import sys
 
+# --------------------------------------------------------------------------
+# 步骤 2: 定义流水线化的BindingDB处理器
+# --------------------------------------------------------------------------
+# 文件: src/nasnet/data_processing/datasets/bindingdb_processor.py (最终模板方法版)
 import pandas as pd
 import research_template as rt
 from hydra import compose
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
-from nasnet.configs import register_all_schemas
-from nasnet.typing import AppConfig
-from nasnet.utils import get_path, log_step, register_hydra_resolvers
-
-from ..services.purifiers import (
+from nasnet.configs import AppConfig, register_all_schemas
+from nasnet.data_processing.datasets.base_processor import BaseDataProcessor
+from nasnet.data_processing.services import (
     filter_molecules_by_properties,
     purify_dti_dataframe_parallel,
 )
+from nasnet.utils import get_path, register_hydra_resolvers
 
 # 导入我们新创建的基类和需要的辅助模块
-from .base_processor import BaseDataProcessor
 
-# --------------------------------------------------------------------------
-# 步骤 2: 定义流水线化的BindingDB处理器
-# --------------------------------------------------------------------------
+# 文件: src/nasnet/data_processing/datasets/bindingdb_processor.py (最终差异化流水线版)
 
 
 class BindingdbProcessor(BaseDataProcessor):
     """
     一个专门负责处理BindingDB原始数据的处理器。
-    【V3 最终版】：实现了清晰的加载/转换分离，并保留了带日志的流水线步骤。
+    【V6 - 最终差异化流水线版】：
+    - 标准化所有可用列（ID和结构）。
+    - 在业务过滤步骤中，执行亲和力筛选和分子属性筛选。
     """
 
-    def _load_raw_data(self) -> pd.DataFrame:
-        """
-        【契约实现】只负责从BindingDB的原始TSV文件中加载数据，并进行最基础的、
-        特定于源的行过滤（例如物种）和列选择。
-        """
-        print(
-            f"--- [{self.__class__.__name__}] Step: Loading and Standardizing raw data... ---"
-        )
-        external_schema = self.config.data_structure.schema.external.bindingdb
+    def __init__(self, config: AppConfig):
+        super().__init__(config)
+        self.external_schema = self.config.data_structure.schema.external.bindingdb
 
+    # --- 步骤 1: 实现数据加载 (不变) ---
+    def _load_raw_data(self) -> pd.DataFrame:
         tsv_path = get_path(self.config, "raw.raw_tsv")
         if not tsv_path.exists():
             raise FileNotFoundError(f"Raw TSV file not found at '{tsv_path}'")
 
-        columns_to_read = [
-            external_schema.molecule_sequence,
-            external_schema.molecule_id,
-            external_schema.organism,
-            external_schema.ki,
-            external_schema.ic50,
-            external_schema.kd,
-            external_schema.protein_id,
-            external_schema.protein_sequence,
-        ]
-
+        columns_to_read = list(self.external_schema.values())
         chunk_iterator = pd.read_csv(
             tsv_path,
             sep="\t",
             on_bad_lines="warn",
-            usecols=columns_to_read,
+            usecols=lambda c: c in columns_to_read,
             low_memory=False,
             chunksize=100000,
         )
-
         loaded_chunks = []
-        # 根据verbose级别决定是否显示tqdm进度条
-        disable_tqdm = self.config.runtime.verbose == 0
+        disable_tqdm = self.verbose == 0
         for chunk in tqdm(
             chunk_iterator,
             desc="    - Reading & Pre-filtering Chunks",
             disable=disable_tqdm,
         ):
-            # 1. 筛选物种
-            chunk = chunk[chunk[external_schema.organism] == "Homo sapiens"].copy()
-
-            # 2. 替换空字符串为空值，并过滤掉关键ID缺失的行
-            chunk.replace(r"^\s*$", pd.NA, regex=True, inplace=True)
+            chunk = chunk[chunk[self.external_schema.organism] == "Homo sapiens"].copy()
             chunk.dropna(
                 subset=[
-                    external_schema.protein_id,
-                    external_schema.molecule_id,
+                    self.external_schema.protein_id,
+                    self.external_schema.molecule_id,
                 ],
                 inplace=True,
             )
-
             if not chunk.empty:
                 loaded_chunks.append(chunk)
-
-        if not loaded_chunks:
-            print("    - No valid data found after initial loading and filtering.")
-            return pd.DataFrame()
-
-        df = pd.concat(loaded_chunks, ignore_index=True)
-        print(f"--> Loaded  {len(df)} raw rows for processing.")
-        return df
-
-    def _standardize_columns(self, df) -> pd.DataFrame:
-        external_schema = self.config.data_structure.schema.external.bindingdb
-        internal_schema = self.config.data_structure.schema.internal.authoritative_dti
-        df.rename(
-            columns={
-                external_schema.molecule_id: internal_schema.molecule_id,
-                external_schema.protein_id: internal_schema.protein_id,
-                external_schema.molecule_sequence: internal_schema.molecule_sequence,
-                external_schema.protein_sequence: internal_schema.protein_sequence,
-            },
-            inplace=True,
+        return (
+            pd.concat(loaded_chunks, ignore_index=True)
+            if loaded_chunks
+            else pd.DataFrame()
         )
-        return df
 
-    @log_step("Process & Filter by Affinity")
-    def _transform_step_1_affinity(self, df: pd.DataFrame) -> pd.DataFrame:
-        """转换步骤1：处理亲和力数值并根据阈值进行过滤。"""
-        external_schema = self.config.data_structure.schema.external.bindingdb
+    # --- 步骤 2: 实现关系提取 (直通) ---
+    def _extract_relations(self, raw_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        对于BindingDB，原始数据已是关系格式，直接返回即可。
+        """
+        return raw_data
 
-        for aff_type in [external_schema.ki, external_schema.ic50, external_schema.kd]:
-            df[aff_type] = pd.to_numeric(
-                df[aff_type].astype(str).str.replace(">", "").str.replace("<", ""),
-                errors="coerce",
-            )
+    # --- 步骤 3: 实现ID和结构标准化 ---
+    def _standardize_ids(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        【职责明确】重命名所有与ID和结构相关的列，以符合内部标准。
+        """
+        return df.rename(
+            columns={
+                self.external_schema.molecule_id: self.schema.molecule_id,
+                self.external_schema.protein_id: self.schema.protein_id,
+                self.external_schema.molecule_sequence: self.schema.molecule_sequence,
+                self.external_schema.protein_sequence: self.schema.protein_sequence,
+            }
+        )
+
+    # --- 步骤 4 (覆盖): 实现业务规则过滤 ---
+    def _filter_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        【覆盖实现】执行特定于BindingDB的业务规则过滤：
+        1. 亲和力筛选。
+        2. 分子属性筛选。
+        """
+        # 1. 计算并筛选亲和力
+        for aff_type in [
+            self.external_schema.ki,
+            self.external_schema.ic50,
+            self.external_schema.kd,
+        ]:
+            if aff_type in df.columns:
+                df[aff_type] = pd.to_numeric(
+                    df[aff_type].astype(str).str.replace("[><]", "", regex=True),
+                    errors="coerce",
+                )
         df["affinity_nM"] = (
-            df[external_schema.ki]
-            .fillna(df[external_schema.kd])
-            .fillna(df[external_schema.ic50])
+            df[self.external_schema.ki]
+            .fillna(df[self.external_schema.kd])
+            .fillna(df[self.external_schema.ic50])
         )
 
         affinity_threshold = self.config.data_params.affinity_threshold_nM
         df.dropna(subset=["affinity_nM"], inplace=True)
+        df_filtered = df[df["affinity_nM"] <= affinity_threshold].copy()
+        if df_filtered.empty:
+            return pd.DataFrame()
 
-        return df[df["affinity_nM"] <= affinity_threshold].copy()
+        # 2. 分子属性筛选 (因为这是主数据集，我们应用此步骤)
+        #    这个函数需要标准的'SMILES'列名，这在_standardize_ids中已完成
+        #     需要使用SMILES,所以先purify一下,不影响之后structure_provider作为唯一事实
+        df_purified = purify_dti_dataframe_parallel(df_filtered, config=self.config)
+        df_final_filtered = filter_molecules_by_properties(df_purified, self.config)
 
-    @log_step("Purify Data (SMILES/Sequence)")
-    def _transform_step_3_purify(self, df: pd.DataFrame) -> pd.DataFrame:
-        """转换步骤3：调用通用的净化模块，进行并行的深度格式清洗。"""
-        return purify_dti_dataframe_parallel(df, self.config)
-
-    @log_step("Filter by Molecular Properties")
-    def _transform_step_4_filter_properties(self, df: pd.DataFrame) -> pd.DataFrame:
-        """转换步骤4：根据分子理化性质进行过滤。"""
-        return filter_molecules_by_properties(df, self.config)
-
-    @log_step("Finalize and De-duplicate")
-    def _transform_step_5_finalize(self, df: pd.DataFrame) -> pd.DataFrame:
-        """转换步骤5：添加Label，清理数据类型，并进行最终去重。"""
-        internal_schema = self.config.data_structure.schema.internal.authoritative_dti
-
-        # 选取最终需要的列
-        final_df = df[
-            [
-                internal_schema.molecule_id,
-                internal_schema.protein_id,
-                internal_schema.molecule_sequence,
-                internal_schema.protein_sequence,
-            ]
-        ].copy()
-
-        final_df[internal_schema.label] = 1
-
-        # 确保ID列是整数类型，以防万一
-        final_df[internal_schema.molecule_id] = (
-            pd.to_numeric(final_df[internal_schema.molecule_id], errors="coerce")
-            .dropna()
-            .astype(int)
-        )
-
-        final_df.drop_duplicates(
-            subset=[internal_schema.molecule_id, internal_schema.protein_id],
-            inplace=True,
-        )
-        return final_df
-
-    def _transform_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        【契约实现】作为数据转换流水线的【编排器】。
-        它接收已经过ID白名单过滤的DataFrame，然后按顺序调用所有转换子步骤。
-        """
-        if self.verbose > 0:
-            print(
-                f"--- [{self.__class__.__name__}] Step: Transforming {len(df)} whitelisted rows... ---"
-            )
-
-        # 定义要执行的处理步骤的流水线
-        pipeline = [
-            self._transform_step_1_affinity,
-            self._transform_step_3_purify,
-            self._transform_step_4_filter_properties,
-            self._transform_step_5_finalize,
-        ]
-
-        # 依次执行流水线中的每一步
-        for step_func in pipeline:
-            df = step_func(df)
-            if df.empty:
-                # 如果在任何步骤之后DataFrame变为空，提前终止流水线
-                print(
-                    f"  - Pipeline halted after step '{step_func.__name__}' because DataFrame became empty."
-                )
-                return pd.DataFrame()
-
-        if self.verbose > 0:
-            print(f"\n✅ [{self.__class__.__name__}] Transformation pipeline complete.")
-        return df
+        return df_final_filtered
 
 
 # --------------------------------------------------------------------------

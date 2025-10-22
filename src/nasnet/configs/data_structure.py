@@ -220,12 +220,23 @@ class LabeledEdgesSchema:
 
 
 @dataclass
+class NodesOutputSchema:
+    """【新增】定义调试文件 nodes.csv 的列名。"""
+
+    global_id: str = "global_id"
+    node_type: str = "node_type"
+    authoritative_id: str = "authoritative_id"
+    structure: str = "sequence_or_smiles"
+
+
+@dataclass
 class InternalSchemaConfig:  # <--- 新增一个层级
     """组织所有项目内部使用的Schema定义。"""
 
     authoritative_dti: AuthoritativeDTISchema = AuthoritativeDTISchema()
     graph_output: GraphOutputSchema = GraphOutputSchema()
     labeled_edges_output: LabeledEdgesSchema = LabeledEdgesSchema()
+    nodes_output: NodesOutputSchema = field(default_factory=NodesOutputSchema)
 
 
 @dataclass

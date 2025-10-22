@@ -1,4 +1,3 @@
-import re
 from typing import TYPE_CHECKING, Set, Tuple
 
 import pandas as pd
@@ -10,20 +9,6 @@ if TYPE_CHECKING:
     from nasnet.configs import AppConfig
 
 _local_human_uniprot_whitelist: Tuple[Set[str], None] = None
-
-
-# --- 私有辅助函数 (完全重写) ---
-def _is_valid_uniprot_format(pid: str) -> bool:
-    """使用正则表达式，对UniProt ID进行快速的本地格式检查。"""
-    if not isinstance(pid, str):
-        return False
-    # 经典的UniProt Accession Number格式
-    uniprot_pattern = re.compile(
-        r"^[OPQ][0-9][A-Z0-9]{4}$|"
-        r"^[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2}$",
-        re.IGNORECASE,
-    )
-    return bool(uniprot_pattern.fullmatch(pid))
 
 
 def _load_local_human_whitelist(config: "AppConfig") -> Set[str]:
@@ -89,11 +74,8 @@ def get_human_uniprot_whitelist(
     #    这个函数内部有内存缓存，所以多次调用开销很小
     local_whitelist = _load_local_human_whitelist(config)
 
-    # 2. (可选) 对输入ID进行本地格式预过滤
-    pre_filtered_ids = {pid for pid in ids_to_check if _is_valid_uniprot_format(pid)}
-
     # 3. 返回输入ID与本地白名单的交集
-    valid_ids = pre_filtered_ids & local_whitelist
+    valid_ids = local_whitelist
 
     if config.runtime.verbose > 0:
         print(f"    - Validated {len(ids_to_check)} input IDs against local list.")
