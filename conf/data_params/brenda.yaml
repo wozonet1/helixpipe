@@ -5,6 +5,7 @@ defaults:
   - _self_
 
 affinity_threshold_nM: 10000
+km_threshold_nM: 10000
 
 filtering:
   enabled: false

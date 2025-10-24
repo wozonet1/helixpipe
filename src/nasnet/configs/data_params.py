@@ -101,6 +101,7 @@ class DataParamsConfig:
 
     # 【修正】通用亲和力阈值，默认值与 baseline.yaml 一致
     affinity_threshold_nM: int = 10000
+    km_threshold_nM: int = 10000  # 为 Brenda 数据集预留
 
     # 要加载的辅助数据集列表
     auxiliary_datasets: List[str] = field(default_factory=list)

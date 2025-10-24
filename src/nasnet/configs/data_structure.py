@@ -199,6 +199,7 @@ class AuthoritativeDTISchema:
     molecule_sequence: str = "SMILES"
     protein_sequence: str = "Sequence"
     label: str = "Label"
+    relation_type: str = "relation_type"
 
 
 @dataclass

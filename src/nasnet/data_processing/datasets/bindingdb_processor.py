@@ -2,6 +2,8 @@
 
 import sys
 
+import argcomplete
+
 # --------------------------------------------------------------------------
 # 步骤 2: 定义流水线化的BindingDB处理器
 # --------------------------------------------------------------------------
@@ -131,7 +133,11 @@ class BindingdbProcessor(BaseDataProcessor):
         #     需要使用SMILES,所以先purify一下,不影响之后structure_provider作为唯一事实
         df_purified = purify_dti_dataframe_parallel(df_filtered, config=self.config)
         df_final_filtered = filter_molecules_by_properties(df_purified, self.config)
-
+        if not df_final_filtered.empty:
+            schema_config = self.config.data_structure.schema.internal.authoritative_dti
+            df_final_filtered[schema_config.relation_type] = (
+                self.config.relations.names.default
+            )
         return df_final_filtered
 
 
@@ -158,6 +164,7 @@ if __name__ == "__main__":
         nargs="*",
         help="Hydra overrides (e.g., data_params=strict_strong)",
     )
+    argcomplete.autocomplete(parser)
     args = parser.parse_args()
 
     # c. 组合所有覆盖参数

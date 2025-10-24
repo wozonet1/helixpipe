@@ -1,0 +1,28 @@
+# conf/data_structure/stringdb.yaml (全新)
+
+defaults:
+  - _base
+  - _self_
+
+name: "stringdb"
+primary_dataset: "stringdb"
+
+filenames:
+  raw:
+    authoritative_dti: "stringdb_interactions.csv"
+    # 定义 STRING DB 原始文件的名称
+    protein_links: "9606.protein.links.v12.0.txt.gz"
+    protein_aliases: "9606.protein.aliases.v12.0.txt.gz"
+
+schema:
+  external:
+    stringdb:
+      # protein.links 文件的列名
+      protein1_id: "protein1"
+      protein2_id: "protein2"
+      combined_score: "combined_score"
+
+      # protein.aliases 文件的列名
+      string_protein_id: "STRING_protein_id"
+      alias: "alias"
+      source: "source"

@@ -25,7 +25,8 @@ schema:
       # 定义我们感兴趣的配体相关字段及其对应的关系类型
       ligand_fields:
         inhibitor: "inhibitor"
-        ki_value: "inhibitor"
-        ic50_value: "inhibitor"
-        km_value: "substrate"
-        turnover_number: "substrate"
+        ki_value: "ki_value"
+        ic50_value: "ic50_value"
+
+        km_value: "km_value"
+        turnover_number: "turnover_number"

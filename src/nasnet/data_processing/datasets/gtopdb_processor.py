@@ -1,6 +1,7 @@
 # 文件: src/nasnet/data_processing/datasets/gtopdb_processor.py (最终架构版)
 from typing import TYPE_CHECKING
 
+import argcomplete
 import pandas as pd
 import research_template as rt
 
@@ -109,7 +110,11 @@ class GtopdbProcessor(BaseDataProcessor):
             df[gtopdb_schema.interactions.affinity], errors="coerce"
         )
         df.dropna(subset=[gtopdb_schema.interactions.affinity], inplace=True)
-        return df[df[gtopdb_schema.interactions.affinity] <= affinity_threshold].copy()
+        df = df[df[gtopdb_schema.interactions.affinity] <= affinity_threshold].copy()
+        if not df.empty:
+            schema_config = self.config.data_structure.schema.internal.authoritative_dti
+            df[schema_config.relation_type] = self.config.relations.names.default
+        return df
 
 
 if __name__ == "__main__":
@@ -127,6 +132,7 @@ if __name__ == "__main__":
 
     parser = ArgumentParser(description="Run the GtoPdb processing pipeline.")
     parser.add_argument("user_overrides", nargs="*", help="Hydra overrides")
+    argcomplete.autocomplete(parser)
     args = parser.parse_args()
     final_overrides = BASE_OVERRIDES + args.user_overrides
 

@@ -107,6 +107,7 @@ class BaseDataProcessor(ABC):
                 self.schema.molecule_id,
                 self.schema.protein_id,
                 self.schema.label,
+                self.schema.relation_type,
             }
             assert expected_cols_subset.issubset(set(final_df.columns))
 
@@ -158,7 +159,7 @@ class BaseDataProcessor(ABC):
             self.schema.molecule_id,
             self.schema.protein_id,
             self.schema.label,
-            # TODO: 加入relation
+            self.schema.relation_type,
         ]
 
     def _finalize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -167,15 +168,29 @@ class BaseDataProcessor(ABC):
             df[self.schema.label] = 1
 
         final_cols = self._get_final_columns()
-        existing_cols = [col for col in final_cols if col in df.columns]
-        # 允许 'relation_type' 等额外列存在
-        for col in df.columns:
-            if col not in existing_cols:
-                existing_cols.append(col)
-
-        final_df = df[existing_cols].copy()
+        cols_to_keep = [col for col in final_cols if col in df.columns]
+        final_df = df[cols_to_keep].copy()
         final_df.drop_duplicates(
-            subset=[self.schema.molecule_id, self.schema.protein_id], inplace=True
+            subset=[self.schema.molecule_id, self.schema.protein_id],
+            inplace=True,
+            # (可选) keep='first' 保证了可复现性
+            keep="first",
         )
+        final_df = final_df.reset_index(drop=True)
+
+        # --- 【核心修复】在这里进行最终的数据类型强制转换 ---
+        # 只有在DataFrame不为空时才执行
+        if not final_df.empty:
+            # 使用 .astype() 进行标准转换
+            final_df[self.schema.molecule_id] = final_df[
+                self.schema.molecule_id
+            ].astype(int)
+            final_df[self.schema.protein_id] = final_df[self.schema.protein_id].astype(
+                str
+            )
+            final_df[self.schema.label] = final_df[self.schema.label].astype(int)
+            final_df[self.schema.relation_type] = final_df[
+                self.schema.relation_type
+            ].astype(str)
 
         return final_df

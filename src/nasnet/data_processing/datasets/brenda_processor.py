@@ -1,22 +1,20 @@
-# 文件: src/nasnet/data_processing/datasets/brenda_processor.py
+# 文件: src/nasnet/data_processing/datasets/brenda_processor.py (生产就绪最终版)
 
 import json
 import pickle as pkl
 import re
-from typing import Dict
+from typing import Any, Dict, List
 
+import argcomplete
 import pandas as pd
 import research_template as rt
 from hydra import compose, initialize_config_dir
-
-# 文件: src/nasnet/data_processing/datasets/brenda_processor.py (生产就绪最终版)
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import OmegaConf
 from tqdm import tqdm
 
 from nasnet.configs import AppConfig, register_all_schemas
 from nasnet.utils import (
     get_path,
-    log_step,
     register_hydra_resolvers,
 )
 
@@ -25,244 +23,240 @@ from .base_processor import BaseDataProcessor
 
 class BrendaProcessor(BaseDataProcessor):
     """
-    一个专门负责处理BRENDA原始JSON数据的处理器 (V3 - 架构兼容最终版)。
-    它通过解析JSON，应用亲和力阈值，并使用本地缓存的名称->CID映射，
-    来生成一个符合项目标准的交互数据集。
+    专门处理BRENDA JSON数据的处理器 (V4 - 流水线重构版)。
     """
 
-    def _load_raw_data(self) -> pd.DataFrame:
-        """
-        加载并完全解析原始JSON，返回一个扁平化的DataFrame。
-        """
-        if self.verbose > 0:
-            print(
-                f"--- [{self.__class__.__name__}] Step: Loading and Parsing raw BRENDA JSON... ---"
-            )
+    def __init__(self, config: AppConfig):
+        super().__init__(config)
+        self.external_schema = self.config.data_structure.schema.external.brenda
+        self._name_to_cid_map = self._load_name_cid_map()
 
+    # --- 实现 BaseProcessor 的抽象方法 ---
+
+    def _load_raw_data(self) -> Dict[str, Any]:
+        """步骤1: 从磁盘加载原始JSON数据为字典。"""
         json_path = get_path(self.config, "raw.raw_json")
         if not json_path.exists():
             raise FileNotFoundError(f"Raw BRENDA JSON file not found at '{json_path}'")
-
         with open(json_path, "r", encoding="utf-8") as f:
-            ec_data = json.load(f).get("data", {})
+            # 先加载整个JSON文件
+            full_data = json.load(f)
 
-        if not ec_data:
-            return pd.DataFrame()
+        # 从加载的数据中获取 'data' 字段，如果不存在则返回空字典
+        raw_data_dict = full_data.get("data", {})
 
-        brenda_schema = self.config.data_structure.schema.external.brenda
-        ligand_fields = OmegaConf.to_container(
-            brenda_schema.ligand_fields, resolve=True
-        )
+        # --- 【核心新增】手动添加日志输出 ---
+        num_records = len(raw_data_dict)
 
-        all_interactions = self._parse_json_to_interactions(
-            ec_data, brenda_schema, ligand_fields
-        )
-
-        if not all_interactions:
-            return pd.DataFrame()
-
-        df = pd.DataFrame(all_interactions).drop_duplicates()
-        print(
-            f"--> Found {len(df)} unique raw (UniProt, Molecule Name) interaction candidates."
-        )
-        return df
-
-    def _standardize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        执行名称到CID的映射，并重命名列以符合内部schema，为白名单过滤做准备。
-        """
+        # 遵循基类 process 方法中的日志风格
+        # 只有在 verbose > 0 时才打印
         if self.verbose > 0:
-            print(
-                f"--- [{self.__class__.__name__}] Step: Standardizing columns (Name -> CID mapping)... ---"
-            )
+            print(f"  - Output size: {num_records} items (EC entries)")
 
-        mapped_df = self._map_names_to_cids_local(df)
-        if mapped_df.empty:
-            return pd.DataFrame()
+        # 如果加载的数据为空，也打印一个警告
+        if num_records == 0:
+            print("  - WARNING: Loaded 0 EC entries from the JSON file.")
 
-        internal_schema = self.config.data_structure.schema.internal.authoritative_dti
-        standardized_df = mapped_df.rename(
-            columns={
-                "UniProt_ID": internal_schema.protein_id,
-                "PubChem_CID": internal_schema.molecule_id,
-            }
-        )
+        return raw_data_dict
 
-        required_cols = [
-            internal_schema.protein_id,
-            internal_schema.molecule_id,
-            "value_nM",
-            "relation_type",
-        ]
-        return standardized_df[required_cols]
-
-    def _transform_data(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _extract_relations(self, raw_data: Dict[str, Any]) -> pd.DataFrame:
         """
-        接收已经过白名单过滤的DataFrame，执行亲和力筛选和最终格式化。
+        【V4.2 Processor自治版】从原始字典中解析关系，并在内部完成分组与映射。
         """
-        if self.verbose > 0:
-            print(
-                f"--- [{self.__class__.__name__}] Step: Applying final transformations to {len(df)} whitelisted rows... ---"
-            )
+        # --- 步骤 1: 在方法内部硬编码映射逻辑 ---
+        # 这个字典将原始字段名映射到我们期望的【最终图边类型】
+        ligand_fields: Dict[str, str] = self.external_schema.ligand_fields
+        flag_names = self.config.relations.names
+        # TODO: 如何解决这个转换硬编码?
+        FIELD_TO_FINAL_RELATION_MAP: Dict[str, str] = {
+            ligand_fields["inhibitor"]: flag_names.inhibits,
+            ligand_fields["ki_value"]: flag_names.inhibits,
+            ligand_fields["ic50_value"]: flag_names.inhibits,
+            ligand_fields["km_value"]: flag_names.catalyzes,
+            ligand_fields["turnover_number"]: flag_names.catalyzes,
+        }
 
-        df_filtered = self._filter_by_affinity(df)
-        if df_filtered.empty:
-            return pd.DataFrame()
+        # --- 步骤 2: 从配置中获取需要处理的字段列表 ---
+        # ligand_fields现在只是一个我们感兴趣的字段名列表
+        fields_to_process = list(self.external_schema.ligand_fields.keys())
 
-        df_finalized = self._finalize_dataframe(df_filtered)
-        return df_finalized
-
-    # --- 辅助方法 ---
-
-    def _parse_json_to_interactions(
-        self, ec_data: Dict, schema: DictConfig, fields: Dict
-    ) -> list:
-        """从原始JSON字典中解析出交互列表。"""
+        prot_organism_key = self.external_schema.protein_organism_key
+        prot_accessions_key = self.external_schema.protein_accessions_key
+        target_organism = self.external_schema.target_organism_value
+        rel_type_col = self.schema.relation_type
         all_interactions = []
+
+        disable_tqdm = self.verbose == 0
         iterator = tqdm(
-            ec_data.items(), desc="   - Parsing EC entries", disable=self.verbose == 0
+            raw_data.items(), desc="   - Parsing EC entries", disable=disable_tqdm
         )
 
         for ec_id, entry in iterator:
             if not isinstance(entry, dict):
                 continue
-
-            protein_map = {}
-            for prot_id, prot_info in entry.get("protein", {}).items():
+            # 步骤 2.1: 为当前EC条目，预先构建一个内部蛋白质ID到UniProt ID列表的映射
+            protein_map: Dict[str, List[str]] = {}
+            for prot_internal_id, prot_info in entry.get("protein", {}).items():
                 if not isinstance(prot_info, dict):
                     continue
-                organism = prot_info.get(schema.protein_organism_key, "").lower()
-                if (
-                    schema.target_organism_value in organism
-                    and schema.protein_accessions_key in prot_info
-                ):
-                    accessions = prot_info[schema.protein_accessions_key]
-                    if isinstance(accessions, list) and accessions:
-                        protein_map[prot_id] = accessions
 
+                organism = prot_info.get(prot_organism_key, "").lower()
+
+                if target_organism in organism and prot_accessions_key in prot_info:
+                    accessions = prot_info[prot_accessions_key]
+                    if isinstance(accessions, list) and accessions:
+                        protein_map[prot_internal_id] = accessions
+
+            # 如果这个EC条目中没有找到任何人类蛋白质，则跳过后续的配体解析
             if not protein_map:
                 continue
 
-            for field_name, relation_type in fields.items():
+            # --- 步骤 3: 遍历我们感兴趣的字段，并使用内部映射 ---
+            for field_name in fields_to_process:
+                # 从内部映射字典中获取该字段对应的最终关系类型
+                final_edge_type = FIELD_TO_FINAL_RELATION_MAP.get(field_name)
+
+                # 如果某个字段没有在我们的内部映射中定义，就跳过它
+                if not final_edge_type:
+                    continue
+
+                # 遍历该字段下的所有配体条目
                 for item in entry.get(field_name, []):
                     if not isinstance(item, dict) or "proteins" not in item:
                         continue
 
                     value_str = item.get("value", "")
-                    molecule_name, numeric_value = None, None
+                    molecule_name: str = ""
+                    numeric_value: float | None = None
 
+                    # 根据字段类型，解析出分子名称和可选的数值
                     if field_name in [
                         "ki_value",
                         "ic50_value",
                         "km_value",
                         "turnover_number",
                     ]:
+                        # 解析格式如 "12.3 {Aspirin}" 的字符串
                         match = re.match(r"^\s*([0-9eE\.\-]+)\s*\{(.*?)\}", value_str)
                         if match:
                             try:
                                 numeric_value = float(match.group(1))
                                 molecule_name = match.group(2).strip()
                             except (ValueError, IndexError):
+                                # 如果数值或名称解析失败，则跳过此条目
                                 continue
+                        else:
+                            # 无法匹配格式，跳过
+                            continue
                     elif field_name == "inhibitor":
-                        molecule_name = value_str
+                        # inhibitor 字段直接是分子名称
+                        molecule_name = value_str.strip()
+                    else:
+                        # 以后如果增加新的字段类型，可以在这里扩展
+                        # 当前所有已知的字段都已覆盖，所以理论上不会进入这里
+                        continue
 
+                    # 如果没有有效的分子名称，则跳过
                     if not molecule_name or molecule_name == "?":
                         continue
 
+                    # 步骤 3.1: 关联配体与蛋白质，生成交互记录
                     for prot_internal_id in item["proteins"]:
+                        # 检查这个配体关联的蛋白质是否是我们已经筛选出的人类蛋白质
                         if prot_internal_id in protein_map:
+                            # 一个配体可能与多个UniProt ID关联 (来自同一个蛋白质条目)
                             for uniprot_id in protein_map[prot_internal_id]:
                                 all_interactions.append(
                                     {
                                         "UniProt_ID": uniprot_id,
                                         "Molecule_Name": molecule_name,
-                                        "relation_type": relation_type,
+                                        # 【核心】直接赋值最终的图边类型
+                                        rel_type_col: final_edge_type,
                                         "value_nM": numeric_value,
                                     }
                                 )
-        return all_interactions
 
-    def _map_names_to_cids_local(self, df: pd.DataFrame) -> pd.DataFrame:
-        """使用本地缓存的映射文件进行名称到CID的转换。"""
+        # 循环结束后，检查是否收集到了任何交互
+        if not all_interactions:
+            # 返回一个空的DataFrame，流水线将在下一步优雅地终止
+            return pd.DataFrame()
+
+        return pd.DataFrame(all_interactions).drop_duplicates()
+
+    def _standardize_ids(self, df: pd.DataFrame) -> pd.DataFrame:
+        """步骤3: 将'Molecule_Name'映射为'PubChem_CID'，并重命名列以符合内部标准。"""
+        if df.empty:
+            return df
+
+        # 执行 Name -> CID 映射
+        unique_names = df["Molecule_Name"].dropna().unique()
+        cleaned_names = pd.Series(
+            [self._clean_name(n) for n in unique_names], index=unique_names
+        )
+        cid_map = cleaned_names.map(self._name_to_cid_map)
+
+        # 将映射结果 merge 回原始 df
+        df = df.merge(
+            cid_map.rename("PubChem_CID"),
+            left_on="Molecule_Name",
+            right_index=True,
+            how="left",
+        )
+
+        # 重命名列
+        return df.rename(columns={"UniProt_ID": self.schema.protein_id})
+
+    def _filter_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """步骤4: 根据 relation_type 应用不同的亲和力/动力学阈值。"""
+        if df.empty or "value_nM" not in df.columns:
+            return df
+
+        inhibitor_threshold = self.config.data_params.affinity_threshold_nM
+        substrate_threshold = self.config.data_params.km_threshold_nM  # 新增参数
+
+        # 创建一个默认通过的掩码
+        pass_mask = pd.Series(True, index=df.index)
+
+        # 对 inhibitor 应用过滤
+        if inhibitor_threshold is not None:
+            inhibitor_mask = df["relation_type"] == "inhibitor"
+            pass_mask[inhibitor_mask] = (
+                df.loc[inhibitor_mask, "value_nM"] <= inhibitor_threshold
+            )
+
+        # 对 substrate 应用过滤
+        if substrate_threshold is not None:
+            substrate_mask = df["relation_type"] == "substrate"
+            pass_mask[substrate_mask] = (
+                df.loc[substrate_mask, "value_nM"] <= substrate_threshold
+            )
+
+        return df[pass_mask]
+
+    # --- 私有辅助方法 ---
+
+    def _load_name_cid_map(self) -> Dict[str, int]:
+        """加载本地缓存的名称到CID的映射文件。"""
         map_path = get_path(self.config, "cache.ids.brenda_name_to_cid")
         if not map_path.exists():
             raise FileNotFoundError(
-                f"Local PubChem name-to-CID map not found at '{map_path}'.\n"
-                "Please run 'src/nasnet/analysis/scripts/build_name_cid_map.py' first."
+                f"PubChem name-to-CID map not found at '{map_path}'."
             )
-
+        print(f"   - Loading name-to-CID map from '{map_path}'...")
         with open(map_path, "rb") as f:
-            name_to_cid_map = pkl.load(f)
+            return pkl.load(f)  # pkl 需要 import
 
-        def clean_name(name):
-            if not isinstance(name, str):
-                return None
-            name = name.lower()
-            name = re.sub(r"\(.*?\)", "", name)
-            name = name.split(";")[0]
-            return name.strip()
-
-        df["cleaned_name"] = df["Molecule_Name"].apply(clean_name)
-        df["PubChem_CID"] = df["cleaned_name"].map(name_to_cid_map)
-
-        # 记录映射成功率
-        total_unique_names = df["cleaned_name"].nunique()
-        mapped_names = df.dropna(subset=["PubChem_CID"])["cleaned_name"].nunique()
-        if self.verbose > 0 and total_unique_names > 0:
-            success_rate = (mapped_names / total_unique_names) * 100
-            print(
-                f"    - Name->CID Mapping: {mapped_names}/{total_unique_names} ({success_rate:.2f}%) unique names successfully mapped."
-            )
-
-        df.dropna(subset=["PubChem_CID"], inplace=True)
-        if df.empty:
-            return pd.DataFrame()
-
-        df["PubChem_CID"] = df["PubChem_CID"].astype(int)
-
-        return df.drop(columns=["cleaned_name", "Molecule_Name"])
-
-    @log_step("Filter by Affinity")
-    def _filter_by_affinity(self, df: pd.DataFrame) -> pd.DataFrame:
-        """根据亲和力阈值筛选DataFrame。"""
-        threshold = self.config.data_params.affinity_threshold_nM
-
-        no_value_mask = df["value_nM"].isna()
-        value_pass_mask = (df["value_nM"].notna()) & (df["value_nM"] <= threshold)
-
-        return df[no_value_mask | value_pass_mask].copy()
-
-    @log_step("Finalize DataFrame")
-    def _finalize_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        """格式化最终输出。"""
-        internal_schema = self.config.data_structure.schema.internal.authoritative_dti
-
-        final_df = df[
-            [internal_schema.protein_id, internal_schema.molecule_id, "relation_type"]
-        ].copy()
-        final_df[internal_schema.label] = 1
-
-        final_df.drop_duplicates(
-            subset=[internal_schema.protein_id, internal_schema.molecule_id],
-            inplace=True,
-            keep="first",
-        )
-
-        final_df[internal_schema.molecule_sequence] = None
-        final_df[internal_schema.protein_sequence] = None
-
-        final_cols = [
-            internal_schema.molecule_id,
-            internal_schema.protein_id,
-            internal_schema.molecule_sequence,
-            internal_schema.protein_sequence,
-            internal_schema.label,
-            "relation_type",
-        ]
-        return final_df.reindex(columns=final_cols)
+    def _clean_name(self, name: Any) -> str:
+        """清洗分子名称以提高映射成功率。"""
+        if not isinstance(name, str):
+            return ""
+        name = name.lower()
+        name = re.sub(r"\(.*?\)", "", name)
+        name = name.split(";")[0]
+        return name.strip()
 
 
+# ... (独立的 __main__ 入口部分保持不变) ...
 # --- 模仿 gtopdb_processor.py 的独立运行入口 ---
 if __name__ == "__main__":
     from argparse import ArgumentParser
@@ -271,6 +265,7 @@ if __name__ == "__main__":
 
     parser = ArgumentParser(description="Run the BRENDA processing pipeline.")
     parser.add_argument("user_overrides", nargs="*", help="Hydra overrides")
+    argcomplete.autocomplete(parser)
     args = parser.parse_args()
     final_overrides = BASE_OVERRIDES + args.user_overrides
 
