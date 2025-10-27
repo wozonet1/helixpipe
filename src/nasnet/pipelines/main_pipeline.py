@@ -15,10 +15,10 @@ from nasnet.data_processing import (
     IDMapper,
     InteractionStore,
     StructureProvider,
-    purify_dti_dataframe_parallel,
+    purify_entities_dataframe_parallel,
 )
 from nasnet.data_processing.services.graph_builder import HeteroGraphBuilder
-from nasnet.features import extract_features, sim_calculators
+from nasnet.features import calculate_embedding_similarity, extract_features
 from nasnet.utils import get_path
 
 
@@ -37,10 +37,20 @@ def process_data(
     interaction_store = InteractionStore(all_raw_interactions_dfs, config)
     structure_provider = StructureProvider(config, proxies=None)
     id_mapper = IDMapper(all_raw_interactions_dfs, config)
+    schema = config.data_structure.schema.internal.authoritative_dti
+    # a. 从 base_df (主数据集) 中提取所有唯一的分子ID
+    drug_cids_from_base = set(
+        pd.to_numeric(base_df[schema.molecule_id], errors="coerce")
+        .dropna()
+        .astype(int)
+        .unique()
+    )
+    # b. 调用 IDMapper 的新方法，将这个定义注入进去
+    id_mapper.set_drug_cids(drug_cids_from_base)
     # === Stage 2: 结构丰富化 (Enrichment) ===
-    all_pids = list(id_mapper.uniprot_to_id.keys())
-    all_cids = list(id_mapper.cid_to_id.keys())
-
+    all_pids = list(id_mapper.get_all_pids())
+    all_cids = list(id_mapper.get_all_cids())
+    # FIXME:解决每次都提示那一个
     complete_sequences = structure_provider.get_sequences(
         all_pids, force_restart=restart_flag
     )
@@ -53,20 +63,23 @@ def process_data(
     id_mapper.update_smiles(complete_smiles)
     # --- 后续阶段现在接收 id_mapper 对象 ---
     entities_to_purify_df = id_mapper.to_dataframe()
+    # FIXME:导出逻辑有误,多一个
 
     #    b. 净化：将这个导出的DataFrame交给一个外部的、专门的净化函数处理。
-    purified_entities_df = purify_dti_dataframe_parallel(entities_to_purify_df, config)
+    purified_entities_df = purify_entities_dataframe_parallel(
+        entities_to_purify_df, config
+    )
 
     #    c. 【调用 update_from_dataframe】: 将净化后的结果DataFrame“同步”回IDMapper。
     id_mapper.update_from_dataframe(purified_entities_df)
     id_mapper.finalize_mappings()
     # 直接进入下游处理，现在的id_mapper已经是最终状态
-    if config.runtime.verbose > 0:
-        id_mapper.save_maps_for_debugging(config)
+    # if config.runtime.verbose > 0:
+    #     id_mapper.save_maps_for_debugging()
 
     interaction_store.filter_by_entities(
-        valid_cids=set(id_mapper.molecule_to_id.values()),
-        valid_pids=set(id_mapper.protein_to_id.values()),
+        valid_cids=set(id_mapper.get_all_cids()),
+        valid_pids=set(id_mapper.get_all_pids()),
     )
     # 初始化完成，进入下游阶段
 
@@ -250,34 +263,33 @@ def _stage_3_calculate_similarity_matrices(
     【V3.1 模板化重构版】计算所有必需的相似性矩阵。
     """
     print("\n--- [Stage 3] Calculating similarity matrices... ---")
-    verbose_level = config.runtime.verbose
 
     # 1. 计算分子相似性矩阵
     # a. 首先，获取最终的缓存文件路径
     mol_sim_path = get_path(config, "processed.common.similarity_matrices.molecule")
 
-    dl_similarity_matrix = rt.run_cached_calculation(
-        cache_path=mol_sim_path,
-        calculation_func=lambda: sim_calculators.calculate_embedding_similarity(
-            molecule_embeddings
-        ),
-        force_restart=restart_flag,
-        operation_name="Molecule Similarity Matrix",
-        verbose=verbose_level,
-    )
+    if mol_sim_path.exists() and not restart_flag:
+        # 【2】使用 np.load 加载
+        dl_similarity_matrix = np.load(mol_sim_path)
+    else:
+        # 【3】计算
+        dl_similarity_matrix = calculate_embedding_similarity(molecule_embeddings)
+        # 【4】使用 np.save 保存
+        rt.ensure_path_exists(mol_sim_path)
+        np.save(mol_sim_path, dl_similarity_matrix)
 
     # --- 2. 计算蛋白质相似性矩阵 (同理) ---
     prot_sim_path = get_path(config, "processed.common.similarity_matrices.protein")
 
-    prot_similarity_matrix = rt.run_cached_calculation(
-        cache_path=prot_sim_path,
-        calculation_func=lambda: sim_calculators.calculate_embedding_similarity(
-            protein_embeddings
-        ),
-        force_restart=restart_flag,
-        operation_name="Protein Similarity Matrix",
-        verbose=verbose_level,
-    )
+    if prot_sim_path.exists() and not restart_flag:
+        # 【2】使用 np.load 加载
+        prot_similarity_matrix = np.load(prot_sim_path)
+    else:
+        # 【3】计算
+        prot_similarity_matrix = calculate_embedding_similarity(protein_embeddings)
+        # 【4】使用 np.save 保存
+        rt.ensure_path_exists(prot_sim_path)
+        np.save(prot_sim_path, prot_similarity_matrix)
 
     return dl_similarity_matrix, prot_similarity_matrix
 

@@ -22,7 +22,6 @@ params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_A)
 params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_B)
 params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_C)
 PAINS_CATALOG = FilterCatalog.FilterCatalog(params)
-print("--> [Purifiers] PAINS filter catalog initialized globally.")
 
 # 让tqdm能和pandas的apply方法优雅地协作
 # 在并行化场景下，我们将主要用tqdm来包裹joblib的调用

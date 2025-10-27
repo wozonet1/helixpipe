@@ -17,7 +17,11 @@ class EsmFeatureExtractor(BaseFeatureExtractor):
 
     def _prepare_batch_input(self, tokenizer: Any, batch_data: List[str]) -> Any:
         return tokenizer(
-            batch_data, padding=True, truncation=True, return_tensors="pt"
+            batch_data,
+            padding=True,
+            truncation=True,
+            max_length=1024,
+            return_tensors="pt",
         ).to(self.device)
 
     def _run_model_inference(self, model: Any, inputs: Any) -> Any:

@@ -14,7 +14,7 @@ from .services import (
     InteractionStore,
     StructureProvider,
     filter_molecules_by_properties,
-    purify_dti_dataframe_parallel,
+    purify_entities_dataframe_parallel,
 )
 
 __all__ = [
@@ -25,7 +25,7 @@ __all__ = [
     InteractionStore,
     GraphDirector,
     # 顶层函数
-    purify_dti_dataframe_parallel,
+    purify_entities_dataframe_parallel,
     filter_molecules_by_properties,
     # 基类
     BaseProcessor,

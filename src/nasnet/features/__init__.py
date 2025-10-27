@@ -1,8 +1,8 @@
 # 文件：src/features/__init__.py
 
 # 导入整个子模块，并给予一个清晰、简洁的别名
-from . import similarity_calculators as sim_calculators
 from .feature_extractors import extract_features
+from .similarity_calculators import calculate_and_save_similarity_chunks
 
 # [可选] 如果有一些极度常用的函数，希望可以直接通过 features.xxx 访问，
 # 可以在这里“暴露”出来。
@@ -10,4 +10,4 @@ from .feature_extractors import extract_features
 # from .feature_extractors import extract_esm_protein_embeddings
 
 # 但通常，保持两层命名空间（features.extractors）是更清晰的做法。
-__all__ = [extract_features, sim_calculators]
+__all__ = [extract_features, calculate_and_save_similarity_chunks]

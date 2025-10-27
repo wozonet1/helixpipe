@@ -17,7 +17,7 @@ from tqdm import tqdm
 from nasnet.configs import AppConfig, register_all_schemas
 from nasnet.data_processing.services import (
     filter_molecules_by_properties,
-    purify_dti_dataframe_parallel,
+    purify_entities_dataframe_parallel,
 )
 from nasnet.utils import get_path, register_hydra_resolvers
 
@@ -132,7 +132,9 @@ class BindingdbProcessor(BaseProcessor):
         # 2. 分子属性筛选 (因为这是主数据集，我们应用此步骤)
         #    这个函数需要标准的'SMILES'列名，这在_standardize_ids中已完成
         #     需要使用SMILES,所以先purify一下,不影响之后structure_provider作为唯一事实
-        df_purified = purify_dti_dataframe_parallel(df_filtered, config=self.config)
+        df_purified = purify_entities_dataframe_parallel(
+            df_filtered, config=self.config
+        )
         df_final_filtered = filter_molecules_by_properties(df_purified, self.config)
         if not df_final_filtered.empty:
             schema_config = self.config.data_structure.schema.internal.authoritative_dti

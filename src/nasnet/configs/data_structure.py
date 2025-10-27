@@ -24,8 +24,9 @@ class RawFilenames:
 class SimilarityMatrixFilenames:
     """定义 'processed/common/sim_matrixes' 目录下的文件名模板。"""
 
-    molecule: str = "dl_similarity_matrix.pkl"
-    protein: str = "prot_similarity_matrix.pkl"
+    molecule_chunks_dir: str = "molecule_sim_chunks"
+    protein_chunks_dir: str = "protein_sim_chunks"
+    chunk_template: str = "chunk_{chunk_idx}.npy"
 
 
 @dataclass
@@ -34,7 +35,9 @@ class CommonProcessedFilenames:
 
     nodes_metadata: str = "nodes.csv"
     node_features: str = "node_features.npy"
-    similarity_matrices: SimilarityMatrixFilenames = SimilarityMatrixFilenames()
+    similarity_matrices: SimilarityMatrixFilenames = field(
+        default_factory=SimilarityMatrixFilenames
+    )
     uniprot_whitelist: str = "uniprot_whitelist.txt"
     cid_whitelist: str = "cid_whitelist.txt"
 
@@ -62,6 +65,7 @@ class CacheFeaturesFilenames:
     template: str = "{entity_type}/{model_name}/{authoritative_id}.pt"
 
 
+# TODO: 把sequence从ids中移出去
 @dataclass
 class CacheIdsFilenames:
     """定义 cache/ids 下的文件名。"""
@@ -115,10 +119,16 @@ class RawPaths:
 
 @dataclass
 class SimilarityMatrixPaths:
-    """定义 'sim_matrixes' 目录下所有文件的【路径插值模板】。"""
+    """
+    【新增】定义 'sim_matrixes' 目录下所有分块缓存目录的【路径插值模板】。
+    """
 
-    molecule: str = "${path:processed.common.similarity_matrices.molecule}"
-    protein: str = "${path:processed.common.similarity_matrices.protein}"
+    molecule_chunks_dir: str = (
+        "${path:processed.common.similarity_matrices.molecule_chunks_dir}"
+    )
+    protein_chunks_dir: str = (
+        "${path:processed.common.similarity_matrices.protein_chunks_dir}"
+    )
 
 
 @dataclass
@@ -127,7 +137,9 @@ class CommonProcessedPaths:
 
     nodes_metadata: str = "${path:processed.common.nodes_metadata}"
     node_features: str = "${path:processed.common.node_features}"
-    similarity_matrices: SimilarityMatrixPaths = SimilarityMatrixPaths()
+    similarity_matrices: SimilarityMatrixPaths = field(
+        default_factory=SimilarityMatrixPaths
+    )
     uniprot_whitelist: str = "${path:processed.common.uniprot_whitelist}"
     cid_whitelist: str = "${path:processed.common.cid_whitelist}"
 

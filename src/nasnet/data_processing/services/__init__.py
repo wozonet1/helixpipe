@@ -8,7 +8,7 @@ from .id_mapper import IDMapper
 # 我们可以选择性地提升那些在项目外部也可能被直接使用的函数
 from .id_validation_service import get_human_uniprot_whitelist, get_valid_pubchem_cids
 from .interaction_store import InteractionStore
-from .purifiers import purify_dti_dataframe_parallel
+from .purifiers import purify_entities_dataframe_parallel
 from .splitter import DataSplitter
 from .structure_provider import StructureProvider
 
@@ -24,7 +24,7 @@ __all__ = [
     GraphBuilder,
     # 重量级函数
     filter_molecules_by_properties,
-    purify_dti_dataframe_parallel,
+    purify_entities_dataframe_parallel,
     # 常用轻量级函数
     get_human_uniprot_whitelist,
     get_valid_pubchem_cids,
