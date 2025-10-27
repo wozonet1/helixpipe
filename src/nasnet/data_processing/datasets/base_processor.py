@@ -16,7 +16,7 @@ from nasnet.data_processing.services import (
 from nasnet.utils import get_path
 
 
-class BaseDataProcessor(ABC):
+class BaseProcessor(ABC):
     """
     【最终架构版 v2】数据处理器的抽象基类，使用模板方法和流水线编排风格。
     """

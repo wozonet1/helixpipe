@@ -10,30 +10,27 @@ import research_template as rt
 from omegaconf import DictConfig
 
 # 导入我们的抽象基类，用于类型检查和文档
-from nasnet.data_processing import BaseDataProcessor
+from nasnet.data_processing import BaseProcessor
 
 
 def _run_processor(name: str, config: DictConfig) -> pd.DataFrame:
     """
+    【V2 - 适配新架构版】
     一个动态实例化并运行任何数据处理器的辅助函数。
 
-    它会根据给定的处理器名称，自动查找、导入并运行对应的Processor类。
-
-    Args:
-        name (str): 处理器的名称 (例如, "bindingdb", "gtopdb")。
-                    这必须与对应的文件名和类名匹配。
-        config (DictConfig): 适用于该处理器的、完整的Hydra配置对象。
-
-    Returns:
-        pd.DataFrame: 由该处理器处理和返回的黄金标准DataFrame。
-                      如果处理失败或无数据，则返回一个空的DataFrame。
+    它会根据给定的处理器名称，自动在 `nasnet.data_processing.datasets`
+    子模块中查找、导入并运行对应的Processor类。
     """
     try:
-        # 1. 根据命名约定，动态构建模块和类的路径
-        #    例如: "bindingdb" -> "BindingDBProcessor"
+        # 1. 根据命名约定，动态构建类名和模块路径
+        #    类名: "bindingdb" -> "BindingdbProcessor"
         class_name = f"{name.capitalize()}Processor"
-        #    例如: "src.data_processing.bindingdb_processor"
-        module_path = f"data_processing.{name}_processor"
+
+        #    【核心修改】模块路径现在指向 `datasets` 子模块
+        #    模块名: "bindingdb" -> "bindingdb_processor"
+        module_name = f"{name}_processor"
+        #    完整路径: "nasnet.data_processing.datasets.bindingdb_processor"
+        module_path = f"nasnet.data_processing.datasets.{module_name}"
 
         print(
             f"\n--- [Strategy] Attempting to run processor '{class_name}' from '{module_path}' ---"
@@ -43,20 +40,19 @@ def _run_processor(name: str, config: DictConfig) -> pd.DataFrame:
         module = importlib.import_module(module_path)
         ProcessorClass = getattr(module, class_name)
 
-        # 3. (可选但推荐) 验证该类是否是我们期望的类型
-        if not issubclass(ProcessorClass, BaseDataProcessor):
+        # 3. 验证该类是否是我们期望的类型
+        if not issubclass(ProcessorClass, BaseProcessor):
             raise TypeError(
-                f"'{class_name}' is not a valid subclass of BaseDataProcessor."
+                f"Class '{class_name}' found in '{module_path}' is not a valid subclass of BaseProcessor."
             )
 
         # 4. 实例化处理器，并将专属的config“注入”进去
         processor_instance = ProcessorClass(config=config)
 
-        # 5. 调用统一的接口，执行处理流程！
-        #    基类的process方法会自动处理缓存检查、保存和验证。
+        # 5. 调用统一的接口，执行处理流程
         df = processor_instance.process()
 
-        if df is None:  # 额外的安全检查
+        if df is None:
             print(
                 f"⚠️  Warning: Processor '{class_name}' returned None. Defaulting to empty DataFrame."
             )
@@ -68,11 +64,13 @@ def _run_processor(name: str, config: DictConfig) -> pd.DataFrame:
         print(f"❌ FATAL: Could not find or load processor for '{name}'.")
         print(f"   - Searched for class '{class_name}' in module '{module_path}'.")
         print(
-            f"   - Please ensure the file 'src/data_processing/{name}_processor.py' exists and contains the class '{class_name}'."
+            f"   - Please ensure the file 'src/nasnet/data_processing/datasets/{name}_processor.py' exists "
+            f"and contains the class '{class_name}'."
         )
         print(f"   - Original error: {e}")
         sys.exit(1)
-    except Exception:
+
+    except Exception:  # 将 Exception 放在最后，捕获所有其他异常
         print(
             f"❌ FATAL: An unexpected error occurred while running processor for '{name}'."
         )

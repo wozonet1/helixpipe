@@ -18,10 +18,10 @@ from nasnet.utils import (
     register_hydra_resolvers,
 )
 
-from .base_processor import BaseDataProcessor
+from .base_processor import BaseProcessor
 
 
-class BrendaProcessor(BaseDataProcessor):
+class BrendaProcessor(BaseProcessor):
     """
     专门处理BRENDA JSON数据的处理器 (V4 - 流水线重构版)。
     """

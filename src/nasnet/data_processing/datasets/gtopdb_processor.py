@@ -9,7 +9,7 @@ from nasnet.configs import register_all_schemas
 from nasnet.utils import get_path, register_hydra_resolvers
 
 # 导入基类和所有需要的辅助模块
-from .base_processor import BaseDataProcessor
+from .base_processor import BaseProcessor
 
 if TYPE_CHECKING:
     from nasnet.configs import AppConfig
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 from nasnet.configs import AppConfig
 
 
-class GtopdbProcessor(BaseDataProcessor):
+class GtopdbProcessor(BaseProcessor):
     """
     一个专门负责处理Guide to PHARMACOLOGY原始数据的处理器。
     【V5 - 最终架构版】：严格实现BaseProcessor定义的六步流水线。

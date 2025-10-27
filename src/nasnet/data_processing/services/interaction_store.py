@@ -75,7 +75,6 @@ class InteractionStore:
         mol_id_col = self._schema.molecule_id
         prot_id_col = self._schema.protein_id
         label_col = self._schema.label
-        # 【核心】从我们新定义的 internal_schema 中获取 relation_type 的标准列名
         rel_type_col = self._schema.relation_type
 
         # 1. 筛选正样本并去重
@@ -88,7 +87,7 @@ class InteractionStore:
         positive_pairs_with_type: List[Tuple[int, int, str]] = []
 
         # 准备一个默认值，以防 'relation_type' 列意外丢失
-        default_rel_type = self._config.relations.names.default_interaction
+        default_rel_type = self._config.relations.names.default
 
         iterator = tqdm(
             positive_df.itertuples(index=False),  # index=False 效率更高

@@ -1,5 +1,5 @@
 import random
-from typing import Dict, List
+from typing import List, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -7,15 +7,18 @@ import research_template as rt
 import torch
 from tqdm import tqdm
 
+# (确保在文件顶部有以下 imports)
+from nasnet.configs import AppConfig
 from nasnet.data_processing import (
     DataSplitter,
-    GraphBuilder,
+    GraphDirector,
     IDMapper,
     InteractionStore,
     StructureProvider,
+    purify_dti_dataframe_parallel,
 )
-from nasnet.features import extractors, sim_calculators
-from nasnet.typing import AppConfig
+from nasnet.data_processing.services.graph_builder import HeteroGraphBuilder
+from nasnet.features import extract_features, sim_calculators
 from nasnet.utils import get_path
 
 
@@ -26,14 +29,14 @@ def process_data(
     【V3 重构版】数据处理的总编排器。
     接收一个DataFrame列表作为输入，然后驱动所有后续处理。
     """
-
+    # 先是对三个主要类进行初始化(InteractionStore, StructureProvider, IDMapper)
     restart_flag = config.runtime.get("force_restart", False)
     if base_df is None or base_df.empty:
         raise ValueError("Cannot process data: Input dataframe list is empty.")
     all_raw_interactions_dfs = [base_df] + (extra_dfs if extra_dfs else [])
-    interaction_store = InteractionStore(all_raw_interactions_dfs, config)  # noqa: F841
+    interaction_store = InteractionStore(all_raw_interactions_dfs, config)
     structure_provider = StructureProvider(config, proxies=None)
-    id_mapper = IDMapper(base_df, extra_dfs, config)
+    id_mapper = IDMapper(all_raw_interactions_dfs, config)
     # === Stage 2: 结构丰富化 (Enrichment) ===
     all_pids = list(id_mapper.uniprot_to_id.keys())
     all_cids = list(id_mapper.cid_to_id.keys())
@@ -49,13 +52,26 @@ def process_data(
     id_mapper.update_sequences(complete_sequences)
     id_mapper.update_smiles(complete_smiles)
     # --- 后续阶段现在接收 id_mapper 对象 ---
+    entities_to_purify_df = id_mapper.to_dataframe()
 
+    #    b. 净化：将这个导出的DataFrame交给一个外部的、专门的净化函数处理。
+    purified_entities_df = purify_dti_dataframe_parallel(entities_to_purify_df, config)
+
+    #    c. 【调用 update_from_dataframe】: 将净化后的结果DataFrame“同步”回IDMapper。
+    id_mapper.update_from_dataframe(purified_entities_df)
+    id_mapper.finalize_mappings()
     # 直接进入下游处理，现在的id_mapper已经是最终状态
     if config.runtime.verbose > 0:
         id_mapper.save_maps_for_debugging(config)
 
+    interaction_store.filter_by_entities(
+        valid_cids=set(id_mapper.molecule_to_id.values()),
+        valid_pids=set(id_mapper.protein_to_id.values()),
+    )
+    # 初始化完成，进入下游阶段
+
     molecule_embeddings, protein_embeddings = _stage_2_generate_features(
-        config, id_mapper, restart_flag=restart_flag
+        config, id_mapper=id_mapper, restart_flag=restart_flag
     )
 
     dl_similarity_matrix, prot_similarity_matrix = (
@@ -66,158 +82,166 @@ def process_data(
             restart_flag=restart_flag,
         )
     )
-    # all_positive_pairs_df = purified_entities_df[purified_entities_df["Label"] == 1]
-    # _stage_4_split_data_and_build_graphs(
-    #     config,
-    #     id_mapper,
-    #     [all_positive_pairs_df],  # 传递一个包含所有干净正样本的DataFrame
-    #     dl_similarity_matrix,
-    #     prot_similarity_matrix,
-    # )
-    # print("\n✅ All data processing stages completed successfully!")
+    _stage_4_split_data_and_build_graphs(
+        config,
+        id_mapper,
+        interaction_store,  # <-- 传递整个 store
+        dl_similarity_matrix,
+        prot_similarity_matrix,
+    )
+
+    print("\n✅ All data processing stages completed successfully!")
 
 
 def _stage_2_generate_features(
     config: AppConfig, id_mapper: IDMapper, restart_flag: bool
-) -> tuple:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    【V3 重构版】根据IDMapper提供的信息，为所有实体生成特征嵌入。
+    【V4 - 最终精简版】阶段2：为所有实体生成或加载特征嵌入。
+
+    该函数执行以下步骤：
+    1. 检查最终的聚合特征文件 (`node_features.npy`) 是否存在。
+       - 如果存在且不强制重启，则直接加载并返回。
+    2. 如果缓存未命中：
+       a. 从 IDMapper 获取所有纯净实体的有序ID和结构列表。
+       b. 确定计算设备 (CPU/GPU)。
+       c. 直接调用 `extract_features` 分派函数，分别为分子和蛋白质提取特征。
+          (这个函数内部有更细粒度的“每个实体一个文件”的缓存机制)。
+       d. 根据 IDMapper 的顺序，将返回的特征字典重新组装成有序的张量。
+       e. (可选) 对齐不同模态的特征维度。
+       f. 将所有特征拼接成一个大的 numpy 数组并保存到 `node_features.npy`。
+    3. 返回分子和蛋白质的特征张量。
     """
-    print("\n--- [Stage 2] Generating node features... ---")
+    print("\n--- [Stage 2] Generating or loading node features... ---")
 
     final_features_path = get_path(config, "processed.common.node_features")
 
-    if not final_features_path.exists() or restart_flag:
-        # 1. 从 id_mapper 获取有序的权威ID和序列/SMILES列表
-        ordered_cids = id_mapper.sorted_drug_cids + id_mapper.sorted_ligand_cids
-        ordered_smiles = id_mapper.get_ordered_smiles()
-        ordered_pids = id_mapper.sorted_protein_ids
-        ordered_sequences = id_mapper.get_ordered_sequences()
-
-        # 2. 调用新的特征提取器，获取特征字典
-        molecule_features_dict = _generate_or_load_embeddings(
-            config, "molecule", ordered_cids, ordered_smiles, restart_flag
+    # --- 缓存检查：检查最终的 .npy 文件是否存在 ---
+    if final_features_path.exists() and not restart_flag:
+        print(
+            f"--> [Cache Hit] Loading final aggregated features from '{final_features_path.name}'."
         )
-        protein_features_dict = _generate_or_load_embeddings(
-            config, "protein", ordered_pids, ordered_sequences, restart_flag
-        )
+        features_np = np.load(final_features_path)
+        num_molecules = id_mapper.num_molecules
 
-        # 3. 【核心变化】根据 id_mapper 的顺序，从字典中组装最终的有序张量
-        print("--> Assembling final feature matrices from dictionaries...")
-        # a. 组装分子嵌入
-        ordered_mol_embeddings = [molecule_features_dict[cid] for cid in ordered_cids]
-        molecule_embeddings = (
-            torch.stack(ordered_mol_embeddings)
-            if ordered_mol_embeddings
-            else torch.empty(0)
-        )
-
-        # b. 组装蛋白质嵌入
-        ordered_prot_embeddings = [protein_features_dict[pid] for pid in ordered_pids]
-        protein_embeddings = (
-            torch.stack(ordered_prot_embeddings)
-            if ordered_prot_embeddings
-            else torch.empty(0)
-        )
-
-        if molecule_embeddings.shape[1] != protein_embeddings.shape[1]:
+        # 确保加载的数组大小与IDMapper中的实体数量一致
+        if len(features_np) != id_mapper.num_total_entities:
             print(
-                f"Warning: Molecule ({molecule_embeddings.shape[1]}) and \
-                    protein ({protein_embeddings.shape[1]}) embedding dims differ."
+                f"    - ⚠️ WARNING: Cached feature file size ({len(features_np)}) does not match "
+                f"IDMapper entity count ({id_mapper.num_total_entities}). Regenerating features."
             )
-            # 简单的线性投影作为临时解决方案
-            proj = torch.nn.Linear(
-                molecule_embeddings.shape[1], protein_embeddings.shape[1]
-            ).to(molecule_embeddings.device)
-            molecule_embeddings = proj(molecule_embeddings)
+        else:
+            molecule_embeddings = torch.from_numpy(features_np[:num_molecules])
+            protein_embeddings = torch.from_numpy(features_np[num_molecules:])
+            print("--> Features loaded successfully.")
+            return molecule_embeddings, protein_embeddings
 
+    # --- 如果最终文件不存在或大小不匹配，则开始计算 ---
+    print("--> [Cache Miss/Regenerate] Starting feature calculation process...")
+
+    # 1. 确定计算设备
+    device = torch.device(config.runtime.gpu if torch.cuda.is_available() else "cpu")
+
+    # 2. 从 IDMapper 获取有序的权威ID和结构列表
+    #    假设 IDMapper 提供了这些公共方法来获取排序后的列表
+    ordered_cids = id_mapper.get_ordered_cids()
+    ordered_smiles = id_mapper.get_ordered_smiles()
+    ordered_pids = id_mapper.get_ordered_pids()
+    ordered_sequences = id_mapper.get_ordered_sequences()
+
+    # 3. 直接调用 extract_features 分派函数
+    molecule_features_dict = extract_features(
+        entity_type="molecule",
+        config=config,
+        device=device,
+        authoritative_ids=ordered_cids,
+        sequences_or_smiles=ordered_smiles,
+        force_regenerate=restart_flag,
+    )
+
+    protein_features_dict = extract_features(
+        entity_type="protein",
+        config=config,
+        device=device,
+        authoritative_ids=ordered_pids,
+        sequences_or_smiles=ordered_sequences,
+        force_regenerate=restart_flag,
+    )
+
+    # 4. 根据 IDMapper 的顺序，从字典中组装最终的有序张量
+    print("\n--> Assembling final feature matrices from dictionaries...")
+    ordered_mol_embeddings = [molecule_features_dict.get(cid) for cid in ordered_cids]
+    ordered_prot_embeddings = [protein_features_dict.get(pid) for pid in ordered_pids]
+
+    # 健壮性检查：确保所有实体都成功提取了特征
+    if any(e is None for e in ordered_mol_embeddings):
+        failed_cids = [
+            cid for cid, emb in zip(ordered_cids, ordered_mol_embeddings) if emb is None
+        ]
+        raise RuntimeError(
+            f"Molecule feature extraction failed for CIDs: {failed_cids[:5]}"
+        )
+
+    if any(e is None for e in ordered_prot_embeddings):
+        failed_pids = [
+            pid
+            for pid, emb in zip(ordered_pids, ordered_prot_embeddings)
+            if emb is None
+        ]
+        raise RuntimeError(
+            f"Protein feature extraction failed for PIDs: {failed_pids[:5]}"
+        )
+
+    molecule_embeddings = (
+        torch.stack(ordered_mol_embeddings)
+        if ordered_mol_embeddings
+        else torch.empty(0, 0)
+    )
+    protein_embeddings = (
+        torch.stack(ordered_prot_embeddings)
+        if ordered_prot_embeddings
+        else torch.empty(0, 0)
+    )
+
+    # 5. (可选) 维度对齐
+    if (
+        molecule_embeddings.numel() > 0
+        and protein_embeddings.numel() > 0
+        and molecule_embeddings.shape[1] != protein_embeddings.shape[1]
+    ):
+        print(
+            f"    - WARNING: Molecule ({molecule_embeddings.shape[1]}D) and protein ({protein_embeddings.shape[1]}D) embedding dimensions differ. Applying linear projection to molecules."
+        )
+        proj = torch.nn.Linear(
+            molecule_embeddings.shape[1], protein_embeddings.shape[1]
+        ).to(device)
+        molecule_embeddings = proj(molecule_embeddings.to(device)).cpu()
+
+    # 6. 拼接并保存到最终的 .npy 缓存文件
+    if molecule_embeddings.numel() == 0 and protein_embeddings.numel() == 0:
+        print(
+            "    - WARNING: No features were generated for any entity. Saving an empty feature file."
+        )
+        all_feature_embeddings = np.array([])
+    else:
         all_feature_embeddings = (
             torch.cat([molecule_embeddings, protein_embeddings], dim=0)
             .cpu()
             .detach()
             .numpy()
         )
-        rt.ensure_path_exists(final_features_path)
-        np.save(final_features_path, all_feature_embeddings)
-        print(
-            f"--> Final SOTA features saved to: {final_features_path}. Shape: {all_feature_embeddings.shape}"
-        )
-    else:
-        # 加载逻辑需要根据 id_mapper 确认维度是否匹配
-        print("\n--> Found existing features file. Loading from cache...")
-        features_np = np.load(final_features_path)
-        num_molecules = id_mapper.num_molecules
-        molecule_embeddings_np = features_np[:num_molecules]
-        protein_embeddings_np = features_np[num_molecules:]
 
-        molecule_embeddings = torch.from_numpy(molecule_embeddings_np)
-        protein_embeddings = torch.from_numpy(protein_embeddings_np)
+    rt.ensure_path_exists(final_features_path)
+    np.save(final_features_path, all_feature_embeddings)
+    print(
+        f"--> Final aggregated features saved to: '{final_features_path.name}'. Shape: {all_feature_embeddings.shape}"
+    )
 
     return molecule_embeddings, protein_embeddings
 
 
-def _generate_or_load_embeddings(
-    config: AppConfig,
-    entity_type: str,  # "protein" or "molecule"
-    authoritative_ids: list,
-    sequences_or_smiles: list,
-    restart_flag: bool,
-) -> Dict[str, torch.Tensor]:  # <-- 返回值变为字典
-    """
-    【V2 全局缓存版】高阶辅助函数/动态分派器。
-
-    它会自动：
-    1. 从config中读取该实体类型的专属配置 (模型名称, 提取器函数名等)。
-    2. 动态地从`features.extractors`模块中获取并调用正确的提取器函数。
-    3. 将所有必要的参数（包括权威ID和序列）传递给提取器。
-
-    Returns:
-        Dict[str, torch.Tensor]: 一个从权威ID映射到特征张量的字典。
-    """
-    print(f"\n--> Dispatching feature extraction for '{entity_type}'...")
-
-    # 1. 读取配置 (现在从 data_structure 读取)
-    try:
-        entity_cfg = config.data_params.feature_extractors[entity_type]
-        device = torch.device(
-            config.runtime.gpu if torch.cuda.is_available() else "cpu"
-        )
-        extractor_func_name = entity_cfg.extractor_function
-    except KeyError as e:
-        raise KeyError(
-            f"Configuration error for entity_type '{entity_type}'. Missing key: {e}"
-        )
-
-    # 2. 动态获取提取器函数
-    try:
-        extractor_function = getattr(extractors, extractor_func_name)
-    except AttributeError:
-        raise AttributeError(
-            f"Extractor function '{extractor_func_name}' not found in 'features.extractors' module."
-        )
-    kwargs_for_extractor = {
-        "authoritative_ids": authoritative_ids,
-        "config": config,
-        "device": device,
-        "force_regenerate": restart_flag,
-    }
-
-    # 根据实体类型，添加正确的、具有语义的关键字参数
-    if entity_type == "protein":
-        kwargs_for_extractor["sequences"] = sequences_or_smiles
-    elif entity_type == "molecule":
-        kwargs_for_extractor["smiles_list"] = sequences_or_smiles
-    else:
-        raise ValueError(f"Unknown entity_type for feature extraction: {entity_type}")
-
-    # 4. 【核心变化】使用 ** 操作符解包字典，进行调用
-    features_dict = extractor_function(**kwargs_for_extractor)
-
-    return features_dict
-
-
 def _stage_3_calculate_similarity_matrices(
-    config: "AppConfig",
+    config: AppConfig,
     molecule_embeddings: torch.Tensor,
     protein_embeddings: torch.Tensor,
     restart_flag: bool = False,
@@ -232,37 +256,28 @@ def _stage_3_calculate_similarity_matrices(
     # a. 首先，获取最终的缓存文件路径
     mol_sim_path = get_path(config, "processed.common.similarity_matrices.molecule")
 
-    # 分子
-    def mol_sim_calculator_wrapper_final(ids_to_fetch):
-        matrix = sim_calculators.calculate_embedding_similarity(molecule_embeddings)
-        return {"matrix": matrix}  # 返回一个带固定键的字典
-
-    mol_sim_result = rt.run_cached_operation(
+    dl_similarity_matrix = rt.run_cached_calculation(
         cache_path=mol_sim_path,
-        calculation_func=mol_sim_calculator_wrapper_final,
-        ids_to_process=["matrix"],  # 我们现在请求 "matrix" 这个键
+        calculation_func=lambda: sim_calculators.calculate_embedding_similarity(
+            molecule_embeddings
+        ),
         force_restart=restart_flag,
         operation_name="Molecule Similarity Matrix",
         verbose=verbose_level,
     )
-    dl_similarity_matrix = mol_sim_result["matrix"]
 
-    # 蛋白质
-    def prot_sim_calculator_wrapper_final(ids_to_fetch):
-        matrix = sim_calculators.calculate_embedding_similarity(protein_embeddings)
-        return {"matrix": matrix}
-
+    # --- 2. 计算蛋白质相似性矩阵 (同理) ---
     prot_sim_path = get_path(config, "processed.common.similarity_matrices.protein")
 
-    prot_sim_result = rt.run_cached_operation(
+    prot_similarity_matrix = rt.run_cached_calculation(
         cache_path=prot_sim_path,
-        calculation_func=prot_sim_calculator_wrapper_final,
-        ids_to_process=["matrix"],
+        calculation_func=lambda: sim_calculators.calculate_embedding_similarity(
+            protein_embeddings
+        ),
         force_restart=restart_flag,
         operation_name="Protein Similarity Matrix",
         verbose=verbose_level,
     )
-    prot_similarity_matrix = prot_sim_result["matrix"]
 
     return dl_similarity_matrix, prot_similarity_matrix
 
@@ -270,36 +285,81 @@ def _stage_3_calculate_similarity_matrices(
 def _stage_4_split_data_and_build_graphs(
     config: AppConfig,
     id_mapper: IDMapper,
-    all_dataframes: List[pd.DataFrame],
+    interaction_store: InteractionStore,
     dl_sim_matrix: np.ndarray,
     prot_sim_matrix: np.ndarray,
 ):
     """
-    调度函数，负责Stage 3的所有工作。
-    它现在只做两件事：收集正样本，然后将其交给总指挥官处理。
+    【V2 - Builder模式版】
+    阶段4的总调度函数。负责数据划分、图构建调度和标签文件生成。
+
+    该函数执行以下步骤：
+    1. 从 InteractionStore 获取所有带有最终关系类型的正样本对。
+    2. 使用 DataSplitter 将这些交互对划分为 K 个折叠(fold)。
+    3. 遍历每个 fold:
+        a. 实例化一个全新的、干净的 HeteroGraphBuilder。
+        b. 使用 GraphDirector 根据配置来指挥 Builder 构建训练图。
+        c. 保存构建好的图文件。
+        d. 为该 fold 生成并保存训练和测试所需的标签文件。
     """
-    # 1. 收集全局的正样本对
     print(
-        "\n--- [Stage 4] Collecting pairs, splitting data, and building graphs... ---"
+        "\n--- [Stage 4] Splitting data, building graphs, and generating labels... ---"
     )
 
-    # ==========================================================================
-    # 1. 收集和转换全局的正样本对 (取代了旧的 _collect_positive_pairs)
-    # ==========================================================================
-    positive_pairs, positive_pairs_set = id_mapper.map_pairs(all_dataframes)
+    # 1. 从 InteractionStore 获取所有带有【最终关系类型】的正样本对
+    positive_pairs_with_type, positive_pairs_set = (
+        interaction_store.get_mapped_positive_pairs(id_mapper)
+    )
 
-    data_splitter = DataSplitter(config, positive_pairs, id_mapper)
-    graph_builder = GraphBuilder(config, id_mapper, dl_sim_matrix, prot_sim_matrix)
-    # 3. 循环遍历 DataSplitter 生成的每个Fold的划分结果
+    # 如果没有任何正样本对，就没有必要继续下去
+    if not positive_pairs_with_type:
+        print(
+            "⚠️  WARNING: No positive interaction pairs found after processing. Halting graph construction."
+        )
+        return
+
+    # 2. 实例化数据划分器和图构建指挥者 (这两个组件在所有 fold 中可复用)
+    data_splitter = DataSplitter(config, positive_pairs_with_type, id_mapper)
+    director = GraphDirector(config)
+
+    # 3. 循环遍历每个 Fold，执行完整的构建和保存流程
     for fold_idx, train_pairs, test_pairs in data_splitter:
         print(
             f"\n{'=' * 30} PROCESSING FOLD {fold_idx} / {config.training.k_folds} {'=' * 30}"
         )
 
-        # a. 委托GraphBuilder构建和保存该折的图文件
-        graph_builder.build_for_fold(fold_idx, train_pairs)
+        # a. 为当前 fold 实例化一个全新的、干净的 Builder
+        #    Builder是有状态的，每一折都必须是一个新实例
+        builder = HeteroGraphBuilder(
+            config=config,
+            id_mapper=id_mapper,
+            dl_sim_matrix=dl_sim_matrix,
+            prot_sim_matrix=prot_sim_matrix,
+        )
 
-        # b. 保存该折的标签文件 (这个逻辑仍然可以保留在main_pipeline中)
+        # b. 指挥者根据配置来指挥 Builder 构建训练图
+        #    只将【训练集】的交互边作为图的背景知识传入
+        director.construct(builder, train_pairs)
+
+        # c. 从 Builder 获取最终构建完成的图
+        graph_df = builder.get_graph()
+
+        # d. 保存图文件
+        graph_output_path = get_path(
+            config,
+            "processed.specific.graph_template",
+            prefix=f"fold_{fold_idx}",
+            suffix="train",
+        )
+        rt.ensure_path_exists(graph_output_path)
+        graph_df.to_csv(graph_output_path, index=False)
+
+        if config.runtime.verbose > 0:
+            print(
+                f"--> Graph for Fold {fold_idx} saved to '{graph_output_path.name}' with {len(graph_df)} total edges."
+            )
+
+        # e. 调用辅助函数，为该 fold 生成并保存标签文件 (train 和 test)
         _generate_and_save_label_files_for_fold(
             fold_idx=fold_idx,
             train_positive_pairs=train_pairs,
@@ -312,32 +372,41 @@ def _stage_4_split_data_and_build_graphs(
 
 def _generate_and_save_label_files_for_fold(
     fold_idx: int,
-    train_positive_pairs: list,
-    test_positive_pairs: list,
-    positive_pairs_set: set,
+    train_positive_pairs: List[Tuple[int, int, str]],  # <-- 签名已更新
+    test_positive_pairs: List[Tuple[int, int, str]],  # <-- 签名已更新
+    positive_pairs_set: Set[Tuple[int, int]],
     id_mapper: IDMapper,
     config: AppConfig,
 ):
     """
+    【V2 - 健壮版】
     一个只负责为单一一折(fold)生成和保存【监督标签】文件的辅助函数。
+    它现在能正确处理包含关系类型的三元组输入。
+
+    - 训练标签文件 (train): 仅包含正样本对 (u, v)，用于 LinkNeighborLoader 的监督。
+    - 测试标签文件 (test): 包含正样本和按1:1比例采样的负样本，用于最终评估。
     """
-    verbose = config.runtime.get("verbose", 1)
+    verbose = config.runtime.verbose
     if verbose > 0:
         print(f"    -> Generating label files for Fold {fold_idx}...")
 
+    # 从配置中获取文件名模板和列名 schema
     labels_template_key = "processed.specific.labels_template"
-    graph_schema = config.data_structure.schema.internal.graph_output
     labels_schema = config.data_structure.schema.internal.labeled_edges_output
 
     # --- 1. 保存训练标签文件 (仅包含正样本) ---
-    #    这些边将用于LinkNeighborLoader的监督学习。
     train_labels_path = get_path(
         config, labels_template_key, prefix=f"fold_{fold_idx}", suffix="train"
     )
+
+    # 【核心修改】从三元组中提取 (u, v) 对
+    train_pairs_for_loader = [(u, v) for u, v, _ in train_positive_pairs]
+
     train_df = pd.DataFrame(
-        train_positive_pairs,
-        columns=[graph_schema.source_node, graph_schema.target_node],
+        train_pairs_for_loader,
+        columns=[labels_schema.source_node, labels_schema.target_node],
     )
+
     rt.ensure_path_exists(train_labels_path)
     train_df.to_csv(train_labels_path, index=False)
 
@@ -347,17 +416,20 @@ def _generate_and_save_label_files_for_fold(
         )
 
     # --- 2. 生成并保存测试标签文件 (包含正负样本) ---
-    #    这些边将用于最终的模型评估。
     test_labels_path = get_path(
         config, labels_template_key, prefix=f"fold_{fold_idx}", suffix="test"
     )
 
-    if not test_positive_pairs:
-        # 如果测试集没有正样本，创建一个空的带表头的csv文件
+    # 【核心修改】从三元组中提取 (u, v) 对
+    test_pairs_for_eval = [(u, v) for u, v, _ in test_positive_pairs]
+
+    # a. 处理没有测试正样本的边缘情况
+    if not test_pairs_for_eval:
         if verbose > 0:
             print(
-                "      - Warning: No positive pairs for the test set. Saving an empty label file."
+                "      - WARNING: No positive pairs for the test set. Saving an empty label file."
             )
+        # 创建一个空的但带有正确表头的DataFrame并保存
         pd.DataFrame(
             columns=[
                 labels_schema.source_node,
@@ -365,32 +437,42 @@ def _generate_and_save_label_files_for_fold(
                 labels_schema.label,
             ]
         ).to_csv(test_labels_path, index=False)
-        return
+        return  # 提前结束函数
 
-    # a. 生成负样本
-    negative_pairs = []
+    # b. 生成负样本
+    negative_pairs: List[Tuple[int, int]] = []
+    # 从 id_mapper 获取所有可能的分子和蛋白质ID
     all_molecule_ids = list(id_mapper.molecule_to_id.values())
     all_protein_ids = list(id_mapper.protein_to_id.values())
 
-    sampling_strategy = config.data_params.negative_sampling_strategy
+    # 检查是否有足够的实体进行采样
+    if not all_molecule_ids or not all_protein_ids:
+        print(
+            "      - WARNING: Not enough entities to generate negative samples. Test set will only contain positive samples."
+        )
+    else:
+        sampling_strategy = config.data_params.negative_sampling_strategy
+        num_neg_to_sample = len(test_pairs_for_eval)
 
-    with tqdm(
-        total=len(test_positive_pairs),
-        desc=f"      Neg Sampling for Test ({sampling_strategy})",
-        disable=verbose == 0,
-    ) as pbar:
-        while len(negative_pairs) < len(test_positive_pairs):
-            mol_idx = random.choice(all_molecule_ids)
-            p_idx = random.choice(all_protein_ids)
+        disable_tqdm = verbose == 0
+        with tqdm(
+            total=num_neg_to_sample,
+            desc=f"      - Neg Sampling for Test ({sampling_strategy})",
+            disable=disable_tqdm,
+        ) as pbar:
+            # 持续采样直到满足数量要求
+            while len(negative_pairs) < num_neg_to_sample:
+                mol_id = random.choice(all_molecule_ids)
+                prot_id = random.choice(all_protein_ids)
 
-            # 检查生成的对是否已经是已知的正样本
-            if (mol_idx, p_idx) not in positive_pairs_set:
-                negative_pairs.append((mol_idx, p_idx))
-                pbar.update(1)
+                # 检查生成的对是否已经是已知的正样本 (使用传入的 set 进行高效查找)
+                if (mol_id, prot_id) not in positive_pairs_set:
+                    negative_pairs.append((mol_id, prot_id))
+                    pbar.update(1)
 
-    # b. 组合正负样本并保存
+    # c. 组合正负样本并保存
     pos_df = pd.DataFrame(
-        test_positive_pairs,
+        test_pairs_for_eval,
         columns=[labels_schema.source_node, labels_schema.target_node],
     )
     pos_df[labels_schema.label] = 1
@@ -400,6 +482,7 @@ def _generate_and_save_label_files_for_fold(
     )
     neg_df[labels_schema.label] = 0
 
+    # 合并、打乱顺序、重置索引
     labeled_df = (
         pd.concat([pos_df, neg_df], ignore_index=True)
         .sample(frac=1, random_state=config.runtime.seed)
@@ -410,6 +493,7 @@ def _generate_and_save_label_files_for_fold(
     labeled_df.to_csv(test_labels_path, index=False)
 
     if verbose > 0:
+        ratio = len(neg_df) / len(pos_df) if len(pos_df) > 0 else 0
         print(
-            f"      - Saved {len(labeled_df)} labeled test pairs (1:{len(negative_pairs) // len(pos_df)} pos/neg ratio) to '{test_labels_path.name}'."
+            f"      - Saved {len(labeled_df)} labeled test pairs (1:{ratio:.0f} pos/neg ratio) to '{test_labels_path.name}'."
         )

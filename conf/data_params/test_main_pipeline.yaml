@@ -1,0 +1,12 @@
+defaults:
+  - _base
+  - _self_
+name: test_main_pipeline
+affinity_threshold_nM: 100
+km_threshold_nM: 100
+filtering:
+  enabled: false
+similarity_thresholds:
+  drug_drug: 0.8
+  drug_ligand: 0.7
+  protein_protein: 0.9

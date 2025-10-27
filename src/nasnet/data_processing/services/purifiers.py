@@ -1,3 +1,4 @@
+# src/nasnet/data_processing/services/purifiers.py
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
@@ -61,7 +62,7 @@ def _purify_chunk(df_chunk: pd.DataFrame) -> pd.DataFrame:
 
 def purify_dti_dataframe_parallel(df: pd.DataFrame, config: AppConfig) -> pd.DataFrame:
     """
-    对一个包含DTI数据的DataFrame进行并行的深度清洗和标准化。
+    对一个包含DTI数据的DataFrame进行并行的深度清洗和标准化。一般在调用了structure_provider之后使用。
 
     Args:
         df (pd.DataFrame): 待处理的DataFrame, 必须包含'SMILES'和'Sequence'列。

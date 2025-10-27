@@ -15,19 +15,20 @@ from omegaconf import OmegaConf
 from tqdm import tqdm
 
 from nasnet.configs import AppConfig, register_all_schemas
-from nasnet.data_processing.datasets.base_processor import BaseDataProcessor
 from nasnet.data_processing.services import (
     filter_molecules_by_properties,
     purify_dti_dataframe_parallel,
 )
 from nasnet.utils import get_path, register_hydra_resolvers
 
+from .base_processor import BaseProcessor
+
 # 导入我们新创建的基类和需要的辅助模块
 
 # 文件: src/nasnet/data_processing/datasets/bindingdb_processor.py (最终差异化流水线版)
 
 
-class BindingdbProcessor(BaseDataProcessor):
+class BindingdbProcessor(BaseProcessor):
     """
     一个专门负责处理BindingDB原始数据的处理器。
     【V6 - 最终差异化流水线版】：

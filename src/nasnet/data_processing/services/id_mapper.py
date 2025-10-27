@@ -30,15 +30,6 @@ class IDMapper:
         all_cids: Set[int] = set()
         all_pids: Set[str] = set()
 
-        # 假设第一个DataFrame是base_df，用于区分drug
-        base_df = interaction_dfs[0] if interaction_dfs else pd.DataFrame()
-        self._base_cids = set(
-            pd.to_numeric(base_df[schema.molecule_id], errors="coerce")
-            .dropna()
-            .astype(int)
-            .unique()
-        )
-
         for df in interaction_dfs:
             all_cids.update(
                 pd.to_numeric(df[schema.molecule_id], errors="coerce")
@@ -64,21 +55,36 @@ class IDMapper:
         self.drug_to_id: Dict[int, int] = {}
         self.ligand_to_id: Dict[int, int] = {}
         self.protein_to_id: Dict[str, int] = {}
+        self._drug_cids_source: Set[int] = set()  # 用一个新的属性来接收drug身份信息
 
         print(
             f"--> Collected {len(self._all_cids)} unique CIDs and {len(self._all_pids)} unique PIDs."
         )
 
+    def set_drug_cids(self, drug_cids: Set[int]):
+        """
+        【新增方法】由外部调用者注入“drug”的身份定义。
+        """
+        self._drug_cids_source = drug_cids
+        if self._config.runtime.verbose > 0:
+            print(
+                f"--> [IDMapper] Received definition for {len(drug_cids)} source drug CIDs."
+            )
+
     # --- 数据注入与状态更新接口 ---
     def update_sequences(self, sequence_map: Dict[str, str]):
         """用外部获取的序列数据更新内部字典。"""
         self._uniprot_to_sequence.update(sequence_map)
-        print(f"--> [IDMapper] Updated with {len(sequence_map)} protein sequences.")
+        print(
+            f"--> [IDMapper] Updated,now contains {len(sequence_map)} protein sequences."
+        )
 
     def update_smiles(self, smiles_map: Dict[int, str]):
         """用外部获取的SMILES数据更新内部字典。"""
         self._cid_to_smiles.update(smiles_map)
-        print(f"--> [IDMapper] Updated with {len(smiles_map)} molecule SMILES.")
+        print(
+            f"--> [IDMapper] Updated, now contains {len(smiles_map)} molecule SMILES."
+        )
 
     def update_from_dataframe(self, df: pd.DataFrame):
         """
@@ -112,7 +118,7 @@ class IDMapper:
 
     def finalize_mappings(self):
         """
-        在所有结构数据被注入和净化后，执行最终的ID分配和映射构建。
+        在所有结构数据被注入和净化后，执行最终的ID分配和别名,反向映射构建。
         """
         if self.is_finalized:
             print("--> [IDMapper] Mappings already finalized. Skipping.")
@@ -122,7 +128,7 @@ class IDMapper:
 
         # 1. 根据最终纯净的实体列表，重新确定drug/ligand身份
         purified_cids = set(self._cid_to_smiles.keys())
-        self._drug_cids = self._base_cids & purified_cids
+        self._drug_cids = self._drug_cids_source & purified_cids
         self._ligand_cids = purified_cids - self._drug_cids
 
         self._sorted_drugs = sorted(list(self._drug_cids))
@@ -143,7 +149,7 @@ class IDMapper:
             pid: i + current_id for i, pid in enumerate(self._sorted_proteins)
         }
 
-        # 3. 创建便捷的别名和反向映射
+        # 3. 创建便捷的别名和反向映射,为之后引入其他外部ID(除了CID,PID)体系做准备
         self.molecule_to_id = {**self.drug_to_id, **self.ligand_to_id}
         self.cid_to_id = self.molecule_to_id
         self.uniprot_to_id = self.protein_to_id
@@ -167,6 +173,20 @@ class IDMapper:
 
     def get_all_cids(self) -> List[int]:
         return list(self._all_cids)
+
+    def get_ordered_cids(self) -> List[int]:
+        if not self.is_finalized:
+            raise RuntimeError(
+                "Mappings must be finalized before getting ordered lists."
+            )
+        return self._sorted_drugs + self._sorted_ligands
+
+    def get_ordered_pids(self) -> List[str]:
+        if not self.is_finalized:
+            raise RuntimeError(
+                "Mappings must be finalized before getting ordered lists."
+            )
+        return self._sorted_proteins
 
     @property
     def num_drugs(self) -> int:

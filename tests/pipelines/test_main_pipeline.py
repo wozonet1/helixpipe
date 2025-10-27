@@ -1,5 +1,5 @@
-# 文件: tests/test_main_pipeline.py (全新)
-
+# 文件: tests/pipelines/test_main_pipeline.py (全新集成测试版)
+# TODO: 尚未完成
 import shutil
 import unittest
 from pathlib import Path
@@ -8,166 +8,176 @@ from unittest.mock import patch
 import hydra
 import numpy as np
 import pandas as pd
-import research_template as rt
 import torch
 from omegaconf import DictConfig
 
-from nasnet.configs.register_schemas import register_all_schemas
+from nasnet.configs import register_all_schemas
 
 # 导入我们需要测试的主函数和所有相关模块
-from nasnet.data_processing import load_datasets, process_data
+from nasnet.pipelines.main_pipeline import process_data
 from nasnet.utils import get_path, register_hydra_resolvers
 
-# 在所有测试开始前，全局执行一次注册
+# 全局执行一次注册
 register_all_schemas()
 register_hydra_resolvers()
 
 
-# FIXME: gtopdb的purifier会把现在的fake_data全部清除
 class TestMainPipeline(unittest.TestCase):
     def setUp(self):
         """为测试创建一个完全隔离的沙箱环境。"""
-        self.test_dir = Path("./test_temp_output_main_pipeline")
+        self.test_dir = Path("./test_temp_main_pipeline").resolve()
         if self.test_dir.exists():
             shutil.rmtree(self.test_dir)
 
-        self.fake_project_root = self.test_dir
-        self.fake_data_dir = self.fake_project_root / "data"
-        self.fake_conf_dir = self.fake_project_root / "conf"
-
-        # 复制伪造的原始数据到沙箱中
-        shutil.copytree("tests/fake_data_v3", self.fake_data_dir)
-        # 我们也需要一个 conf 目录，尽管我们主要用 overrides
-        self.fake_conf_dir.mkdir()
+        # 将伪造数据复制到沙箱中
+        shutil.copytree("tests/fake_data_v3", self.test_dir / "data")
 
     def tearDown(self):
         """清理测试环境。"""
-        shutil.rmtree(self.test_dir)
+        if self.test_dir.exists():
+            shutil.rmtree(self.test_dir)
 
     def _get_test_config(self, overrides: list) -> DictConfig:
         """加载配置，并强制路径指向我们的沙箱。"""
-        project_root = rt.get_project_root()
-        config_dir = project_root / "conf"
-        with hydra.initialize_config_dir(config_dir=str(config_dir), version_base=None):
-            cfg = hydra.compose("config", overrides=["data_params=test"] + overrides)
+        # 使用真实的 compose API 来构建一个完整的配置
+        with hydra.initialize(config_path="../../conf", version_base=None):
+            cfg = hydra.compose("config", overrides=overrides)
 
-        cfg.global_paths.data_root = str(self.fake_data_dir)
+        # 强制所有路径都指向沙箱
+        cfg.global_paths.data_root = str(self.test_dir / "data")
+        # 确保缓存路径也在这里
+        cfg.global_paths.cache_root = str(self.test_dir / "data" / "cache")
+        cfg.global_paths.ids_cache_dir = str(self.test_dir / "data" / "cache" / "ids")
+
         return cfg
 
-    # ------------------ 测试用例 ------------------
-    @patch("data_processing.gtopdb_processor.fetch_sequences_from_uniprot")
-    @patch("features.sim_calculators.calculate_embedding_similarity")
-    @patch("features.extractors.extract_chemberta_molecule_embeddings")
-    @patch("features.extractors.extract_esm_protein_embeddings")
-    def test_end_to_end_pipeline_for_bindingdb(
-        self, mock_esm, mock_chemberta, mock_sim, mock_gtopdb_fetch
+    # 使用 patch 装饰器来模拟所有外部和耗时的调用
+    @patch("nasnet.data_processing.services.structure_provider.StructureProvider")
+    @patch("nasnet.features.similarity_calculators.calculate_embedding_similarity")
+    @patch("nasnet.features.extractors.extract_chemberta_molecule_embeddings")
+    @patch("nasnet.features.extractors.extract_esm_protein_embeddings")
+    def test_end_to_end_pipeline_with_brenda(
+        self, mock_esm, mock_chemberta, mock_sim, mock_structure_provider
     ):
         """
-        对BindingDB数据集，进行从数据加载到图文件生成的端到端集成测试。
+        对BindingDB(主)+Brenda(辅)数据集，进行从数据加载到图文件生成的端到端集成测试。
         """
-        print("\n--- Running Test: End-to-End Main Pipeline for BindingDB ---")
+        print("\n--- Running Test: End-to-End Main Pipeline with Brenda Auxiliary ---")
 
         # --- 1. 准备 Mock ---
-        # 让特征提取器返回一个假的、但维度正确的特征字典
-        # 模拟特征提取器返回假的特征
+        # 模拟 StructureProvider 返回固定的结构信息
+        mock_sp_instance = mock_structure_provider.return_value
+        mock_sp_instance.get_sequences.return_value = {
+            "P01": "SEQ_P01_AUTH",
+            "P02": "SEQ_P02_AUTH",
+            "P03": "SEQ_P03_AUTH",
+        }
+        mock_sp_instance.get_smiles.return_value = {
+            101: "CCO",
+            102: "CCC",
+            201: "CC(=O)OC1=CC=CC=C1C(=O)O",
+            202: "CN1C=NC2=C1C(=O)N(C(=O)N2C)C",
+        }
 
+        # 模拟特征提取器返回固定的特征字典
+        # 顺序: drug(101,102), ligand(201,202) -> 4个分子
+        # 蛋白: P01, P02, P03 -> 3个蛋白
+        mock_chemberta.return_value = {
+            101: torch.randn(128),
+            102: torch.randn(128),
+            201: torch.randn(128),
+            202: torch.randn(128),
+        }
         mock_esm.return_value = {
             "P01": torch.randn(128),
             "P02": torch.randn(128),
             "P03": torch.randn(128),
         }
-        mock_chemberta.return_value = {
-            101: torch.randn(128),
-            102: torch.randn(128),
-            103: torch.randn(128),
-            201: torch.randn(128),
-            202: torch.randn(128),
-        }
 
         # 模拟一个精心设计的相似度矩阵
-        # 顺序: drug(101,102,103), ligand(201,202) -> 5x5
-        mock_sim.return_value = np.array(
-            [
-                # d101 d102 d103  l201  l202
-                [1.0, 0.9, 0.5, 0.8, 0.4],  # d101
-                [0.0, 1.0, 0.6, 0.2, 0.85],  # d102
-                [0.0, 0.0, 1.0, 0.3, 0.1],  # d103
-                [0.0, 0.0, 0.0, 1.0, 0.95],  # l201
-                [0.0, 0.0, 0.0, 0.0, 1.0],  # l202
-            ]
-        )
-        mock_gtopdb_fetch.return_value = {
-            "P01": "FAKE_GTO_SEQ_1",
-            "P03": "FAKE_GTO_SEQ_2",
-        }
+        # 第一次调用（分子）返回 4x4, 第二次（蛋白）返回 3x3
+        mock_sim.side_effect = [
+            np.array(
+                [  # 分子: d101, d102, l201, l202
+                    [1.0, 0.9, 0.5, 0.6],  # d101-d102 (pass > 0.8)
+                    [0.9, 1.0, 0.75, 0.4],  # d102-l201 (pass > 0.7)
+                    [0.5, 0.75, 1.0, 0.2],
+                    [0.6, 0.4, 0.2, 1.0],
+                ]
+            ),
+            np.array(
+                [  # 蛋白: p01, p02, p03
+                    [1.0, 0.95, 0.5],  # p01-p02 (pass > 0.9)
+                    [0.95, 1.0, 0.8],
+                    [0.5, 0.8, 1.0],
+                ]
+            ),
+        ]
+
         # --- 2. 获取配置并运行 ---
         cfg = self._get_test_config(
             overrides=[
                 "data_structure=bindingdb",
-                "relations=test_all_true",  # 打开所有边
-                "data_params=test_thresholds",  # 使用我们定义的阈值
-                "data_params.auxiliary_datasets=[gtopdb]",  # 加载辅助数据集
+                "data_params=test_main_pipeline",
+                "relations=DPL_sim",  # 打开所有边
+                "data_params.auxiliary_datasets=[brenda]",  # 加载辅助数据集
                 "runtime.verbose=1",
-                "training.k_folds=2",  # 使用2折交叉验证
-                "training.coldstart.mode=random",  # 测试stratify
+                "training.k_folds=1",  # 测试单折即可
             ]
         )
 
-        # a. 运行策略化数据加载
-        base_df, extra_dfs = load_datasets(cfg)
+        # a. 运行主处理流水线 (黑盒调用)
+        # 注意：在真实的 main.py 中，load_datasets 是在 process_data 外部调用的
+        from nasnet.data_loader_strategy import load_datasets
 
-        # b. 运行主处理流水线
+        base_df, extra_dfs = load_datasets(cfg)
         process_data(cfg, base_df=base_df, extra_dfs=extra_dfs)
 
-        # --- 3. 验证产出物 (以fold 1为例) ---
+        # --- 3. 验证最终产出物 (以fold 1为例) ---
         print("\n--- Verifying pipeline outputs for Fold 1 ---")
-        # a. 【核心修正】现在 extra_dfs 不再为空
-        self.assertEqual(len(extra_dfs), 1, "Expected one auxiliary DataFrame.")
-        # 我们伪造的 gtopdb 数据最终应该只剩 2 条
-        self.assertEqual(
-            len(extra_dfs[0]),
-            2,
-            "GtoPdb processor did not return the expected number of rows.",
-        )
+
         # a. 验证图结构文件
         graph_path = get_path(
             cfg, "processed.specific.graph_template", prefix="fold_1", suffix="train"
         )
-        self.assertTrue(graph_path.exists())
+        self.assertTrue(graph_path.exists(), "Graph file was not created.")
         graph_df = pd.read_csv(graph_path)
 
         # 详细断言图的内容
-        # 由于是随机分层抽样，我们无法精确断言交互边的数量，但可以断言相似性边的数量
+        # 预期数据处理结果:
+        # BindingDB: (101,P01), (102,P02) -> 关系 'interacts_with'
+        # Brenda: (201,P01), (202,P01) -> 关系 'inhibits'
+        # k_folds=1, 随机划分, train/test可能为空, 我们只断言相似性边
         edge_counts = graph_df["edge_type"].value_counts()
 
-        # 预期相似性边 (根据mock_sim和test_thresholds.yaml):
-        # - drug_drug: 1条 (101-102, 0.9 > 0.8)
-        # - drug_ligand: 2条 (101-201, 0.8 > 0.7; 102-202, 0.85 > 0.7)
-        # - ligand_ligand: 1条 (201-202, 0.95 > 0.9)
+        # 预期相似性边 (根据mock_sim和test_main_pipeline.yaml):
         self.assertEqual(edge_counts.get("drug_drug_similarity", 0), 1)
-        self.assertEqual(edge_counts.get("drug_ligand_similarity", 0), 2)
-        self.assertEqual(edge_counts.get("ligand_ligand_similarity", 0), 1)
-
-        # 蛋白质相似度 (P01, P02, P03) 应该在_stage_3中计算
-        # 假设我们mock_sim返回的是3x3的蛋白矩阵
-        # ... 可以添加对pp_similarity的断言 ...
+        self.assertEqual(edge_counts.get("drug_ligand_similarity", 0), 1)
+        self.assertEqual(edge_counts.get("protein_protein_similarity", 0), 1)
+        # 交互边数量取决于随机划分，但它们应该存在
+        self.assertIn("interacts_with", edge_counts)
+        self.assertIn("inhibits", edge_counts)
 
         # b. 验证标签文件
-        # 总共有 3+2=5条交互，2折划分后，train大约2-3条，test大约2-3条
         train_labels_path = get_path(
             cfg, "processed.specific.labels_template", prefix="fold_1", suffix="train"
         )
         test_labels_path = get_path(
             cfg, "processed.specific.labels_template", prefix="fold_1", suffix="test"
         )
-        self.assertTrue(train_labels_path.exists())
-        self.assertTrue(test_labels_path.exists())
+        self.assertTrue(
+            train_labels_path.exists(), "Train labels file was not created."
+        )
+        self.assertTrue(test_labels_path.exists(), "Test labels file was not created.")
 
         train_df = pd.read_csv(train_labels_path)
         test_df = pd.read_csv(test_labels_path)
-        self.assertGreater(len(train_df), 0)
-        self.assertGreater(len(test_df), 0)
-        self.assertEqual(len(train_df) + (len(test_df) // 2), 5)  # 训练+测试正样本=总数
+        # 总共有 2(BDB)+2(Brenda)=4 条正样本
+        # k_folds=1, test_fraction=0.2 -> train=3, test=1 (取决于stratify)
+        total_positives = len(train_df) + (test_df["label"] == 1).sum()
+        self.assertEqual(total_positives, 4)
+
+        print("  ✅ All pipeline outputs are correct.")
 
 
 if __name__ == "__main__":

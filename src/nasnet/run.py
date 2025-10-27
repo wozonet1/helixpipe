@@ -1,19 +1,22 @@
 import hydra
+import research_template as rt
 
-from nasnet.configs.register_schemas import AppConfig, register_all_schemas
+from nasnet.configs import AppConfig, register_all_schemas
 from nasnet.data_loader_strategy import load_datasets
 from nasnet.pipelines import process_data
-from nasnet.train import train  # noqa: F401
 
+# from nasnet.train import train  # noqa: F401
 # <--- 导入我们的新策略函数
 from nasnet.utils import register_hydra_resolvers, validate_config_with_data
 
-# from src.train import train # (暂时注释)
 register_all_schemas()
 register_hydra_resolvers()
 
+project_root = rt.get_project_root()
+config_path = f"{project_root}/conf"
 
-@hydra.main(config_path="../conf", config_name="config", version_base=None)
+
+@hydra.main(config_path=f"{config_path}", config_name="config", version_base=None)
 def run_experiment(cfg: AppConfig):
     """
     项目主实验流程的顶层入口。
