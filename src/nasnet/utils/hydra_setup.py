@@ -73,7 +73,7 @@ def path_resolver(key: str, *, _root_: DictConfig) -> str:
             if part == "processed":
                 current_path /= variant_folder
             elif part == "specific" and (i > 0 and parts[i - 1] == "processed"):
-                current_path = current_path.parent / experiment_folder
+                current_path = current_path.parent / "experiments" / experiment_folder
 
         # d. 获取文件名
         filename_key_path = f"data_structure.filenames.{key}"

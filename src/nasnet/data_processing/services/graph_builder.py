@@ -1,16 +1,16 @@
-# 文件: src/nasnet/data_processing/services/graph_builder.py (最终版)
+# 文件: src/nasnet/data_processing/services/graph_builder.py (最终正确版 - 实时计算)
 
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import List, Tuple
 
+import faiss
 import numpy as np
 import pandas as pd
 import research_template as rt
-from tqdm import tqdm
+import torch
 
 from nasnet.configs import AppConfig
-from nasnet.utils import get_path
 
 from .id_mapper import IDMapper
 
@@ -40,30 +40,36 @@ class GraphBuilder(ABC):
 
 
 # ==============================================================================
-# 2. ConcreteBuilder 实现 - 最终版
+# 2. ConcreteBuilder 实现 - 最终正确版
 # ==============================================================================
 
 
 class HeteroGraphBuilder(GraphBuilder):
     """
-    【ConcreteBuilder 实现 - V3 解耦版】
-    从分块缓存文件和交互对数据中，具体地构建异构图。
-    它不再依赖于内存中的 embeddings 张量。
+    【ConcreteBuilder - 实时计算版】
+    在构建图的过程中，实时地、分块地从特征嵌入计算相似度。
+    它不依赖任何磁盘上的相似度矩阵缓存。
     """
 
     def __init__(
         self,
         config: AppConfig,
         id_mapper: IDMapper,
+        molecule_embeddings: torch.Tensor,
+        protein_embeddings: torch.Tensor,
     ):
         """
         初始化具体的生成器。
         Args:
             config: 完整的Hydra配置。
             id_mapper: 已最终化的IDMapper实例。
+            molecule_embeddings: 【必需】用于实时计算的分子特征嵌入。
+            protein_embeddings: 【必需】用于实时计算的蛋白质特征嵌入。
         """
         self.config = config
         self.id_mapper = id_mapper
+        self.molecule_embeddings = molecule_embeddings
+        self.protein_embeddings = protein_embeddings
         self.verbose = config.runtime.verbose
 
         self._edges: List[List] = []
@@ -71,7 +77,7 @@ class HeteroGraphBuilder(GraphBuilder):
 
         if self.verbose > 0:
             print(
-                "--- [HeteroGraphBuilder] Initialized. Ready to build from file chunks. ---"
+                "--- [HeteroGraphBuilder] Initialized for on-the-fly similarity computation. ---"
             )
 
     def add_interaction_edges(self, train_pairs: List[Tuple[int, int, str]]):
@@ -89,103 +95,80 @@ class HeteroGraphBuilder(GraphBuilder):
             for edge_type, count in counts.items():
                 print(f"      - {count} '{edge_type}' edges.")
 
+    # [MODIFIED] 更新公共方法以读取新的 'similarity_top_k' 配置
     def add_molecule_similarity_edges(self):
-        """【实现】从分块缓存中加载数据并添加分子相似性边。"""
-        self._add_similarity_edges_from_chunks(
+        """【实现】调用ANN方法计算并添加分子相似性边。"""
+        self._add_similarity_edges_ann(
             entity_type="molecule",
-            chunk_dir_key="processed.common.similarity_matrices.molecule_chunks_dir",
-            batch_size=self.config.data_params.get("similarity_batch_size", 1024),
+            embeddings=self.molecule_embeddings,
+            k=self.config.data_params.similarity_top_k,
         )
 
+    # [MODIFIED] 更新公共方法
     def add_protein_similarity_edges(self):
-        """【实现】从分块缓存中加载数据并添加蛋白质相似性边。"""
-        self._add_similarity_edges_from_chunks(
+        """【实现】调用ANN方法计算并添加蛋白质相似性边。"""
+        self._add_similarity_edges_ann(
             entity_type="protein",
-            chunk_dir_key="processed.common.similarity_matrices.protein_chunks_dir",
-            batch_size=self.config.data_params.get("similarity_batch_size", 1024),
+            embeddings=self.protein_embeddings,
+            k=self.config.data_params.similarity_top_k,
         )
 
-    def get_graph(self) -> pd.DataFrame:
-        """【实现】返回构建完成的图 DataFrame。"""
-        if self.verbose > 0:
-            print(
-                f"--- [HeteroGraphBuilder] Finalizing graph with {len(self._edges)} total edges. ---"
-            )
-
-        return pd.DataFrame(
-            self._edges,
-            columns=[
-                self._graph_schema.source_node,
-                self._graph_schema.target_node,
-                self._graph_schema.edge_type,
-            ],
-        )
-
-    def _add_similarity_edges_from_chunks(
+    # [REPLACED] 旧的 _add_similarity_edges_on_the_fly 方法被完全替换为下面的新方法
+    def _add_similarity_edges_ann(
         self,
         entity_type: str,
-        chunk_dir_key: str,
-        batch_size: int,
+        embeddings: torch.Tensor,
+        k: int,
     ):
         """
-        一个通用的、从磁盘分块缓存加载数据并筛选边的函数。
+        [NEW] 使用 Faiss (ANN) 高效计算 Top-K 相似邻居并筛选边。
         """
-        # 【核心修改】从 id_mapper 获取实体数量
-        if entity_type == "molecule":
-            num_embeddings = self.id_mapper.num_molecules
-            id_offset = 0
-        elif entity_type == "protein":
-            num_embeddings = self.id_mapper.num_proteins
-            id_offset = self.id_mapper.num_molecules
-        else:
-            return
+        print(
+            f"\n    -> Calculating '{entity_type}' similarities using ANN (Faiss) for Top-{k} neighbors..."
+        )
 
-        if num_embeddings == 0:
-            return
-
-        chunk_dir = get_path(self.config, chunk_dir_key)
-        if not chunk_dir.exists():
+        num_embeddings = embeddings.shape[0]
+        if num_embeddings < k:
             print(
-                f"    - WARNING: Similarity chunk directory not found for '{entity_type}'. Skipping."
+                f"    - WARNING: Number of embeddings ({num_embeddings}) is less than k ({k}). Skipping ANN."
             )
             return
 
-        chunk_template_str = self.config.data_structure.filenames.processed.common.similarity_matrices.chunk_template
+        embeddings_np = embeddings.cpu().detach().numpy().astype(np.float32)
+        dim = embeddings_np.shape[1]
 
-        def chunk_path_factory(chunk_idx):
-            return chunk_dir / chunk_template_str.format(chunk_idx=chunk_idx)
+        # 1. 构建 Faiss 索引
+        index = faiss.IndexFlatL2(dim)
+        # 核心步骤: L2归一化，使得L2距离等价于余弦相似度
+        faiss.normalize_L2(embeddings_np)
+        index.add(embeddings_np)
 
+        # 2. 搜索 Top-K 邻居 (请求k+1个，因为第一个总是实体自身)
+        distances, indices = index.search(embeddings_np, k + 1)
+
+        # 3. 添加边
+        id_offset = 0 if entity_type == "molecule" else self.id_mapper.num_molecules
         flags = self.config.relations.flags
         thresholds = self.config.data_params.similarity_thresholds
         edge_counts = defaultdict(int)
 
-        num_chunks = (num_embeddings + batch_size - 1) // batch_size
+        # 这个循环的复杂度是 N * K，远低于 N * N
+        for i in range(num_embeddings):
+            # 从索引1开始，跳过自身
+            for neighbor_idx in range(1, k + 1):
+                j = indices[i, neighbor_idx]
 
-        disable_tqdm = self.verbose == 0
-        for i in tqdm(
-            range(num_chunks),
-            desc=f"    - Processing '{entity_type}' sim chunks",
-            disable=disable_tqdm,
-        ):
-            chunk_path = chunk_path_factory(i)
-            if not chunk_path.exists():
-                continue
+                global_id_i = i + id_offset
+                global_id_j = j + id_offset
 
-            sim_sub_matrix = np.load(chunk_path)
-
-            # 性能优化: 只处理那些可能通过阈值的候选边
-            min_threshold = min(v for k, v in thresholds.items() if "similarity" in k)
-            candidate_rows, candidate_cols = np.where(sim_sub_matrix > min_threshold)
-
-            for r, c in zip(candidate_rows, candidate_cols):
-                global_id_i = (i * batch_size) + r + id_offset
-                global_id_j = c + id_offset
-
+                # 避免重复边 (i,j) 和 (j,i)
                 if global_id_i >= global_id_j:
                     continue
 
-                similarity = sim_sub_matrix[r, c]
+                # 从L2距离转换回余弦相似度
+                similarity = 1 - 0.5 * (distances[i, neighbor_idx] ** 2)
 
+                # 后续的类型检查和阈值过滤逻辑与您原来的一样
                 type1 = self.id_mapper.get_node_type(global_id_i)
                 type2 = self.id_mapper.get_node_type(global_id_j)
                 source_type, relation_prefix, target_type = (
@@ -205,6 +188,22 @@ class HeteroGraphBuilder(GraphBuilder):
                         edge_counts[final_edge_type] += 1
 
         if self.verbose > 0 and edge_counts:
-            print("    - Added Similarity Edges:")
+            print("    - Added ANN-based Similarity Edges:")
             for edge_type, count in edge_counts.items():
                 print(f"      - {count} '{edge_type}' edges.")
+
+    def get_graph(self) -> pd.DataFrame:
+        """【实现】返回构建完成的图 DataFrame。"""
+        if self.verbose > 0:
+            print(
+                f"--- [HeteroGraphBuilder] Finalizing graph with {len(self._edges)} total edges. ---"
+            )
+
+        return pd.DataFrame(
+            self._edges,
+            columns=[
+                self._graph_schema.source_node,
+                self._graph_schema.target_node,
+                self._graph_schema.edge_type,
+            ],
+        )

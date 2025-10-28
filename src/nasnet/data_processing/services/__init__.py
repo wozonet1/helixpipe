@@ -9,6 +9,7 @@ from .id_mapper import IDMapper
 from .id_validation_service import get_human_uniprot_whitelist, get_valid_pubchem_cids
 from .interaction_store import InteractionStore
 from .purifiers import purify_entities_dataframe_parallel
+from .sampler import sample_interactions
 from .splitter import DataSplitter
 from .structure_provider import StructureProvider
 
@@ -28,4 +29,5 @@ __all__ = [
     # 常用轻量级函数
     get_human_uniprot_whitelist,
     get_valid_pubchem_cids,
+    sample_interactions,
 ]

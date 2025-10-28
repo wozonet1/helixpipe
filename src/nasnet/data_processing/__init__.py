@@ -15,6 +15,7 @@ from .services import (
     StructureProvider,
     filter_molecules_by_properties,
     purify_entities_dataframe_parallel,
+    sample_interactions,
 )
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     # 顶层函数
     purify_entities_dataframe_parallel,
     filter_molecules_by_properties,
+    sample_interactions,
     # 基类
     BaseProcessor,
     # 子模块

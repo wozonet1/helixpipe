@@ -1,11 +1,29 @@
 # 文件: src/configs/data_params.py (完整修正版)
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
+
 
 # --------------------------------------------------------------------------
 # 嵌套的 Dataclasses (这部分保持不变)
 # --------------------------------------------------------------------------
+@dataclass
+class DownstreamSamplingConfig:
+    """
+    定义下游交互对采样的策略。
+    """
+
+    # 总开关
+    enabled: bool = False
+
+    # 【方案1: 统一采样】对所有正样本进行统一比例的随机采样
+    # fraction: 采样比例 (0.0 to 1.0) 或 采样数量 (int)
+    fraction: Optional[Union[float, int]] = 1.0
+
+    # 【方案2: 分层采样】根据 Drug vs Ligand 的比例进行采样
+    # drug_to_ligand_ratio: 'drug'交互数量与'ligand'交互数量的比例
+    # 例如: 1.0 表示 1:1, 10.0 表示 10:1
+    drug_to_ligand_ratio: Optional[float] = None
 
 
 @dataclass
@@ -92,6 +110,7 @@ class DataParamsConfig:
             "drug_ligand": 0.7,
         }
     )
+    similarity_top_k: int = 10
 
     # 【已补全】最大蛋白质-蛋白质边数量
     max_pp_edges: int = 500
@@ -125,3 +144,5 @@ class DataParamsConfig:
 
     # 分子属性过滤配置 (默认是关闭的)
     filtering: FilteringConfig = field(default_factory=FilteringConfig)
+
+    sampling: DownstreamSamplingConfig = field(default_factory=DownstreamSamplingConfig)

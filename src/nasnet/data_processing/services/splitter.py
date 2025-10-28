@@ -1,6 +1,6 @@
+from collections import Counter
 from typing import TYPE_CHECKING, Iterator, List, Tuple, Union
 
-import pandas as pd
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 
 from nasnet.typing import AppConfig
@@ -78,10 +78,26 @@ class DataSplitter:
                 self.entities_to_split = self.positive_pairs
                 # 使用蛋白质ID进行分层，确保每折的蛋白质分布相似
                 dummy_y = [p[1] for p in self.positive_pairs]
-                skf = StratifiedKFold(
-                    n_splits=self.num_folds, shuffle=True, random_state=self.seed
-                )
-                self._iterator = iter(skf.split(self.entities_to_split, dummy_y))
+                class_counts = Counter(dummy_y)
+
+                # 如果最小的类别数量小于K折的数量，则无法进行分层
+                if min(class_counts.values()) < self.num_folds:
+                    print(
+                        f"    - WARNING: Cannot perform stratified K-Fold because some proteins appear "
+                        f"fewer than {self.num_folds} times. Falling back to regular K-Fold."
+                    )
+                    # 2. 降级到普通的 KFold
+                    kf = KFold(
+                        n_splits=self.num_folds, shuffle=True, random_state=self.seed
+                    )
+                    self._iterator = iter(kf.split(self.entities_to_split))
+                else:
+                    # 3. 如果可以，则继续使用 StratifiedKFold
+                    print("    - Using Stratified K-Fold for 'random' mode splitting.")
+                    skf = StratifiedKFold(
+                        n_splits=self.num_folds, shuffle=True, random_state=self.seed
+                    )
+                    self._iterator = iter(skf.split(self.entities_to_split, dummy_y))
         else:  # k=1, single split mode
             # 创建一个只包含一个None元素的迭代器，以触发一次循环
             self._iterator = iter([None])
@@ -131,21 +147,18 @@ class DataSplitter:
                 ]
             else:  # "random" mode
                 labels = [p[1] for p in self.positive_pairs]
-                label_counts = pd.Series(labels).value_counts()
-                if (label_counts < 2).any():
-                    # 如果存在“孤独”的类别，则无法进行分层抽样
+                label_counts = Counter(labels)
+                if min(label_counts.values()) < 2:
                     print(
-                        "⚠️  Warning: The test set is too small or sparse to perform stratified sampling. Falling back to simple random sampling."
+                        "    - WARNING: Cannot perform stratified train-test split. Falling back to regular split."
                     )
-                    # 回退到不带 stratify 的普通随机抽样
                     train_pairs, test_pairs = train_test_split(
                         self.positive_pairs,
                         test_size=self.test_fraction,
                         random_state=self.seed,
-                        stratify=None,  # <--- 显式地设置为None
+                        stratify=None,
                     )
                 else:
-                    # 如果所有类别的成员数都 >= 2，则安全地进行分层抽样
                     train_pairs, test_pairs = train_test_split(
                         self.positive_pairs,
                         test_size=self.test_fraction,

@@ -1,0 +1,10 @@
+name: strict_strong_0.1_1.0
+
+defaults:
+  - strict_strong
+  - _self_
+
+sampling:
+  enabled: true
+  fraction: 0.1
+  drug_to_ligand_ratio: 1.0

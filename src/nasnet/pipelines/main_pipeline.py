@@ -16,9 +16,10 @@ from nasnet.data_processing import (
     InteractionStore,
     StructureProvider,
     purify_entities_dataframe_parallel,
+    sample_interactions,
 )
 from nasnet.data_processing.services.graph_builder import HeteroGraphBuilder
-from nasnet.features import calculate_embedding_similarity, extract_features
+from nasnet.features import extract_features
 from nasnet.utils import get_path
 
 
@@ -87,20 +88,12 @@ def process_data(
         config, id_mapper=id_mapper, restart_flag=restart_flag
     )
 
-    dl_similarity_matrix, prot_similarity_matrix = (
-        _stage_3_calculate_similarity_matrices(
-            config,
-            molecule_embeddings,
-            protein_embeddings,
-            restart_flag=restart_flag,
-        )
-    )
     _stage_4_split_data_and_build_graphs(
         config,
         id_mapper,
         interaction_store,  # <-- 传递整个 store
-        dl_similarity_matrix,
-        prot_similarity_matrix,
+        molecule_embeddings,
+        protein_embeddings,
     )
 
     print("\n✅ All data processing stages completed successfully!")
@@ -253,104 +246,63 @@ def _stage_2_generate_features(
     return molecule_embeddings, protein_embeddings
 
 
-def _stage_3_calculate_similarity_matrices(
-    config: AppConfig,
-    molecule_embeddings: torch.Tensor,
-    protein_embeddings: torch.Tensor,
-    restart_flag: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    【V3.1 模板化重构版】计算所有必需的相似性矩阵。
-    """
-    print("\n--- [Stage 3] Calculating similarity matrices... ---")
-
-    # 1. 计算分子相似性矩阵
-    # a. 首先，获取最终的缓存文件路径
-    mol_sim_path = get_path(config, "processed.common.similarity_matrices.molecule")
-
-    if mol_sim_path.exists() and not restart_flag:
-        # 【2】使用 np.load 加载
-        dl_similarity_matrix = np.load(mol_sim_path)
-    else:
-        # 【3】计算
-        dl_similarity_matrix = calculate_embedding_similarity(molecule_embeddings)
-        # 【4】使用 np.save 保存
-        rt.ensure_path_exists(mol_sim_path)
-        np.save(mol_sim_path, dl_similarity_matrix)
-
-    # --- 2. 计算蛋白质相似性矩阵 (同理) ---
-    prot_sim_path = get_path(config, "processed.common.similarity_matrices.protein")
-
-    if prot_sim_path.exists() and not restart_flag:
-        # 【2】使用 np.load 加载
-        prot_similarity_matrix = np.load(prot_sim_path)
-    else:
-        # 【3】计算
-        prot_similarity_matrix = calculate_embedding_similarity(protein_embeddings)
-        # 【4】使用 np.save 保存
-        rt.ensure_path_exists(prot_sim_path)
-        np.save(prot_sim_path, prot_similarity_matrix)
-
-    return dl_similarity_matrix, prot_similarity_matrix
-
-
 def _stage_4_split_data_and_build_graphs(
     config: AppConfig,
     id_mapper: IDMapper,
     interaction_store: InteractionStore,
-    dl_sim_matrix: np.ndarray,
-    prot_sim_matrix: np.ndarray,
+    molecule_embeddings: torch.Tensor,
+    protein_embeddings: torch.Tensor,
 ):
     """
-    【V2 - Builder模式版】
-    阶段4的总调度函数。负责数据划分、图构建调度和标签文件生成。
-
-    该函数执行以下步骤：
-    1. 从 InteractionStore 获取所有带有最终关系类型的正样本对。
-    2. 使用 DataSplitter 将这些交互对划分为 K 个折叠(fold)。
-    3. 遍历每个 fold:
-        a. 实例化一个全新的、干净的 HeteroGraphBuilder。
-        b. 使用 GraphDirector 根据配置来指挥 Builder 构建训练图。
-        c. 保存构建好的图文件。
-        d. 为该 fold 生成并保存训练和测试所需的标签文件。
+    【V5 - 最终正确版 / 实时计算调度中心】
+    负责数据采样、划分、图构建调度和标签文件生成的总指挥。
+    它接收embeddings，以支持GraphBuilder的实时相似度计算。
     """
     print(
-        "\n--- [Stage 4] Splitting data, building graphs, and generating labels... ---"
+        "\n--- [Stage 4] Sampling, splitting, building graphs (with on-the-fly similarity), and generating labels... ---"
     )
 
-    # 1. 从 InteractionStore 获取所有带有【最终关系类型】的正样本对
-    positive_pairs_with_type, positive_pairs_set = (
-        interaction_store.get_mapped_positive_pairs(id_mapper)
+    # 1. 从 InteractionStore 获取【所有】正样本对
+    all_positive_pairs_with_type, _ = interaction_store.get_mapped_positive_pairs(
+        id_mapper
     )
 
-    # 如果没有任何正样本对，就没有必要继续下去
-    if not positive_pairs_with_type:
+    if not all_positive_pairs_with_type:
         print(
-            "⚠️  WARNING: No positive interaction pairs found after processing. Halting graph construction."
+            "⚠️  WARNING: No positive interaction pairs found to proceed with Stage 4."
         )
         return
 
-    # 2. 实例化数据划分器和图构建指挥者 (这两个组件在所有 fold 中可复用)
-    data_splitter = DataSplitter(config, positive_pairs_with_type, id_mapper)
+    # 2. 调用独立的采样器服务，获取本轮实验所需的数据子集
+    sampled_pairs_with_type, sampled_pairs_set = sample_interactions(
+        all_positive_pairs=all_positive_pairs_with_type,
+        id_mapper=id_mapper,
+        config=config,
+    )
+
+    if not sampled_pairs_with_type:
+        print("⚠️  WARNING: Sampling resulted in an empty dataset. Halting Stage 4.")
+        return
+
+    # 3. 实例化数据划分器和图构建指挥者
+    data_splitter = DataSplitter(config, sampled_pairs_with_type, id_mapper)
     director = GraphDirector(config)
 
-    # 3. 循环遍历每个 Fold，执行完整的构建和保存流程
+    # 4. 循环遍历每个 Fold，执行完整的构建和保存流程
     for fold_idx, train_pairs, test_pairs in data_splitter:
         print(
             f"\n{'=' * 30} PROCESSING FOLD {fold_idx} / {config.training.k_folds} {'=' * 30}"
         )
 
-        # a. 为当前 fold 实例化一个全新的、干净的 Builder
-        #    Builder是有状态的，每一折都必须是一个新实例
+        # a. 实例化 Builder，并【注入】embeddings
         builder = HeteroGraphBuilder(
             config=config,
             id_mapper=id_mapper,
-            dl_sim_matrix=dl_sim_matrix,
-            prot_sim_matrix=prot_sim_matrix,
+            molecule_embeddings=molecule_embeddings,
+            protein_embeddings=protein_embeddings,
         )
 
         # b. 指挥者根据配置来指挥 Builder 构建训练图
-        #    只将【训练集】的交互边作为图的背景知识传入
         director.construct(builder, train_pairs)
 
         # c. 从 Builder 获取最终构建完成的图
@@ -368,15 +320,15 @@ def _stage_4_split_data_and_build_graphs(
 
         if config.runtime.verbose > 0:
             print(
-                f"--> Graph for Fold {fold_idx} saved to '{graph_output_path.name}' with {len(graph_df)} total edges."
+                f"--> Graph for Fold {fold_idx} saved to '{graph_output_path.name}' with {len(graph_df)} edges."
             )
 
-        # e. 调用辅助函数，为该 fold 生成并保存标签文件 (train 和 test)
+        # e. 调用辅助函数，为该 fold 生成并保存标签文件
         _generate_and_save_label_files_for_fold(
             fold_idx=fold_idx,
             train_positive_pairs=train_pairs,
             test_positive_pairs=test_pairs,
-            positive_pairs_set=positive_pairs_set,
+            positive_pairs_set=sampled_pairs_set,
             id_mapper=id_mapper,
             config=config,
         )
