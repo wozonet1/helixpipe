@@ -13,6 +13,7 @@ def sample_interactions(
     all_positive_pairs: List[Tuple[int, int, str]],
     id_mapper: IDMapper,
     config: AppConfig,
+    seed: int,
 ) -> Tuple[List[Tuple[int, int, str]], Set[Tuple[int, int]]]:
     """
     【V4 - 正确顺序串联版】
@@ -23,7 +24,7 @@ def sample_interactions(
     2. (如果启用) 然后在第一步的结果上，进行统一采样 (fraction)。
     """
     sampling_cfg = config.data_params.sampling
-
+    random.seed(seed)
     if not sampling_cfg.enabled:
         original_set = {(u, v) for u, v, _ in all_positive_pairs}
         return all_positive_pairs, original_set
@@ -60,7 +61,6 @@ def sample_interactions(
                 f"    - Sub-sampling {n_drug_to_sample} Drug pairs to match {n_ligand_pairs} Ligand pairs."
             )
 
-            random.seed(config.runtime.seed)
             sampled_drug_pairs = random.sample(drug_pairs, n_drug_to_sample)
 
             # 更新工作集为分层采样后的结果
@@ -102,7 +102,6 @@ def sample_interactions(
             )
 
             # 3. 分别进行采样
-            random.seed(config.runtime.seed)
             sampled_drug_pairs = random.sample(drug_pairs_stratum, n_drug_to_sample)
             sampled_ligand_pairs = random.sample(
                 ligand_pairs_stratum, n_ligand_to_sample
@@ -113,7 +112,6 @@ def sample_interactions(
 
     # --- 最终处理 (保持不变) ---
     final_sampled_pairs = working_pairs
-    random.seed(config.runtime.seed)
     random.shuffle(final_sampled_pairs)
 
     sampled_pairs_set = {(u, v) for u, v, _ in final_sampled_pairs}

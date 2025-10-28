@@ -61,6 +61,7 @@ def path_resolver(key: str, *, _root_: DictConfig) -> str:
         relations_name = cfg.relations.name
         split_mode = cfg.training.coldstart.mode
         experiment_folder = f"{relations_name}-{split_mode}split"
+        collection_name = cfg.dataset_collection.name
 
         # b. 基础目录
         base_dir = Path(cfg.global_paths.data_root) / cfg.data_structure.primary_dataset
@@ -71,6 +72,7 @@ def path_resolver(key: str, *, _root_: DictConfig) -> str:
         for i, part in enumerate(parts):
             current_path /= part
             if part == "processed":
+                current_path /= collection_name
                 current_path /= variant_folder
             elif part == "specific" and (i > 0 and parts[i - 1] == "processed"):
                 current_path = current_path.parent / "experiments" / experiment_folder

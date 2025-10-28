@@ -13,6 +13,7 @@ from .data_params import DataParamsConfig
 # --- 1. 静态地、明确地导入所有Config组件 ---
 # 这使得AppConfig可以被静态分析，并被外部导入
 from .data_structure import DataStructureConfig
+from .dataset_collection import DatasetCollectionConfig
 from .global_paths import GlobalPathsConfig
 from .mlflow import MlflowConfig
 from .predictor import PredictorConfig
@@ -41,6 +42,9 @@ class AppConfig:
     relations: RelationsConfig = field(default_factory=RelationsConfig)
     predictor: PredictorConfig = field(default_factory=PredictorConfig)
     validators: ValidatorsConfig = field(default_factory=ValidatorsConfig)
+    dataset_collection: DatasetCollectionConfig = field(
+        default_factory=DatasetCollectionConfig
+    )
 
     # --- 明确列出所有顶层字段 ---
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -72,6 +76,7 @@ def register_all_schemas():
         "predictor": PredictorConfig,
         "analysis": AnalysisConfig,
         "validators": ValidatorsConfig,
+        "dataset_collection": DatasetCollectionConfig,
         # 注意：training, runtime等顶层节点没有“组”的概念，所以不在这里注册
     }
 

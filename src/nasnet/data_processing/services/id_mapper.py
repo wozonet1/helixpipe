@@ -233,6 +233,7 @@ class IDMapper:
         else:
             return "protein"
 
+    # TODO: 性能瓶颈
     def to_dataframe(self) -> pd.DataFrame:
         print("--- [IDMapper] Exporting internal state to DataFrame... ---")
         schema = self._config.data_structure.schema.internal.authoritative_dti

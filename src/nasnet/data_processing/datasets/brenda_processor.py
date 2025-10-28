@@ -29,7 +29,7 @@ class BrendaProcessor(BaseProcessor):
     def __init__(self, config: AppConfig):
         super().__init__(config)
         self.external_schema = self.config.data_structure.schema.external.brenda
-        self._name_to_cid_map = self._load_name_cid_map()
+        self._name_to_cid_map: Dict[str, int] | None = None
 
     # --- 实现 BaseProcessor 的抽象方法 ---
 
@@ -187,7 +187,8 @@ class BrendaProcessor(BaseProcessor):
         """步骤3: 将'Molecule_Name'映射为'PubChem_CID'，并重命名列以符合内部标准。"""
         if df.empty:
             return df
-
+        if self._name_to_cid_map is None:
+            self._name_to_cid_map = self._load_name_cid_map()
         # 执行 Name -> CID 映射
         unique_names = df["Molecule_Name"].dropna().unique()
         cleaned_names = pd.Series(

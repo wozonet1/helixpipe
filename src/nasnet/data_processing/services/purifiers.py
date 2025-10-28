@@ -42,6 +42,7 @@ def _purify_molecules_chunk(
     return df
 
 
+# TODO: 性能瓶颈
 def _purify_proteins_chunk(
     df_chunk: pd.DataFrame, seq_col: str, verbose: int = 0
 ) -> pd.DataFrame:

@@ -12,7 +12,7 @@ import torch
 
 from nasnet.configs import AppConfig
 
-from .id_mapper import IDMapper
+from .graph_context import GraphBuildContext
 
 # ==============================================================================
 # 1. Builder 抽象基类 (接口) - 保持不变
@@ -54,7 +54,7 @@ class HeteroGraphBuilder(GraphBuilder):
     def __init__(
         self,
         config: AppConfig,
-        id_mapper: IDMapper,
+        context: GraphBuildContext,
         molecule_embeddings: torch.Tensor,
         protein_embeddings: torch.Tensor,
     ):
@@ -62,12 +62,12 @@ class HeteroGraphBuilder(GraphBuilder):
         初始化具体的生成器。
         Args:
             config: 完整的Hydra配置。
-            id_mapper: 已最终化的IDMapper实例。
+            context: 包含所有局部ID映射和信息的图构建上下文对象。
             molecule_embeddings: 【必需】用于实时计算的分子特征嵌入。
             protein_embeddings: 【必需】用于实时计算的蛋白质特征嵌入。
         """
         self.config = config
-        self.id_mapper = id_mapper
+        self.context = context
         self.molecule_embeddings = molecule_embeddings
         self.protein_embeddings = protein_embeddings
         self.verbose = config.runtime.verbose
@@ -113,7 +113,7 @@ class HeteroGraphBuilder(GraphBuilder):
             k=self.config.data_params.similarity_top_k,
         )
 
-    # [REPLACED] 旧的 _add_similarity_edges_on_the_fly 方法被完全替换为下面的新方法
+    # [MODIFIED] _add_similarity_edges_ann 的内部逻辑需要微调
     def _add_similarity_edges_ann(
         self,
         entity_type: str,
@@ -121,56 +121,58 @@ class HeteroGraphBuilder(GraphBuilder):
         k: int,
     ):
         """
-        [NEW] 使用 Faiss (ANN) 高效计算 Top-K 相似邻居并筛选边。
+        [V2] 使用 Faiss (ANN) 在【局部】特征上高效计算 Top-K 相似邻居。
         """
         print(
             f"\n    -> Calculating '{entity_type}' similarities using ANN (Faiss) for Top-{k} neighbors..."
         )
 
         num_embeddings = embeddings.shape[0]
-        if num_embeddings < k:
+        if (
+            num_embeddings <= k
+        ):  # [FIX] 健壮性检查：如果实体数小于等于k，无法找到k个"其他"邻居
             print(
-                f"    - WARNING: Number of embeddings ({num_embeddings}) is less than k ({k}). Skipping ANN."
+                f"    - WARNING: Number of embeddings ({num_embeddings}) is not greater than k ({k}). Skipping ANN for '{entity_type}'."
             )
             return
 
         embeddings_np = embeddings.cpu().detach().numpy().astype(np.float32)
         dim = embeddings_np.shape[1]
 
-        # 1. 构建 Faiss 索引
         index = faiss.IndexFlatL2(dim)
-        # 核心步骤: L2归一化，使得L2距离等价于余弦相似度
         faiss.normalize_L2(embeddings_np)
         index.add(embeddings_np)
 
-        # 2. 搜索 Top-K 邻居 (请求k+1个，因为第一个总是实体自身)
         distances, indices = index.search(embeddings_np, k + 1)
 
-        # 3. 添加边
-        id_offset = 0 if entity_type == "molecule" else self.id_mapper.num_molecules
+        # [MODIFIED] id_offset 的计算逻辑已更新
+        id_offset = (
+            0
+            if entity_type == "molecule"
+            else self.context.get_local_protein_id_offset()
+        )
+
         flags = self.config.relations.flags
         thresholds = self.config.data_params.similarity_thresholds
         edge_counts = defaultdict(int)
 
-        # 这个循环的复杂度是 N * K，远低于 N * N
         for i in range(num_embeddings):
-            # 从索引1开始，跳过自身
             for neighbor_idx in range(1, k + 1):
                 j = indices[i, neighbor_idx]
 
-                global_id_i = i + id_offset
-                global_id_j = j + id_offset
+                # ID现在是相对于局部嵌入矩阵的索引
+                local_id_i = i + id_offset
+                local_id_j = j + id_offset
 
-                # 避免重复边 (i,j) 和 (j,i)
-                if global_id_i >= global_id_j:
+                if local_id_i >= local_id_j:
                     continue
 
-                # 从L2距离转换回余弦相似度
                 similarity = 1 - 0.5 * (distances[i, neighbor_idx] ** 2)
 
-                # 后续的类型检查和阈值过滤逻辑与您原来的一样
-                type1 = self.id_mapper.get_node_type(global_id_i)
-                type2 = self.id_mapper.get_node_type(global_id_j)
+                # [MODIFIED] 从 context 获取节点类型，而不是从全局 id_mapper
+                type1 = self.context.get_local_node_type(local_id_i)
+                type2 = self.context.get_local_node_type(local_id_j)
+
                 source_type, relation_prefix, target_type = (
                     rt.graph_utils.get_canonical_relation(type1, type2)
                 )
@@ -179,10 +181,11 @@ class HeteroGraphBuilder(GraphBuilder):
                 if flags.get(final_edge_type, False):
                     threshold = thresholds.get(relation_prefix, 1.1)
                     if similarity > threshold:
+                        # [MODIFIED] source_id 和 target_id 现在是局部ID
                         source_id, target_id = (
-                            (global_id_i, global_id_j)
+                            (local_id_i, local_id_j)
                             if type1 == source_type
-                            else (global_id_j, global_id_i)
+                            else (local_id_j, local_id_i)
                         )
                         self._edges.append([source_id, target_id, final_edge_type])
                         edge_counts[final_edge_type] += 1

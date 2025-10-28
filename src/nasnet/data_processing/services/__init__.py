@@ -1,6 +1,7 @@
 # --- 2. 提升最重要、最常用的“重量级”工具函数 ---
 from .filter import filter_molecules_by_properties
 from .graph_builder import GraphBuilder, HeteroGraphBuilder
+from .graph_context import GraphBuildContext
 from .graph_director import GraphDirector
 from .id_mapper import IDMapper
 
@@ -8,6 +9,7 @@ from .id_mapper import IDMapper
 # 我们可以选择性地提升那些在项目外部也可能被直接使用的函数
 from .id_validation_service import get_human_uniprot_whitelist, get_valid_pubchem_cids
 from .interaction_store import InteractionStore
+from .label_generator import SupervisionFileManager
 from .purifiers import purify_entities_dataframe_parallel
 from .sampler import sample_interactions
 from .splitter import DataSplitter
@@ -23,6 +25,8 @@ __all__ = [
     GraphDirector,
     HeteroGraphBuilder,
     GraphBuilder,
+    GraphBuildContext,
+    SupervisionFileManager,
     # 重量级函数
     filter_molecules_by_properties,
     purify_entities_dataframe_parallel,

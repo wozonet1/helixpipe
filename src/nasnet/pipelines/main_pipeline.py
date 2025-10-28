@@ -1,20 +1,20 @@
-import random
-from typing import List, Set, Tuple
+from typing import List
 
 import numpy as np
 import pandas as pd
 import research_template as rt
 import torch
-from tqdm import tqdm
 
 # (确保在文件顶部有以下 imports)
 from nasnet.configs import AppConfig
 from nasnet.data_processing import (
     DataSplitter,
+    GraphBuildContext,
     GraphDirector,
     IDMapper,
     InteractionStore,
     StructureProvider,
+    SupervisionFileManager,
     purify_entities_dataframe_parallel,
     sample_interactions,
 )
@@ -87,13 +87,14 @@ def process_data(
     molecule_embeddings, protein_embeddings = _stage_2_generate_features(
         config, id_mapper=id_mapper, restart_flag=restart_flag
     )
-
+    # TODO:隔离cache与纯计算?
     _stage_4_split_data_and_build_graphs(
         config,
         id_mapper,
         interaction_store,  # <-- 传递整个 store
         molecule_embeddings,
         protein_embeddings,
+        master_seed=config.runtime.seed,
     )
 
     print("\n✅ All data processing stages completed successfully!")
@@ -252,212 +253,106 @@ def _stage_4_split_data_and_build_graphs(
     interaction_store: InteractionStore,
     molecule_embeddings: torch.Tensor,
     protein_embeddings: torch.Tensor,
+    master_seed: int = 42,
 ):
     """
-    【V5 - 最终正确版 / 实时计算调度中心】
+    【V6 - 上下文服务重构版】
     负责数据采样、划分、图构建调度和标签文件生成的总指挥。
-    它接收embeddings，以支持GraphBuilder的实时相似度计算。
+    它现在使用 GraphBuildContext 来封装所有局部上下文管理逻辑。
     """
     print(
-        "\n--- [Stage 4] Sampling, splitting, building graphs (with on-the-fly similarity), and generating labels... ---"
+        "\n--- [Stage 4] Sampling, splitting, building graphs (with local context)... ---"
     )
-
-    # 1. 从 InteractionStore 获取【所有】正样本对
+    stage4_rng = np.random.default_rng(config.runtime.seed)
+    # --- 步骤 1: 采样 (逻辑不变) ---
     all_positive_pairs_with_type, _ = interaction_store.get_mapped_positive_pairs(
         id_mapper
     )
-
     if not all_positive_pairs_with_type:
-        print(
-            "⚠️  WARNING: No positive interaction pairs found to proceed with Stage 4."
-        )
+        print("⚠️  WARNING: No positive interaction pairs found. Halting Stage 4.")
         return
 
-    # 2. 调用独立的采样器服务，获取本轮实验所需的数据子集
-    sampled_pairs_with_type, sampled_pairs_set = sample_interactions(
+    sampled_pairs_with_type, sampled_pairs_set_global = sample_interactions(
         all_positive_pairs=all_positive_pairs_with_type,
         id_mapper=id_mapper,
         config=config,
+        seed=stage4_rng.integers(114514),
     )
-
     if not sampled_pairs_with_type:
         print("⚠️  WARNING: Sampling resulted in an empty dataset. Halting Stage 4.")
         return
 
-    # 3. 实例化数据划分器和图构建指挥者
-    data_splitter = DataSplitter(config, sampled_pairs_with_type, id_mapper)
+    data_splitter = DataSplitter(
+        config=config,
+        positive_pairs=sampled_pairs_with_type,
+        id_mapper=id_mapper,  # 传递全局 id_mapper 以供验证使用
+        seed=stage4_rng.integers(1919),  # 从主RNG获取一个新种子
+    )
     director = GraphDirector(config)
-
-    # 4. 循环遍历每个 Fold，执行完整的构建和保存流程
-    for fold_idx, train_pairs, test_pairs in data_splitter:
+    graph_output_path_template = get_path(
+        config,
+        "processed.specific.graph_template",
+        suffix="train",
+    )
+    # --- [MODIFIED] 步骤 5: 循环每个Fold，但在局部空间内构建图 ---
+    for fold_idx, global_train_pairs, global_test_pairs in data_splitter:
         print(
             f"\n{'=' * 30} PROCESSING FOLD {fold_idx} / {config.training.k_folds} {'=' * 30}"
         )
+        # 4. [MOVED & MODIFIED] 在循环内部，为当前Fold创建专属上下文
+        #    只使用【训练集】的交互来定义相关实体
+        relevant_mol_ids = {u for u, v, _ in global_train_pairs}
+        relevant_prot_ids = {v for u, v, _ in global_train_pairs}
 
-        # a. 实例化 Builder，并【注入】embeddings
+        context = GraphBuildContext(
+            global_id_mapper=id_mapper,
+            fold_idx=fold_idx,
+            global_mol_embeddings=molecule_embeddings,
+            global_prot_embeddings=protein_embeddings,
+            relevant_mol_ids=relevant_mol_ids,
+            relevant_prot_ids=relevant_prot_ids,
+            config=config,
+        )
+        local_train_pairs = context.convert_pairs_to_local(global_train_pairs)
+        # a. 实例化 Builder，并注入【局部】上下文信息
+        #    注意: 我们不再传递完整的 id_mapper，而是传递 context 提供的局部信息
         builder = HeteroGraphBuilder(
             config=config,
-            id_mapper=id_mapper,
-            molecule_embeddings=molecule_embeddings,
-            protein_embeddings=protein_embeddings,
+            context=context,
+            molecule_embeddings=context.local_mol_embeddings,
+            protein_embeddings=context.local_prot_embeddings,
         )
 
-        # b. 指挥者根据配置来指挥 Builder 构建训练图
-        director.construct(builder, train_pairs)
+        # b. 指挥者在【局部】空间内构建训练图
+        director.construct(builder, local_train_pairs)
+        local_graph_df = builder.get_graph()
 
-        # c. 从 Builder 获取最终构建完成的图
-        graph_df = builder.get_graph()
-
-        # d. 保存图文件
-        graph_output_path = get_path(
-            config,
-            "processed.specific.graph_template",
-            prefix=f"fold_{fold_idx}",
-            suffix="train",
+        # c. [NEW] 将图转换回【全局】ID空间
+        global_graph_df = context.convert_dataframe_to_global(
+            local_graph_df,
+            source_col=config.data_structure.schema.internal.graph_output.source_node,
+            target_col=config.data_structure.schema.internal.graph_output.target_node,
         )
+
+        graph_output_path = graph_output_path_template(prefix=f"fold_{fold_idx}")
         rt.ensure_path_exists(graph_output_path)
-        graph_df.to_csv(graph_output_path, index=False)
+        global_graph_df.to_csv(graph_output_path, index=False)
 
         if config.runtime.verbose > 0:
             print(
-                f"--> Graph for Fold {fold_idx} saved to '{graph_output_path.name}' with {len(graph_df)} edges."
+                f"--> Graph for Fold {fold_idx} saved to '{graph_output_path.name}' with {len(global_graph_df)} edges."
             )
 
-        # e. 调用辅助函数，为该 fold 生成并保存标签文件
-        _generate_and_save_label_files_for_fold(
+        # f. 委托 SupervisionFileManager 处理所有标签文件
+        label_manager = SupervisionFileManager(
             fold_idx=fold_idx,
-            train_positive_pairs=train_pairs,
-            test_positive_pairs=test_pairs,
-            positive_pairs_set=sampled_pairs_set,
-            id_mapper=id_mapper,
             config=config,
+            global_id_mapper=id_mapper,
+            global_positive_pairs_set=sampled_pairs_set_global,
+            seed=stage4_rng.integers(1_000_000),
         )
 
-
-def _generate_and_save_label_files_for_fold(
-    fold_idx: int,
-    train_positive_pairs: List[Tuple[int, int, str]],  # <-- 签名已更新
-    test_positive_pairs: List[Tuple[int, int, str]],  # <-- 签名已更新
-    positive_pairs_set: Set[Tuple[int, int]],
-    id_mapper: IDMapper,
-    config: AppConfig,
-):
-    """
-    【V2 - 健壮版】
-    一个只负责为单一一折(fold)生成和保存【监督标签】文件的辅助函数。
-    它现在能正确处理包含关系类型的三元组输入。
-
-    - 训练标签文件 (train): 仅包含正样本对 (u, v)，用于 LinkNeighborLoader 的监督。
-    - 测试标签文件 (test): 包含正样本和按1:1比例采样的负样本，用于最终评估。
-    """
-    verbose = config.runtime.verbose
-    if verbose > 0:
-        print(f"    -> Generating label files for Fold {fold_idx}...")
-
-    # 从配置中获取文件名模板和列名 schema
-    labels_template_key = "processed.specific.labels_template"
-    labels_schema = config.data_structure.schema.internal.labeled_edges_output
-
-    # --- 1. 保存训练标签文件 (仅包含正样本) ---
-    train_labels_path = get_path(
-        config, labels_template_key, prefix=f"fold_{fold_idx}", suffix="train"
-    )
-
-    # 【核心修改】从三元组中提取 (u, v) 对
-    train_pairs_for_loader = [(u, v) for u, v, _ in train_positive_pairs]
-
-    train_df = pd.DataFrame(
-        train_pairs_for_loader,
-        columns=[labels_schema.source_node, labels_schema.target_node],
-    )
-
-    rt.ensure_path_exists(train_labels_path)
-    train_df.to_csv(train_labels_path, index=False)
-
-    if verbose > 0:
-        print(
-            f"      - Saved {len(train_df)} positive training pairs to '{train_labels_path.name}'."
-        )
-
-    # --- 2. 生成并保存测试标签文件 (包含正负样本) ---
-    test_labels_path = get_path(
-        config, labels_template_key, prefix=f"fold_{fold_idx}", suffix="test"
-    )
-
-    # 【核心修改】从三元组中提取 (u, v) 对
-    test_pairs_for_eval = [(u, v) for u, v, _ in test_positive_pairs]
-
-    # a. 处理没有测试正样本的边缘情况
-    if not test_pairs_for_eval:
-        if verbose > 0:
-            print(
-                "      - WARNING: No positive pairs for the test set. Saving an empty label file."
-            )
-        # 创建一个空的但带有正确表头的DataFrame并保存
-        pd.DataFrame(
-            columns=[
-                labels_schema.source_node,
-                labels_schema.target_node,
-                labels_schema.label,
-            ]
-        ).to_csv(test_labels_path, index=False)
-        return  # 提前结束函数
-
-    # b. 生成负样本
-    negative_pairs: List[Tuple[int, int]] = []
-    # 从 id_mapper 获取所有可能的分子和蛋白质ID
-    all_molecule_ids = list(id_mapper.molecule_to_id.values())
-    all_protein_ids = list(id_mapper.protein_to_id.values())
-
-    # 检查是否有足够的实体进行采样
-    if not all_molecule_ids or not all_protein_ids:
-        print(
-            "      - WARNING: Not enough entities to generate negative samples. Test set will only contain positive samples."
-        )
-    else:
-        sampling_strategy = config.data_params.negative_sampling_strategy
-        num_neg_to_sample = len(test_pairs_for_eval)
-
-        disable_tqdm = verbose == 0
-        with tqdm(
-            total=num_neg_to_sample,
-            desc=f"      - Neg Sampling for Test ({sampling_strategy})",
-            disable=disable_tqdm,
-        ) as pbar:
-            # 持续采样直到满足数量要求
-            while len(negative_pairs) < num_neg_to_sample:
-                mol_id = random.choice(all_molecule_ids)
-                prot_id = random.choice(all_protein_ids)
-
-                # 检查生成的对是否已经是已知的正样本 (使用传入的 set 进行高效查找)
-                if (mol_id, prot_id) not in positive_pairs_set:
-                    negative_pairs.append((mol_id, prot_id))
-                    pbar.update(1)
-
-    # c. 组合正负样本并保存
-    pos_df = pd.DataFrame(
-        test_pairs_for_eval,
-        columns=[labels_schema.source_node, labels_schema.target_node],
-    )
-    pos_df[labels_schema.label] = 1
-
-    neg_df = pd.DataFrame(
-        negative_pairs, columns=[labels_schema.source_node, labels_schema.target_node]
-    )
-    neg_df[labels_schema.label] = 0
-
-    # 合并、打乱顺序、重置索引
-    labeled_df = (
-        pd.concat([pos_df, neg_df], ignore_index=True)
-        .sample(frac=1, random_state=config.runtime.seed)
-        .reset_index(drop=True)
-    )
-
-    rt.ensure_path_exists(test_labels_path)
-    labeled_df.to_csv(test_labels_path, index=False)
-
-    if verbose > 0:
-        ratio = len(neg_df) / len(pos_df) if len(pos_df) > 0 else 0
-        print(
-            f"      - Saved {len(labeled_df)} labeled test pairs (1:{ratio:.0f} pos/neg ratio) to '{test_labels_path.name}'."
+        # 使用最终简化版的接口
+        label_manager.generate_and_save(
+            train_pairs_global=global_train_pairs, test_pairs_global=global_test_pairs
         )

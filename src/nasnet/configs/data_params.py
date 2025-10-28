@@ -1,7 +1,7 @@
 # 文件: src/configs/data_params.py (完整修正版)
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Union
+from typing import Dict, Optional, Union
 
 
 # --------------------------------------------------------------------------
@@ -121,9 +121,6 @@ class DataParamsConfig:
     # 【修正】通用亲和力阈值，默认值与 baseline.yaml 一致
     affinity_threshold_nM: int = 10000
     km_threshold_nM: int = 10000  # 为 Brenda 数据集预留
-
-    # 要加载的辅助数据集列表
-    auxiliary_datasets: List[str] = field(default_factory=list)
 
     # 特征提取器配置 (字典形式)
     # 我们可以在这里为 feature_extractors 提供一个更完整的默认结构

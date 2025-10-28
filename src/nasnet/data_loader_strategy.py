@@ -6,14 +6,14 @@ from typing import List, Tuple
 
 import hydra
 import pandas as pd
-import research_template as rt
-from omegaconf import DictConfig
+
+from nasnet.configs import AppConfig
 
 # 导入我们的抽象基类，用于类型检查和文档
 from nasnet.data_processing import BaseProcessor
 
 
-def _run_processor(name: str, config: DictConfig) -> pd.DataFrame:
+def _run_processor(name: str, config: AppConfig) -> pd.DataFrame:
     """
     【V2 - 适配新架构版】
     一个动态实例化并运行任何数据处理器的辅助函数。
@@ -80,7 +80,7 @@ def _run_processor(name: str, config: DictConfig) -> pd.DataFrame:
         sys.exit(1)
 
 
-def load_datasets(config: DictConfig) -> Tuple[pd.DataFrame, List[pd.DataFrame]]:
+def load_datasets(config: AppConfig) -> Tuple[pd.DataFrame, List[pd.DataFrame]]:
     """
     【核心策略函数】根据主配置，加载主数据集和所有指定的辅助数据集。
 
@@ -108,37 +108,39 @@ def load_datasets(config: DictConfig) -> Tuple[pd.DataFrame, List[pd.DataFrame]]
 
     # --- 2. 按需加载所有辅助数据集 ---
     extra_dfs = []
-    aux_dataset_names = config.data_params.get("auxiliary_datasets", [])
+    aux_dataset_names = config.dataset_collection.get("auxiliary_datasets", [])
 
     if aux_dataset_names:
         print(
             f"\n--> Loading {len(aux_dataset_names)} AUXILIARY dataset(s): {aux_dataset_names}"
         )
-        # 【核心修正】在循环外，一次性地获取配置目录的绝对路径
-        try:
-            project_root = rt.get_project_root()
-            config_dir = str(project_root / "conf")
-        except Exception as e:
-            print(f"❌ 无法确定项目根目录或配置路径。错误: {e}")
-            sys.exit(1)
+        # [REMOVED] 不再需要手动查找 config_dir
+        # try:
+        #     project_root = rt.get_project_root()
+        #     config_dir = str(project_root / "conf")
+        # except Exception as e:
+        #     print(f"❌ 无法确定项目根目录或配置路径。错误: {e}")
+        #     sys.exit(1)
 
         for name in aux_dataset_names:
             print(f"    - Composing temporary config for '{name}'...")
 
-            # 【核心修正】使用 initialize_config_dir 和绝对路径
-            with hydra.initialize_config_dir(config_dir=config_dir, version_base=None):
-                # 【最终修正】直接把主config中所有相关的顶层配置，都作为覆盖传递下去
-                # 这确保了所有上下文都得到了保留
-                overrides_list = [
-                    f"data_structure={name}",
-                    f"data_params={config.data_params.name}",
-                    f"global_paths.data_root={config.global_paths.data_root}",  # <--- 明确传递
-                    f"runtime.verbose={config.runtime.verbose}",  # <--- 传递verbose
-                ]
+            # [REMOVED] 移除整个 with hydra.initialize_config_dir(...) 语句块
+            # with hydra.initialize_config_dir(config_dir=config_dir, version_base=None):
 
-                aux_config = hydra.compose(
-                    config_name="config", overrides=overrides_list
-                )
+            # [MODIFIED] 直接在循环内部构建覆盖列表和调用 compose
+            overrides_list = [
+                f"data_structure={name}",
+                # [IMPROVEMENT] 我们不应该只传递几个固定的上下文，
+                # 而是应该让辅助配置继承主配置的大部分内容，只覆盖 data_structure。
+                # 但为了最小化改动，我们先保持您原来的逻辑。
+                f"data_params={config.data_params.name}",
+                f"global_paths.data_root={config.global_paths.data_root}",
+                f"runtime.verbose={config.runtime.verbose}",
+            ]
+
+            # 直接调用 hydra.compose，它会在当前已初始化的环境中工作
+            aux_config = hydra.compose(config_name="config", overrides=overrides_list)
 
             # 将这个为辅助数据集量身定做的aux_config传递给_run_processor
             aux_df = _run_processor(name, aux_config)

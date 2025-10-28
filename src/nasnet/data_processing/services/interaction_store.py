@@ -25,6 +25,31 @@ class InteractionStore:
 
         # 合并所有输入的交互数据为一个内部DataFrame
         self._interactions_df = pd.concat(interaction_dfs, ignore_index=True)
+        # [NEW DEFENSIVE CODE]
+        rel_type_col = self._schema.relation_type
+        default_rel_type = self._config.relations.names.default
+
+        # 检查 'relation_type' 列是否存在，如果不存在则创建
+        if rel_type_col not in self._interactions_df.columns:
+            self._interactions_df[rel_type_col] = default_rel_type
+            print(
+                f"    - WARNING: '{rel_type_col}' column was missing. Filled with default value: '{default_rel_type}'."
+            )
+        else:
+            # 如果列存在，检查其中是否有NaN值
+            nan_count = self._interactions_df[rel_type_col].isna().sum()
+            if nan_count > 0:
+                self._interactions_df[rel_type_col] = self._interactions_df[
+                    rel_type_col
+                ].fillna(default_rel_type)
+                print(
+                    f"    - WARNING: Found and filled {nan_count} NaN values in '{rel_type_col}' column with default value."
+                )
+
+        # [NEW] 强制转换为字符串类型，彻底杜绝类型问题
+        self._interactions_df[rel_type_col] = self._interactions_df[
+            rel_type_col
+        ].astype(str)
 
         print(
             f"--> Stored a total of {len(self._interactions_df)} raw interaction records."

@@ -1,0 +1,9 @@
+defaults:
+  - _base
+  - _self_
+
+auxiliary_datasets:
+  - gtopdb
+  - brenda
+
+name: gtopdb_brenda_aux

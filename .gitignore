@@ -17,3 +17,6 @@ multirun/
 *.md
 tests/fake*
 *.png
+.ruff_cache/
+.pytest_cache/
+.vscode/
