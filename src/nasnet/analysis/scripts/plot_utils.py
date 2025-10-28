@@ -5,6 +5,109 @@ import numpy as np
 import pandas as pd
 import research_template as rt
 import seaborn as sns
+from omegaconf import DictConfig
+
+# ... (您已有的绘图函数) ...
+
+
+def plot_bar_chart_with_counts(
+    data: pd.Series,
+    output_path: Path,
+    title: str,
+    xlabel: str,
+    ylabel: str,
+    log_scale: bool = True,
+):
+    """
+    为一个pd.Series (例如 value_counts() 的结果) 绘制一个美观的条形图。
+    """
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    data.plot(kind="bar", ax=ax)
+
+    ax.set_title(title, fontsize=16, fontweight="bold")
+    ax.set_xlabel(xlabel, fontsize=12)
+    ax.set_ylabel(ylabel, fontsize=12)
+    plt.xticks(rotation=45, ha="right")
+
+    if log_scale:
+        ax.set_yscale("log")
+
+    plt.tight_layout()
+    rt.ensure_path_exists(output_path)
+    plt.savefig(output_path, dpi=300)
+    plt.close(fig)
+    print(f"    - Bar chart saved to: {output_path.name}")
+
+
+def plot_similarity_distributions(
+    df: pd.DataFrame, output_dir: Path, config: DictConfig
+):
+    """
+    为DataFrame中不同类型的相似度绘制分布直方图和统计信息。
+    """
+    if df.empty:
+        print("    - No similarity data to plot. Skipping distribution plots.")
+        return
+
+    plt.style.use("seaborn-v0_8-whitegrid")
+
+    for sim_type, group_df in df.groupby("type"):
+        fig, ax = plt.subplots(figsize=(12, 7))
+
+        sns.histplot(group_df["similarity"], bins=50, kde=True, ax=ax, stat="density")
+
+        mean_val = group_df["similarity"].mean()
+        median_val = group_df["similarity"].median()
+        ax.axvline(mean_val, color="red", linestyle="--", label=f"Mean: {mean_val:.3f}")
+        ax.axvline(
+            median_val, color="green", linestyle="-.", label=f"Median: {median_val:.3f}"
+        )
+
+        title = (
+            f"Distribution of '{sim_type}' (Top-{config.data_params.similarity_top_k} Candidates)\n"
+            f"Dataset: {config.data_structure.name} / Params: {config.data_params.name}"
+        )
+        ax.set_title(title, fontsize=16, fontweight="bold")
+        ax.set_xlabel("Cosine Similarity", fontsize=12)
+        ax.set_ylabel("Density", fontsize=12)
+        ax.legend()
+
+        plt.tight_layout()
+        output_path = output_dir / f"{sim_type}_distribution.png"
+        plt.savefig(output_path, dpi=300)
+        plt.close(fig)
+        print(f"    - Distribution plot saved to: {output_path.name}")
+
+
+def plot_pos_neg_similarity_kde(
+    df: pd.DataFrame, output_path: Path, config: DictConfig
+):
+    """
+    在同一张图上绘制正负样本的相似度核密度估计曲线。
+    """
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    sns.kdeplot(
+        data=df, x="similarity", hue="label", fill=True, common_norm=False, ax=ax
+    )
+
+    title = (
+        f"Similarity Distribution of Positive vs. Negative Pairs\n"
+        f"Dataset: {config.data_structure.name} / Params: {config.data_params.name}"
+    )
+    ax.set_title(title, fontsize=16, fontweight="bold")
+    ax.set_xlabel("Embedding Cosine Similarity (Drug-Protein)", fontsize=12)
+    ax.set_ylabel("Density", fontsize=12)
+    ax.legend(title="Pair Type")
+
+    plt.tight_layout()
+    rt.ensure_path_exists(output_path)
+    plt.savefig(output_path, dpi=300)
+    plt.close(fig)
+    print(f"    - Positive vs. Negative KDE plot saved to: {output_path.name}")
 
 
 def plot_side_by_side_bar_chart(

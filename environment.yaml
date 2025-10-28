@@ -60,4 +60,5 @@ dependencies:
       - torch-geometric
       - pubchempy
       - faiss-cpu
+      - networkx
       - -e ./common_utils

@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from typing import List, Tuple
+from typing import List, Tuple, Union
 
 import faiss
 import numpy as np
@@ -113,54 +113,47 @@ class HeteroGraphBuilder(GraphBuilder):
             k=self.config.data_params.similarity_top_k,
         )
 
-    # [MODIFIED] _add_similarity_edges_ann 的内部逻辑需要微调
     def _add_similarity_edges_ann(
         self,
         entity_type: str,
         embeddings: torch.Tensor,
         k: int,
-    ):
+        analysis_mode: bool = False,  # [NEW] 新增 analysis_mode 参数
+    ) -> Union[List[Tuple[int, int, float, str]], None]:
         """
-        [V2] 使用 Faiss (ANN) 在【局部】特征上高效计算 Top-K 相似邻居。
+        [V3] 使用 Faiss (ANN) 计算 Top-K 相似邻居。
+        - 在正常模式下，筛选边并添加到 self._edges。
+        - 在分析模式下，返回所有候选相似度对的列表。
         """
-        print(
-            f"\n    -> Calculating '{entity_type}' similarities using ANN (Faiss) for Top-{k} neighbors..."
-        )
-
-        num_embeddings = embeddings.shape[0]
-        if (
-            num_embeddings <= k
-        ):  # [FIX] 健壮性检查：如果实体数小于等于k，无法找到k个"其他"邻居
+        # ... (方法上半部分的 faiss 索引构建和搜索逻辑保持不变) ...
+        if not analysis_mode:
             print(
-                f"    - WARNING: Number of embeddings ({num_embeddings}) is not greater than k ({k}). Skipping ANN for '{entity_type}'."
+                f"\n    -> Calculating '{entity_type}' similarities using ANN (Faiss) for Top-{k} neighbors..."
             )
-            return
-
+        num_embeddings = embeddings.shape[0]
+        if num_embeddings <= k:
+            return None if not analysis_mode else []
         embeddings_np = embeddings.cpu().detach().numpy().astype(np.float32)
         dim = embeddings_np.shape[1]
-
         index = faiss.IndexFlatL2(dim)
         faiss.normalize_L2(embeddings_np)
         index.add(embeddings_np)
-
         distances, indices = index.search(embeddings_np, k + 1)
 
-        # [MODIFIED] id_offset 的计算逻辑已更新
         id_offset = (
             0
             if entity_type == "molecule"
             else self.context.get_local_protein_id_offset()
         )
 
-        flags = self.config.relations.flags
-        thresholds = self.config.data_params.similarity_thresholds
+        # [MODIFIED] 根据模式选择不同的输出容器
+        candidate_pairs_for_analysis = [] if analysis_mode else None
         edge_counts = defaultdict(int)
 
         for i in range(num_embeddings):
             for neighbor_idx in range(1, k + 1):
                 j = indices[i, neighbor_idx]
 
-                # ID现在是相对于局部嵌入矩阵的索引
                 local_id_i = i + id_offset
                 local_id_j = j + id_offset
 
@@ -169,7 +162,6 @@ class HeteroGraphBuilder(GraphBuilder):
 
                 similarity = 1 - 0.5 * (distances[i, neighbor_idx] ** 2)
 
-                # [MODIFIED] 从 context 获取节点类型，而不是从全局 id_mapper
                 type1 = self.context.get_local_node_type(local_id_i)
                 type2 = self.context.get_local_node_type(local_id_j)
 
@@ -178,22 +170,36 @@ class HeteroGraphBuilder(GraphBuilder):
                 )
                 final_edge_type = f"{relation_prefix}_similarity"
 
-                if flags.get(final_edge_type, False):
-                    threshold = thresholds.get(relation_prefix, 1.1)
-                    if similarity > threshold:
-                        # [MODIFIED] source_id 和 target_id 现在是局部ID
-                        source_id, target_id = (
-                            (local_id_i, local_id_j)
-                            if type1 == source_type
-                            else (local_id_j, local_id_i)
-                        )
-                        self._edges.append([source_id, target_id, final_edge_type])
-                        edge_counts[final_edge_type] += 1
+                source_id, target_id = (
+                    (local_id_i, local_id_j)
+                    if type1 == source_type
+                    else (local_id_j, local_id_i)
+                )
 
-        if self.verbose > 0 and edge_counts:
-            print("    - Added ANN-based Similarity Edges:")
-            for edge_type, count in edge_counts.items():
-                print(f"      - {count} '{edge_type}' edges.")
+                # [MODIFIED] 核心逻辑分支
+                if analysis_mode:
+                    # 在分析模式下，不进行阈值过滤，直接收集所有计算出的相似度
+                    candidate_pairs_for_analysis.append(
+                        (source_id, target_id, similarity, final_edge_type)
+                    )
+                else:
+                    # 在正常模式下，执行阈值过滤和添加边的操作
+                    flags = self.config.relations.flags
+                    if flags.get(final_edge_type, False):
+                        thresholds = self.config.data_params.similarity_thresholds
+                        threshold = thresholds.get(relation_prefix, 1.1)
+                        if similarity > threshold:
+                            self._edges.append([source_id, target_id, final_edge_type])
+                            edge_counts[final_edge_type] += 1
+
+        if not analysis_mode:
+            if self.verbose > 0 and edge_counts:
+                print("    - Added ANN-based Similarity Edges:")
+                for edge_type, count in edge_counts.items():
+                    print(f"      - {count} '{edge_type}' edges.")
+            return None  # 正常模式下无返回值
+        else:
+            return candidate_pairs_for_analysis  # 分析模式下返回收集的列表
 
     def get_graph(self) -> pd.DataFrame:
         """【实现】返回构建完成的图 DataFrame。"""
@@ -209,4 +215,37 @@ class HeteroGraphBuilder(GraphBuilder):
                 self._graph_schema.target_node,
                 self._graph_schema.edge_type,
             ],
+        )
+
+    # [NEW] 新增的公共分析方法
+    def analyze_similarities(self) -> pd.DataFrame:
+        """
+        [NEW] 执行一个“仅分析”的相似度计算，返回所有候选相似度对的DataFrame。
+        """
+        print(
+            "\n--- [HeteroGraphBuilder] Running in ANALYSIS-ONLY mode for similarities..."
+        )
+
+        # 调用底层方法，并传入 analysis_mode=True
+        mol_sim_pairs = self._add_similarity_edges_ann(
+            entity_type="molecule",
+            embeddings=self.molecule_embeddings,
+            k=self.config.data_params.similarity_top_k,
+            analysis_mode=True,
+        )
+
+        prot_sim_pairs = self._add_similarity_edges_ann(
+            entity_type="protein",
+            embeddings=self.protein_embeddings,
+            k=self.config.data_params.similarity_top_k,
+            analysis_mode=True,
+        )
+
+        all_sim_pairs = mol_sim_pairs + prot_sim_pairs
+
+        if not all_sim_pairs:
+            return pd.DataFrame(columns=["source", "target", "similarity", "type"])
+
+        return pd.DataFrame(
+            all_sim_pairs, columns=["source", "target", "similarity", "type"]
         )

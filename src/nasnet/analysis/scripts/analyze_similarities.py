@@ -1,125 +1,229 @@
-import pickle as pkl
-from pathlib import Path
-
 import hydra
 import numpy as np
 import pandas as pd
-from omegaconf import DictConfig
+import research_template as rt
+import torch
 
-# 导入我们新的绘图工具
-from plot_utils import plot_histogram
-
+# 导入所有需要的项目内部模块
+from nasnet.configs import AppConfig, register_all_schemas
+from nasnet.data_processing import (
+    GraphBuildContext,
+    IDMapper,
+)
+from nasnet.data_processing.services.graph_builder import HeteroGraphBuilder
 from nasnet.utils import get_path, register_hydra_resolvers
 
-# 确保解析器被注册
+# 导入绘图工具
+from .plot_utils import plot_pos_neg_similarity_kde, plot_similarity_distributions
+
+# 在所有Hydra操作之前，执行全局注册
+register_all_schemas()
 register_hydra_resolvers()
 
 
-@hydra.main(config_path="../../conf", config_name="config", version_base=None)
-def analyze_similarity_distributions(cfg: DictConfig):
+def analyze_pos_neg_similarities(
+    sampled_pairs: list, embeddings: torch.Tensor, id_mapper: IDMapper
+) -> pd.DataFrame:
     """
-    【V2 重构版】分析并可视化给定实验配置下的相似性分布。
-    此脚本完全由传入的config驱动。
+    (可选)分析正负样本对中，实体间的嵌入相似度。
+    """
+    print("\n--- [Analysis] Analyzing Positive vs. Negative Pair Similarities...")
+
+    # 1. 准备正样本
+    pos_pairs = [(u, v) for u, v, _ in sampled_pairs]
+
+    # 2. 准备负样本 (随机采样)
+    neg_pairs = []
+    all_mol_ids = list(id_mapper.molecule_to_id.values())
+    all_prot_ids = list(id_mapper.protein_to_id.values())
+    pos_pairs_set = set(pos_pairs)
+
+    if not all_mol_ids or not all_prot_ids:
+        return pd.DataFrame()
+
+    rng = np.random.default_rng(123)  # 使用固定的种子
+    while len(neg_pairs) < len(pos_pairs):
+        mol_id = rng.choice(all_mol_ids)
+        prot_id = rng.choice(all_prot_ids)
+        if (mol_id, prot_id) not in pos_pairs_set:
+            neg_pairs.append((mol_id, prot_id))
+
+    # 3. 计算相似度
+    results = []
+    # 使用 PyTorch 的高效索引和计算
+    embeddings = embeddings.float()  # 确保是 float
+
+    for label, pairs in [("Positive", pos_pairs), ("Negative", neg_pairs)]:
+        if not pairs:
+            continue
+
+        mol_indices = torch.tensor([p[0] for p in pairs], dtype=torch.long)
+        # 将蛋白质全局ID转换为0-based索引
+        prot_indices = torch.tensor(
+            [p[1] - id_mapper.num_molecules for p in pairs], dtype=torch.long
+        )
+
+        mol_embs = embeddings[mol_indices]
+        prot_embs = embeddings[id_mapper.num_molecules :][prot_indices]
+
+        # 归一化后计算点积，即余弦相似度
+        mol_embs = torch.nn.functional.normalize(mol_embs, p=2, dim=1)
+        prot_embs = torch.nn.functional.normalize(prot_embs, p=2, dim=1)
+
+        similarities = (mol_embs * prot_embs).sum(dim=1).cpu().numpy()
+
+        for sim in similarities:
+            results.append({"similarity": sim, "label": label})
+
+    return pd.DataFrame(results)
+
+
+config_path = rt.get_project_root() / "conf"
+
+
+@hydra.main(config_path=str(config_path), config_name="config", version_base=None)
+def main(cfg: AppConfig):
+    """
+    一个独立的、由Hydra驱动的脚本，用于在全局相关实体上进行相似度分布的
+    探索性数据分析 (EDA)，以指导阈值设定。
     """
     print("\n" + "=" * 80)
-    print(" " * 15 + "STARTING SIMILARITY DISTRIBUTION ANALYSIS (V2)")
+    print(" " * 15 + "STARTING SIMILARITY DISTRIBUTION ANALYSIS SCRIPT")
     print("=" * 80)
-
-    # --- 1. 设置路径和加载数据 ---
-    print("--- [Step 1/3] Loading nodes metadata and similarity matrices... ---")
 
     try:
-        # 使用get_path和正确的file_key来加载文件
-        nodes_df = pd.read_csv(get_path(cfg, "processed.common.nodes_metadata"))
-        mol_sim_path = get_path(cfg, "processed.common.similarity_matrices.molecule")
-        prot_sim_path = get_path(cfg, "processed.common.similarity_matrices.protein")
+        # --- 步骤 1: 模拟 main_pipeline 的早期数据加载和采样 ---
+        print("--- [Step 1/4] Loading data and simulating pre-splitting stage...")
 
-        mol_sim_matrix = pkl.load(open(mol_sim_path, "rb"))
-        prot_sim_matrix = pkl.load(open(prot_sim_path, "rb"))
+        # [MODIFIED] 使用 nodes.csv 来正确地初始化 IDMapper
+        # a. 加载 nodes.csv，这是我们所有实体信息的“户籍簿”
+        nodes_df = pd.read_csv(get_path(cfg, "processed.common.nodes_metadata"))
+
+        # b. 准备一个最小化的、只包含ID的DataFrame，以符合IDMapper的初始化契约
+        schema = cfg.data_structure.schema.internal.authoritative_dti
+
+        mol_nodes = nodes_df[nodes_df["node_type"] != "protein"]
+        prot_nodes = nodes_df[nodes_df["node_type"] == "protein"]
+
+        # 创建一个足够让IDMapper收集所有ID的DataFrame
+        simulated_df = pd.DataFrame(
+            {
+                schema.molecule_id: mol_nodes["authoritative_id"],
+                schema.protein_id: prot_nodes["authoritative_id"],
+            }
+        )
+
+        # c. 使用这个模拟的DataFrame来正确初始化IDMapper
+        id_mapper = IDMapper([simulated_df], cfg)
+
+        # d. 注入“drug”的身份定义
+        drug_cids = set(
+            nodes_df[nodes_df["node_type"] == "drug"]["authoritative_id"].astype(int)
+        )
+        id_mapper.set_drug_cids(drug_cids)
+
+        # e. 最终化IDMapper，使其内部状态（如num_molecules）被正确计算
+        id_mapper.finalize_mappings()
+
+        # f. 加载特征嵌入
+        features_np = np.load(get_path(cfg, "processed.common.node_features"))
+        features_tensor = torch.from_numpy(features_np)
+
+        # g. 安全地【读取】num_molecules属性，并分离特征
+        num_molecules = id_mapper.num_molecules
+        molecule_embeddings = features_tensor[:num_molecules]
+        protein_embeddings = features_tensor[num_molecules:]
+
+        # h. 加载一个有代表性的交互对样本
+        # 我们加载 Fold 1 的训练标签作为代表，来定义本次分析的“相关实体”范围
+        train_labels_df = pd.read_csv(
+            get_path(
+                cfg,
+                "processed.specific.labels_template",
+                prefix="fold_1",
+                suffix="train",
+            )()
+        )
+        # 简单地给一个默认的 relation_type
+        sampled_pairs_with_type = [
+            (row.source, row.target, "interacts_with")
+            for row in train_labels_df.itertuples()
+        ]
+
+        # --- 步骤 2: 创建全局分析上下文 ---
+        print("\n--- [Step 2/4] Creating global analysis context...")
+        # 注意：这里的ID已经是全局逻辑ID了
+        relevant_mol_ids = {u for u, v, _ in sampled_pairs_with_type}
+        relevant_prot_ids = {v for u, v, _ in sampled_pairs_with_type}
+
+        context = GraphBuildContext(
+            fold_idx=0,  # 0 在这里表示这是一个“全局”分析上下文
+            global_id_mapper=id_mapper,
+            global_mol_embeddings=molecule_embeddings,
+            global_prot_embeddings=protein_embeddings,
+            relevant_mol_ids=relevant_mol_ids,
+            relevant_prot_ids=relevant_prot_ids,
+            config=cfg,
+        )
+
+        # --- 步骤 3: 调用 Builder 的分析方法 ---
+        print("\n--- [Step 3/4] Running builder in analysis-only mode...")
+        builder = HeteroGraphBuilder(
+            config=cfg,
+            context=context,
+            molecule_embeddings=context.local_mol_embeddings,
+            protein_embeddings=context.local_prot_embeddings,
+        )
+
+        all_similarities_df = builder.analyze_similarities()
+
+        # --- 步骤 4: 可视化与保存 ---
+        print("\n--- [Step 4/4] Generating and saving plots...")
+
+        # a. 准备输出目录
+        output_dir = (
+            rt.get_project_root()
+            / "analysis_outputs"
+            / cfg.dataset_collection.name
+            / cfg.data_params.name
+            / cfg.relations.name
+        )
+        rt.ensure_path_exists(output_dir / "dummy.txt")
+
+        # b. 绘制相似度分布图
+        plot_similarity_distributions(
+            df=all_similarities_df, output_dir=output_dir, config=cfg
+        )
+
+        # c. (可选) 绘制正负样本相似度对比图
+        pos_neg_sim_df = analyze_pos_neg_similarities(
+            sampled_pairs_with_type, features_tensor, id_mapper
+        )
+        if not pos_neg_sim_df.empty:
+            plot_pos_neg_similarity_kde(
+                df=pos_neg_sim_df,
+                output_path=output_dir / "positive_vs_negative_pair_similarity.png",
+                config=cfg,
+            )
+
+        print("\n" + "=" * 80)
+        print(f"✅ ANALYSIS COMPLETE. All plots saved to: {output_dir}")
+        print("=" * 80)
 
     except FileNotFoundError as e:
-        print(f"❌ FATAL: A required data file was not found: {e.filename}")
         print(
-            "   Please ensure you have successfully run the main data processing pipeline (`run.py`)"
+            f"❌ FATAL: A required data file was not found: {e.filename if hasattr(e, 'filename') else e}"
         )
         print(
-            f"   with the corresponding configuration (e.g., `data_structure={cfg.data_structure.name}`, `data_params={cfg.data_params.name}`)."
+            "   Please ensure you have successfully run the main data processing pipeline (`run.py`) first to generate all necessary files."
         )
         return
+    except Exception as e:
+        print(f"❌ An unexpected error occurred: {e}")
+        import traceback
 
-    # --- 2. 从 nodes.csv 中解析节点类型和ID范围 ---
-    # 这是取代旧的 ...2index.pkl 文件的关键步骤
-    print("\n--- [Step 2/3] Parsing node types and ID ranges from nodes.csv... ---")
-
-    # 筛选出不同类型的节点
-    drug_nodes = nodes_df[nodes_df["node_type"] == "drug"]
-    ligand_nodes = nodes_df[nodes_df["node_type"] == "ligand"]
-
-    # 获取它们的局部索引范围 (相对于分子矩阵)
-    # 假设 nodes.csv 是按 global_id 排序的，并且 drug 在 ligand 之前
-    drug_indices = drug_nodes.index.to_numpy()
-    # ligand的局部索引是它们的全局ID减去drug的数量
-    num_drugs = len(drug_nodes)
-    ligand_indices = ligand_nodes.index.to_numpy()
-
-    print(f"--> Found {len(drug_nodes)} drugs and {len(ligand_nodes)} ligands.")
-
-    # --- 3. 创建并准备输出目录 ---
-    # 目录名将反映当前的配置
-    plot_dir_name = f"{cfg.data_structure.name}-{cfg.data_params.name}"
-    output_dir = Path("analysis/plots") / plot_dir_name
-    print(f"--> Plots will be saved in: {output_dir}")
-
-    # --- 4. 提取、分析并绘图 ---
-    print("\n--- [Step 3/3] Extracting and plotting similarity distributions... ---")
-
-    # a) Drug-Drug Similarity (D-D)
-    if num_drugs > 1:
-        # 使用 np.ix_ 来选择矩阵的子块
-        dd_matrix_view = mol_sim_matrix[np.ix_(drug_indices, drug_indices)]
-        dd_sims = dd_matrix_view[np.triu_indices_from(dd_matrix_view, k=1)]
-        plot_histogram(
-            dd_sims,
-            f"Drug-Drug Similarity\n(Dataset: {cfg.data_structure.name}, Params: {cfg.data_params.name})",
-            "Embedding Cosine Similarity",
-            output_dir / "drug_drug_similarity.png",
-        )
-
-    # b) Protein-Protein Similarity (P-P)
-    pp_sims = prot_sim_matrix[np.triu_indices_from(prot_sim_matrix, k=1)]
-    plot_histogram(
-        pp_sims,
-        f"Protein-Protein Similarity\n(Dataset: {cfg.data_structure.name}, Params: {cfg.data_params.name})",
-        "Embedding Cosine Similarity",
-        output_dir / "protein_protein_similarity.png",
-    )
-
-    # c) Ligand-Ligand Similarity (L-L)
-    if len(ligand_nodes) > 1:
-        ll_matrix_view = mol_sim_matrix[np.ix_(ligand_indices, ligand_indices)]
-        ll_sims = ll_matrix_view[np.triu_indices_from(ll_matrix_view, k=1)]
-        plot_histogram(
-            ll_sims,
-            f"Ligand-Ligand Similarity\n(Dataset: {cfg.data_structure.name}, Params: {cfg.data_params.name})",
-            "Embedding Cosine Similarity",
-            output_dir / "ligand_ligand_similarity.png",
-        )
-
-    # d) Drug-Ligand Similarity (D-L)
-    if num_drugs > 0 and len(ligand_nodes) > 0:
-        dl_matrix_view = mol_sim_matrix[np.ix_(drug_indices, ligand_indices)]
-        dl_sims = dl_matrix_view.flatten()
-        plot_histogram(
-            dl_sims,
-            f"Drug-Ligand Similarity\n(Dataset: {cfg.data_structure.name}, Params: {cfg.data_params.name})",
-            "Embedding Cosine Similarity",
-            output_dir / "drug_ligand_similarity.png",
-        )
-
-    print("\n" + "=" * 80)
-    print(" " * 25 + "ANALYSIS COMPLETE")
-    print("=" * 80)
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
-    analyze_similarity_distributions()
+    main()

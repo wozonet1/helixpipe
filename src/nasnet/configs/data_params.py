@@ -104,10 +104,10 @@ class DataParamsConfig:
     # 相似度阈值
     similarity_thresholds: Dict[str, float] = field(
         default_factory=lambda: {
-            "protein_protein": 0.8,
-            "drug_drug": 0.988,
-            "ligand_ligand": 0.988,
-            "drug_ligand": 0.7,
+            "protein_protein": 0.99,
+            "drug_drug": 0.9,
+            "ligand_ligand": 0.9,
+            "drug_ligand": 0.9,
         }
     )
     similarity_top_k: int = 10

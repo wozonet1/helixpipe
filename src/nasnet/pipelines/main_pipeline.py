@@ -64,7 +64,6 @@ def process_data(
     id_mapper.update_smiles(complete_smiles)
     # --- 后续阶段现在接收 id_mapper 对象 ---
     entities_to_purify_df = id_mapper.to_dataframe()
-    # FIXME:导出逻辑有误,多一个
 
     #    b. 净化：将这个导出的DataFrame交给一个外部的、专门的净化函数处理。
     purified_entities_df = purify_entities_dataframe_parallel(
@@ -75,8 +74,8 @@ def process_data(
     id_mapper.update_from_dataframe(purified_entities_df)
     id_mapper.finalize_mappings()
     # 直接进入下游处理，现在的id_mapper已经是最终状态
-    # if config.runtime.verbose > 0:
-    #     id_mapper.save_maps_for_debugging()
+    if config.runtime.verbose > 0:
+        id_mapper.save_maps_for_debugging()
 
     interaction_store.filter_by_entities(
         valid_cids=set(id_mapper.get_all_cids()),
