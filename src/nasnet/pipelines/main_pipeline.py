@@ -74,8 +74,7 @@ def process_data(
     id_mapper.update_from_dataframe(purified_entities_df)
     id_mapper.finalize_mappings()
     # 直接进入下游处理，现在的id_mapper已经是最终状态
-    if config.runtime.verbose > 0:
-        id_mapper.save_maps_for_debugging()
+    id_mapper.save_nodes_metadata()
 
     interaction_store.filter_by_entities(
         valid_cids=set(id_mapper.get_all_cids()),

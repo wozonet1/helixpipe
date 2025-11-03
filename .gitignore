@@ -15,6 +15,7 @@ multirun/
 *.patch
 *.tsv
 *.md
+!docs/adr/*.md
 tests/fake*
 *.png
 .ruff_cache/

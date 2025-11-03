@@ -264,17 +264,15 @@ class IDMapper:
         print(f"--> Exported {len(df)} total unique entities (molecules and proteins).")
         return df
 
-    def save_maps_for_debugging(self):
+    def save_nodes_metadata(self):
         """
         【V2 - Schema驱动版】将IDMapper内部的所有核心映射关系保存到磁盘 (nodes.csv)。
         """
         if not self.is_finalized:
-            print(
-                "--> [IDMapper] Warning: Mappings not finalized. Skipping save_maps_for_debugging."
-            )
+            print("--> [IDMapper] Warning: Mappings not finalized. Stop saving.")
             return
 
-        print("\n--- [IDMapper] Saving internal maps for debugging...")
+        print("\n--- [IDMapper] Saving final nodes metadata ('nodes.csv')... ---")
 
         # --- 1. 从配置中获取 nodes.csv 的 schema ---
         nodes_schema = self._config.data_structure.schema.internal.nodes_output
@@ -317,4 +315,4 @@ class IDMapper:
         output_path = get_path(self._config, "processed.common.nodes_metadata")
         rt.ensure_path_exists(output_path)
         nodes_df.to_csv(output_path, index=False)
-        print(f"--> Debug file 'nodes.csv' saved to: {output_path}")
+        print(f"--> Core metadata file 'nodes.csv' saved to: {output_path}")
