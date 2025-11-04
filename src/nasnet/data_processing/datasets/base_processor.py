@@ -4,8 +4,6 @@ from abc import ABC, abstractmethod
 from typing import Any, List
 
 import pandas as pd
-
-# 【注意】我们不再需要 log_pipeline_step 装饰器，因为日志将直接在 process 中处理
 import research_template as rt
 
 from nasnet.configs import AppConfig

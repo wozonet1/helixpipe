@@ -113,7 +113,9 @@ class GtopdbProcessor(BaseProcessor):
         df = df[df[gtopdb_schema.interactions.affinity] <= affinity_threshold].copy()
         if not df.empty:
             schema_config = self.config.data_structure.schema.internal.authoritative_dti
-            df[schema_config.relation_type] = self.config.relations.names.default
+            df[schema_config.relation_type] = (
+                self.config.knwoledge_graph.relation_types.default
+            )
         return df
 
 

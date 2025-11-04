@@ -67,3 +67,16 @@
 - **抽象层级的增加：** 引入了一个新的抽象层，对于新加入的开发者，需要先理解“规范化交互格式”这个核心概念。然而，我们认为这个抽象是良性的，它带来的长期收益远大于初期的学习成本。
 
 ---
+
+**附录：实施过程中的架构精炼 (Appendix: Architectural Refinement during Implementation)**
+
+在重构各个 \*Processor 以产出“规范化交互格式”的过程中，我们发现实体类型（如'molecule'）和原始关系类型（如'physical_association'）都属于知识图谱的“Schema 定义”范畴。
+
+为了追求极致的概念完整性，我们做出了以下**精炼决策**：
+
+- **将 RelationNames dataclass 从 RelationsConfig 移动到 KnowledgeGraphConfig 中，并重命名为 RelationTypeNames。**
+
+**理由：**
+
+- **职责统一：** KnowledgeGraphConfig 现在成为定义图谱“词汇表”（所有节点类型和边类型）的唯一真理之源。
+- **职责纯化：** RelationsConfig 的职责被纯化为“配置”在一次特定实验中如何使用这些关系（例如，通过 flags 启用或禁用）。

@@ -15,6 +15,7 @@ from .data_params import DataParamsConfig
 from .data_structure import DataStructureConfig
 from .dataset_collection import DatasetCollectionConfig
 from .global_paths import GlobalPathsConfig
+from .knowledge_graph import KnowledgeGraphConfig
 from .mlflow import MlflowConfig
 from .predictor import PredictorConfig
 from .relations import RelationsConfig
@@ -52,6 +53,7 @@ class AppConfig:
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     global_paths: GlobalPathsConfig = field(default_factory=GlobalPathsConfig)
     mlflow: MlflowConfig = field(default_factory=MlflowConfig)
+    knowledge_graph: KnowledgeGraphConfig = field(default_factory=KnowledgeGraphConfig)
 
 
 # --------------------------------------------------------------------------

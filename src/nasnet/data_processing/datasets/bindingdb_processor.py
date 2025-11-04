@@ -1,13 +1,8 @@
-# 文件: src/data_processing/bindingdb_processor.py
+# 文件: src/nasnet/data_processing/datasets/bindingdb_processor.py (最终模板方法版)
 
 import sys
 
 import argcomplete
-
-# --------------------------------------------------------------------------
-# 步骤 2: 定义流水线化的BindingDB处理器
-# --------------------------------------------------------------------------
-# 文件: src/nasnet/data_processing/datasets/bindingdb_processor.py (最终模板方法版)
 import pandas as pd
 import research_template as rt
 from hydra import compose
@@ -22,10 +17,6 @@ from nasnet.data_processing.services import (
 from nasnet.utils import get_path, register_hydra_resolvers
 
 from .base_processor import BaseProcessor
-
-# 导入我们新创建的基类和需要的辅助模块
-
-# 文件: src/nasnet/data_processing/datasets/bindingdb_processor.py (最终差异化流水线版)
 
 
 class BindingdbProcessor(BaseProcessor):
@@ -88,16 +79,34 @@ class BindingdbProcessor(BaseProcessor):
     # --- 步骤 3: 实现ID和结构标准化 ---
     def _standardize_ids(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        【职责明确】重命名所有与ID和结构相关的列，以符合内部标准。
+        【修改】职责：将原始DataFrame直接重塑为“规范化交互格式”。
         """
-        return df.rename(
-            columns={
-                self.external_schema.molecule_id: self.schema.molecule_id,
-                self.external_schema.protein_id: self.schema.protein_id,
-                self.external_schema.molecule_sequence: self.schema.molecule_sequence,
-                self.external_schema.protein_sequence: self.schema.protein_sequence,
-            }
+        if self.verbose > 0:
+            print("  - Reshaping DataFrame to canonical interaction format...")
+
+        final_df = pd.DataFrame()
+
+        # 直接从 external_schema 映射到 canonical_schema
+        final_df[self.schema.source_id] = df[self.external_schema.molecule_id]
+        # TODO: config中
+        final_df[self.schema.source_type] = "molecule"
+        final_df[self.schema.target_id] = df[self.external_schema.protein_id]
+        final_df[self.schema.target_type] = "protein"
+        final_df[self.schema.relation_type] = (
+            self.config.knwoledge_graph.relation_types.default
         )
+
+        # 【重要】保留原始结构和亲和力列，以便下一步过滤使用
+        final_df["smiles"] = df[self.external_schema.molecule_sequence]
+        for aff_type in [
+            self.external_schema.ki,
+            self.external_schema.ic50,
+            self.external_schema.kd,
+        ]:
+            if aff_type in df.columns:
+                final_df[aff_type] = df[aff_type]
+
+        return final_df
 
     # --- 步骤 4 (覆盖): 实现业务规则过滤 ---
     def _filter_data(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -139,7 +148,7 @@ class BindingdbProcessor(BaseProcessor):
         if not df_final_filtered.empty:
             schema_config = self.config.data_structure.schema.internal.authoritative_dti
             df_final_filtered[schema_config.relation_type] = (
-                self.config.relations.names.default
+                self.config.knwoledge_graph.relation_types.default
             )
         return df_final_filtered
 
