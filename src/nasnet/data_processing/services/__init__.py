@@ -1,4 +1,5 @@
 # --- 2. 提升最重要、最常用的“重量级”工具函数 ---
+from .entity_validator import validate_and_filter_entities
 from .filter import filter_molecules_by_properties
 from .graph_builder import GraphBuilder, HeteroGraphBuilder
 from .graph_context import GraphBuildContext
@@ -29,6 +30,7 @@ __all__ = [
     SupervisionFileManager,
     # 重量级函数
     filter_molecules_by_properties,
+    validate_and_filter_entities,
     # 常用轻量级函数
     get_human_uniprot_whitelist,
     get_valid_pubchem_cids,

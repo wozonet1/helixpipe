@@ -97,17 +97,17 @@ def load_datasets(config: AppConfig) -> Tuple[pd.DataFrame, List[pd.DataFrame]]:
     print("\n" + "=" * 80)
     print(" " * 22 + "Executing Data Loading Strategy")
     print("=" * 80)
-
+    loaded_datasets = {}
     # --- 1. 确定并加载主数据集 ---
     # 主数据集由 data_structure 配置组的选择决定
     primary_dataset_name = config.data_structure.name
     print(f"--> Loading PRIMARY dataset: '{primary_dataset_name}'")
-
+    base_df = _run_processor(primary_dataset_name, config)
+    loaded_datasets[primary_dataset_name] = base_df
     # 直接将主config传递给_run_processor，因为它已经为主要任务配置好了
     base_df = _run_processor(primary_dataset_name, config)
 
     # --- 2. 按需加载所有辅助数据集 ---
-    extra_dfs = []
     aux_dataset_names = config.dataset_collection.get("auxiliary_datasets", [])
 
     if aux_dataset_names:
@@ -145,7 +145,7 @@ def load_datasets(config: AppConfig) -> Tuple[pd.DataFrame, List[pd.DataFrame]]:
             # 将这个为辅助数据集量身定做的aux_config传递给_run_processor
             aux_df = _run_processor(name, aux_config)
             if not aux_df.empty:
-                extra_dfs.append(aux_df)
+                loaded_datasets[name] = aux_df
     else:
         print("\n--> No auxiliary datasets specified.")
 
@@ -153,4 +153,4 @@ def load_datasets(config: AppConfig) -> Tuple[pd.DataFrame, List[pd.DataFrame]]:
     print(" " * 24 + "Data Loading Strategy Complete")
     print("=" * 80)
 
-    return base_df, extra_dfs
+    return loaded_datasets

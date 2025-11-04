@@ -17,6 +17,7 @@ from .services import (
     SupervisionFileManager,
     filter_molecules_by_properties,
     sample_interactions,
+    validate_and_filter_entities,
 )
 
 __all__ = [
@@ -31,6 +32,7 @@ __all__ = [
     # 顶层函数
     filter_molecules_by_properties,
     sample_interactions,
+    validate_and_filter_entities,
     # 基类
     BaseProcessor,
     # 子模块
