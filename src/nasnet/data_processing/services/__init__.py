@@ -10,7 +10,7 @@ from .id_mapper import IDMapper
 from .id_validation_service import get_human_uniprot_whitelist, get_valid_pubchem_cids
 from .interaction_store import InteractionStore
 from .label_generator import SupervisionFileManager
-from .purifiers import purify_entities_dataframe_parallel
+from .purifiers import validate_protein_structure, validate_smiles_structure
 from .sampler import sample_interactions
 from .splitter import DataSplitter
 from .structure_provider import StructureProvider
@@ -29,9 +29,10 @@ __all__ = [
     SupervisionFileManager,
     # 重量级函数
     filter_molecules_by_properties,
-    purify_entities_dataframe_parallel,
     # 常用轻量级函数
     get_human_uniprot_whitelist,
     get_valid_pubchem_cids,
     sample_interactions,
+    validate_smiles_structure,
+    validate_protein_structure,
 ]

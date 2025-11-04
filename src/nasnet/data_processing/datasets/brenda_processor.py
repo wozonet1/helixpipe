@@ -66,7 +66,7 @@ class BrendaProcessor(BaseProcessor):
         # --- 步骤 1: 在方法内部硬编码映射逻辑 ---
         # 这个字典将原始字段名映射到我们期望的【最终图边类型】
         ligand_fields: Dict[str, str] = self.external_schema.ligand_fields
-        flag_names = self.config.knwoledge_graph.relation_types
+        flag_names = self.config.knowledge_graph.relation_types
         # TODO: 如何解决这个转换硬编码?
         FIELD_TO_FINAL_RELATION_MAP: Dict[str, str] = {
             ligand_fields["inhibitor"]: flag_names.inhibits,

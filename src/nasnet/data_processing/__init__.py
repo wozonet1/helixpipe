@@ -16,7 +16,6 @@ from .services import (
     StructureProvider,
     SupervisionFileManager,
     filter_molecules_by_properties,
-    purify_entities_dataframe_parallel,
     sample_interactions,
 )
 
@@ -30,7 +29,6 @@ __all__ = [
     GraphBuildContext,
     SupervisionFileManager,
     # 顶层函数
-    purify_entities_dataframe_parallel,
     filter_molecules_by_properties,
     sample_interactions,
     # 基类

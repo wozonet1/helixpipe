@@ -27,7 +27,7 @@ class InteractionStore:
         self._interactions_df = pd.concat(interaction_dfs, ignore_index=True)
         # [NEW DEFENSIVE CODE]
         rel_type_col = self._schema.relation_type
-        default_rel_type = self._config.relations.names.default
+        default_rel_type = self._config.knowledge_graph.relation_types.default
 
         # 检查 'relation_type' 列是否存在，如果不存在则创建
         if rel_type_col not in self._interactions_df.columns:
@@ -112,7 +112,7 @@ class InteractionStore:
         positive_pairs_with_type: List[Tuple[int, int, str]] = []
 
         # 准备一个默认值，以防 'relation_type' 列意外丢失
-        default_rel_type = self._config.relations.names.default
+        default_rel_type = self._config.knowledge_graph.relation_types.default
 
         iterator = tqdm(
             positive_df.itertuples(index=False),  # index=False 效率更高

@@ -114,7 +114,7 @@ class GtopdbProcessor(BaseProcessor):
         if not df.empty:
             schema_config = self.config.data_structure.schema.internal.authoritative_dti
             df[schema_config.relation_type] = (
-                self.config.knwoledge_graph.relation_types.default
+                self.config.knowledge_graph.relation_types.default
             )
         return df
 

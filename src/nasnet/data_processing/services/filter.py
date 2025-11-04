@@ -17,11 +17,11 @@ from nasnet.typing import AppConfig
 # a. 初始化PAINS过滤器
 #    这是一个比较耗时的操作，放在全局可以显著提速
 params = FilterCatalog.FilterCatalogParams()
-# 我们选择最常见的 PAINS A, B, C 三个集合
 params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_A)
 params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_B)
 params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_C)
 PAINS_CATALOG = FilterCatalog.FilterCatalog(params)
+RDLogger.logger().setLevel(RDLogger.CRITICAL)  # 全局关闭RDKit的冗余日志
 
 # 让tqdm能和pandas的apply方法优雅地协作
 # 在并行化场景下，我们将主要用tqdm来包裹joblib的调用
@@ -76,130 +76,208 @@ def _calculate_descriptors_for_chunk(smiles_series: pd.Series) -> pd.DataFrame:
     return pd.DataFrame(results).set_index("original_index")
 
 
-# --- 主过滤器函数 (并行版) ---
-
-
 def filter_molecules_by_properties(
-    df: pd.DataFrame, config: "AppConfig"
-) -> pd.DataFrame:
+    smiles_series: pd.Series, config: AppConfig
+) -> pd.Series:
     """
-    【V3 最终版】根据配置，应用一个多阶段的、并行的分子理化性质过滤流水线。
+    【V7 - 极限调试版】
+    为每一步过滤增加详细的日志打印，以追踪数据变化。
     """
-    # 1. 检查总开关
-    try:
-        filter_cfg = config.data_params.filtering
-        if not filter_cfg.get("enabled", False):
+    filter_cfg = config.data_params.filtering
+    # 【DEBUG】强制开启verbose模式，以便在测试中看到打印信息
+    verbose = config.runtime.verbose
+    if not filter_cfg.enabled:
+        if verbose > 0:
             print("--> [Molecule Filter] Disabled by config. Skipping.")
-            return df
-    except Exception:
-        print("--> [Molecule Filter] No 'filtering' config found. Skipping.")
-        return df
+        return pd.Series(True, index=smiles_series.index, dtype=bool)
 
-    print(
-        "\n--- [Molecule Filter] Applying molecular property filters (Parallel Mode)... ---"
-    )
-    logger = RDLogger.logger()
-    logger.setLevel(RDLogger.CRITICAL)
-    initial_count = len(df)
+    if verbose > 0:
+        print(
+            "\n--- [Molecule Filter] Applying property filters to SMILES Series... ---"
+        )
+
+    initial_count = len(smiles_series)
     if initial_count == 0:
-        return df
+        return pd.Series(dtype=bool)
 
-    schema = config.data_structure.schema.internal.authoritative_dti
-    smiles_col = schema.molecule_sequence
-
-    # --- 2. 并行计算所有描述符 ---
-    print(f"    - Step 1: Calculating descriptors for {initial_count} molecules...")
+    # --- 1. 并行计算所有描述符 ---
+    if verbose > 0:
+        print(
+            f"    - Step 1: Calculating descriptors for {initial_count} unique molecules..."
+        )
 
     n_jobs = config.runtime.cpus
-    num_chunks = min(len(df) // 1000, n_jobs * 4) if len(df) > 1000 else n_jobs
-    if num_chunks <= 0:
-        num_chunks = 1
+    num_chunks = min(max(1, initial_count // 1000), n_jobs * 4)
+    # 确保即使在dropna后仍有数据可处理
+    smiles_to_process = smiles_series.dropna()
+    if smiles_to_process.empty:
+        if verbose > 0:
+            print(
+                "--- [Molecule Filter] Complete. 0 molecules passed (all inputs were NaN). ---"
+            )
+        return pd.Series(False, index=smiles_series.index, dtype=bool)
 
-    smiles_chunks = np.array_split(df[smiles_col], num_chunks)
+    smiles_chunks = np.array_split(smiles_to_process, num_chunks)
 
     with Parallel(n_jobs=n_jobs) as parallel:
         descriptor_dfs = parallel(
-            delayed(_calculate_descriptors_for_chunk)(chunk)
-            for chunk in tqdm(
-                smiles_chunks,
-                desc="      - Descriptor Chunks",
-                disable=config.runtime.verbose == 0,
-            )
+            delayed(_calculate_descriptors_for_chunk)(chunk) for chunk in smiles_chunks
         )
+    descriptors_df = pd.concat([d for d in descriptor_dfs if not d.empty])
 
-    descriptors_df = pd.concat(d for d in descriptor_dfs if not d.empty)
-    df_with_props = df.join(descriptors_df)
+    if verbose > 1:
+        print("\n      - [DEBUG] Descriptors calculated. DataFrame sample:")
+        print(descriptors_df.to_string())
+        print(f"      - [DEBUG] Shape of descriptors_df: {descriptors_df.shape}")
 
-    # 移除计算失败的分子
-    df_with_props.dropna(subset=["MW", "LogP", "QED", "SA_Score"], inplace=True)
+    descriptors_df.dropna(subset=["MW", "LogP", "QED", "SA_Score"], inplace=True)
 
-    # --- 3. 应用过滤流水线 ---
-    print("    - Step 2: Applying filter pipeline...")
-    filtered_df = df_with_props
+    if verbose > 1:
+        print("\n      - [DEBUG] Descriptors after dropping NaN core properties:")
+        print(descriptors_df.to_string())
+        print(f"      - [DEBUG] Shape after dropna: {descriptors_df.shape}")
+
+    if descriptors_df.empty:
+        if verbose > 0:
+            print(
+                "--- [Molecule Filter] Complete. 0 molecules passed (all failed descriptor calculation). ---"
+            )
+        return pd.Series(False, index=smiles_series.index, dtype=bool)
+
+    # --- 2. 应用链式的过滤流水线 ---
+    if verbose > 0:
+        print("    - Step 2: Applying filter pipeline to generate validity mask...")
+
+    mask = pd.Series(True, index=descriptors_df.index, dtype=bool)
+    if verbose > 1:
+        print(f"\n        - [DEBUG] Initial mask count: {mask.sum()}")
 
     # a. PAINS 过滤
-    if filter_cfg.get("apply_pains_filter", False):
-        filtered_df = filtered_df[~filtered_df["is_pains"]]
-        if config.runtime.verbose > 0:
-            print(f"      - After PAINS filter: {len(filtered_df)} molecules remain.")
+    if filter_cfg.apply_pains_filter:
+        pains_mask = ~descriptors_df["is_pains"]
+        if verbose > 1:
+            print("\n        - [DEBUG] PAINS Filter Details:")
+            print("          - `is_pains` column sample:")
+            print(descriptors_df["is_pains"].to_string())
+            print("          - `pains_mask` (~is_pains) sample:")
+            print(pains_mask.to_string())
+
+        mask &= pains_mask
+        if verbose > 1:
+            print(f"        - [DEBUG] Mask count after PAINS filter: {mask.sum()}")
 
     # b. 分子量
-    if (mw_cfg := filter_cfg.get("molecular_weight")) is not None:
-        filtered_df = filtered_df[
-            filtered_df["MW"].between(
-                mw_cfg.get("min", -np.inf), mw_cfg.get("max", np.inf)
-            )
-        ]
-        if config.runtime.verbose > 0:
-            print(f"      - After MW filter: {len(filtered_df)} molecules remain.")
+    if (mw_cfg := filter_cfg.molecular_weight) is not None:
+        mw_mask = descriptors_df["MW"].between(
+            mw_cfg.min or -np.inf, mw_cfg.max or np.inf
+        )
+        if verbose > 1:
+            print("\n        - [DEBUG] Molecular Weight Filter Details:")
+            print(f"          - Range: min={mw_cfg.min}, max={mw_cfg.max}")
+            print("          - `MW` column sample:")
+            print(descriptors_df["MW"].to_string())
+            print("          - `mw_mask` sample:")
+            print(mw_mask.to_string())
+
+        mask &= mw_mask
+        if verbose > 1:
+            print(f"        - [DEBUG] Mask count after MW filter: {mask.sum()}")
 
     # c. LogP
-    if (logp_cfg := filter_cfg.get("logp")) is not None:
-        filtered_df = filtered_df[
-            filtered_df["LogP"].between(
-                logp_cfg.get("min", -np.inf), logp_cfg.get("max", np.inf)
-            )
-        ]
-        if config.runtime.verbose > 0:
-            print(f"      - After LogP filter: {len(filtered_df)} molecules remain.")
+    if (logp_cfg := filter_cfg.logp) is not None:
+        logp_mask = descriptors_df["LogP"].between(
+            logp_cfg.min or -np.inf, logp_cfg.max or np.inf
+        )
+        if verbose > 1:
+            print("\n        - [DEBUG] LogP Filter Details:")
+            print(f"          - Range: min={logp_cfg.min}, max={logp_cfg.max}")
+            print("          - `LogP` column sample:")
+            print(descriptors_df["LogP"].to_string())
+            print("          - `logp_mask` sample:")
+            print(logp_mask.to_string())
 
-    # d. 氢键供体
-    if (hbd_cfg := filter_cfg.get("h_bond_donors")) is not None:
-        filtered_df = filtered_df[filtered_df["HBD"] <= hbd_cfg.get("max", np.inf)]
-        if config.runtime.verbose > 0:
-            print(f"      - After HBD filter: {len(filtered_df)} molecules remain.")
+        mask &= logp_mask
+        if verbose > 1:
+            print(f"        - [DEBUG] Mask count after LogP filter: {mask.sum()}")
 
-    # e. 氢键受体
-    if (hba_cfg := filter_cfg.get("h_bond_acceptors")) is not None:
-        filtered_df = filtered_df[filtered_df["HBA"] <= hba_cfg.get("max", np.inf)]
-        if config.runtime.verbose > 0:
-            print(f"      - After HBA filter: {len(filtered_df)} molecules remain.")
+    # d. 氢键供体 (HBD)
+    if (hbd_cfg := getattr(filter_cfg, "h_bond_donors", None)) is not None:
+        hbd_mask = descriptors_df["HBD"] <= (hbd_cfg.max or np.inf)
+        if verbose > 1:
+            print("\n        - [DEBUG] H-Bond Donors Filter Details:")
+            print(f"          - Range: max={hbd_cfg.max}")
+            print("          - `HBD` column sample:")
+            print(descriptors_df["HBD"].to_string())
+            print("          - `hbd_mask` sample:")
+            print(hbd_mask.to_string())
+        mask &= hbd_mask
+        if verbose > 1:
+            print(f"        - [DEBUG] Mask count after HBD filter: {mask.sum()}")
+
+    # e. 氢键受体 (HBA)
+    if (hba_cfg := getattr(filter_cfg, "h_bond_acceptors", None)) is not None:
+        hba_mask = descriptors_df["HBA"] <= (hba_cfg.max or np.inf)
+        if verbose > 1:
+            print("\n        - [DEBUG] H-Bond Acceptors Filter Details:")
+            print(f"          - Range: max={hba_cfg.max}")
+            print("          - `HBA` column sample:")
+            print(descriptors_df["HBA"].to_string())
+            print("          - `hba_mask` sample:")
+            print(hba_mask.to_string())
+        mask &= hba_mask
+        if verbose > 1:
+            print(f"        - [DEBUG] Mask count after HBA filter: {mask.sum()}")
 
     # f. QED 评分
-    if (qed_cfg := filter_cfg.get("qed")) is not None:
-        filtered_df = filtered_df[filtered_df["QED"] >= qed_cfg.get("min", -np.inf)]
-        if config.runtime.verbose > 0:
-            print(f"      - After QED filter: {len(filtered_df)} molecules remain.")
+    if (qed_cfg := getattr(filter_cfg, "qed", None)) is not None:
+        qed_mask = descriptors_df["QED"] >= (qed_cfg.min or -np.inf)
+        if verbose > 1:
+            print("\n        - [DEBUG] QED Score Filter Details:")
+            print(f"          - Range: min={qed_cfg.min}")
+            print("          - `QED` column sample:")
+            print(descriptors_df["QED"].to_string())
+            print("          - `qed_mask` sample:")
+            print(qed_mask.to_string())
+        mask &= qed_mask
+        if verbose > 1:
+            print(f"        - [DEBUG] Mask count after QED filter: {mask.sum()}")
 
     # g. SA Score
-    if (sa_score_cfg := filter_cfg.get("sa_score")) is not None:
-        filtered_df = filtered_df[
-            filtered_df["SA_Score"] <= sa_score_cfg.get("max", np.inf)
-        ]
-        if config.runtime.verbose > 0:
-            print(
-                f"      - After SA Score filter: {len(filtered_df)} molecules remain."
-            )
+    if (sa_score_cfg := getattr(filter_cfg, "sa_score", None)) is not None:
+        sa_mask = descriptors_df["SA_Score"] <= (sa_score_cfg.max or np.inf)
+        if verbose > 1:
+            print("\n        - [DEBUG] SA Score Filter Details:")
+            print(f"          - Range: max={sa_score_cfg.max}")
+            print("          - `SA_Score` column sample:")
+            print(descriptors_df["SA_Score"].to_string())
+            print("          - `sa_mask` sample:")
+            print(sa_mask.to_string())
+        mask &= sa_mask
+        if verbose > 1:
+            print(f"        - [DEBUG] Mask count after SA Score filter: {mask.sum()}")
 
-    final_count = len(filtered_df)
+    # --- 3. 返回最终的、与原始输入对齐的布尔掩码 ---
+    final_mask = pd.Series(False, index=smiles_series.index, dtype=bool)
+    passed_indices = mask[mask].index
 
-    # --- 4. 清理并返回 ---
-    # 只保留原始列，丢弃我们添加的属性列
-    final_df = filtered_df[df.columns]
+    if verbose > 1:
+        print("\n      - [DEBUG] Final internal mask (before re-indexing):")
+        print(mask.to_string())
+        print(
+            f"      - [DEBUG] Indices that passed all filters: {passed_indices.tolist()}"
+        )
 
-    num_removed = initial_count - final_count
-    print(
-        f"--- [Molecule Filter] Complete. Removed {num_removed} of {initial_count} molecules. ---"
-    )
+    # 使用 .loc 确保即使索引不连续也能正确赋值
+    final_mask.loc[passed_indices] = True
 
-    return final_df
+    if verbose > 0:
+        num_passed = final_mask.sum()
+        print(
+            f"--- [Molecule Filter] Complete. {num_passed} / {initial_count} molecules passed all filters. ---"
+        )
+
+    if verbose > 1:
+        print("\n      - [DEBUG] Final returned mask (aligned to original input):")
+        print(final_mask.to_string())
+
+    return final_mask
