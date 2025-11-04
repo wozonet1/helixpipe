@@ -98,7 +98,7 @@ class BindingdbProcessor(BaseProcessor):
         # 核心规范化列
         entity_names = self.config.knowledge_graph.entity_types
         final_df[self.schema.source_id] = df[self.external_schema.molecule_id]
-        final_df[self.schema.source_type] = entity_names.molecule
+        final_df[self.schema.source_type] = entity_names.drug
         final_df[self.schema.target_id] = df[self.external_schema.protein_id]
         final_df[self.schema.target_type] = entity_names.protein
         final_df[self.schema.relation_type] = (

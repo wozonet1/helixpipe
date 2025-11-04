@@ -2,6 +2,7 @@
 from typing import TYPE_CHECKING
 
 import argcomplete
+import numpy as np
 import pandas as pd
 import research_template as rt
 
@@ -85,9 +86,11 @@ class GtopdbProcessor(BaseProcessor):
         # 1. Source (Molecule)
         # 我们不再在这里重命名，而是直接赋值给新列
         final_df[self.schema.source_id] = df[self.external_schema.ligands.molecule_id]
-        final_df[self.schema.source_type] = (
-            entity_names.ligand
-        )  # GtoPdb的分子被定义为ligand
+        final_df[self.schema.source_type] = np.where(
+            df["endogenous_flag"],  # 条件: if endogenous_flag is True
+            entity_names.ligand_endo,  # 值为 True 时的结果
+            entity_names.ligand_exo,  # 值为 False 时的结果
+        )
 
         # 2. Target (Protein)
         # 清洗UniProt ID (e.g., 'P12345|...')并赋值给新列
@@ -127,19 +130,7 @@ class GtopdbProcessor(BaseProcessor):
                 "  - Applying domain-specific filters: Non-Endogenous & Affinity Threshold..."
             )
 
-        # 1. 【核心修复】筛选非内源性（non-endogenous）交互。
-        #    我们现在知道该列是布尔类型，所以我们保留所有值为 False 的行。
-        #    使用 ~ (NOT) 操作符，代码更简洁、意图更清晰。
-        df_filtered = df[~df["endogenous_flag"]].copy()
-
-        if self.verbose > 0:
-            print(
-                f"    - {len(df_filtered)} / {len(df)} records passed non-endogenous filter."
-            )
-
-        if df_filtered.empty:
-            return pd.DataFrame()
-
+        df_filtered = df.copy()
         # 2. 根据亲和力阈值过滤 (逻辑不变)
         affinity_threshold = self.config.data_params.affinity_threshold_nM
 
