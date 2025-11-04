@@ -9,10 +9,6 @@ import pandas as pd
 import research_template as rt
 
 from nasnet.configs import AppConfig
-from nasnet.data_processing.services import (
-    get_human_uniprot_whitelist,
-    get_valid_pubchem_cids,
-)
 from nasnet.utils import get_path
 
 
@@ -24,7 +20,7 @@ class BaseProcessor(ABC):
     def __init__(self, config: AppConfig):
         self.config = config
         self.verbose = config.runtime.verbose
-        self.schema = self.config.data_structure.schema.internal.authoritative_dti
+        self.schema = self.config.data_structure.schema.internal.canonical_interaction
         print(
             f"--- [{self.__class__.__name__}] Initialized (Verbose Level: {self.verbose}). ---"
         )
@@ -49,7 +45,6 @@ class BaseProcessor(ABC):
             ("Load Raw Data", self._load_raw_data),
             ("Extract Relations", self._extract_relations),
             ("Standardize IDs", self._standardize_ids),
-            ("Filter by Whitelist", self._filter_by_whitelist),
             ("Filter Data", self._filter_data),
             ("Finalize & Deduplicate Columns", self._finalize_columns),
         ]
@@ -104,10 +99,12 @@ class BaseProcessor(ABC):
                 f"--- [{self.__class__.__name__}] Final authoritative file is ready. ---"
             )
             expected_cols_subset = {
-                self.schema.molecule_id,
-                self.schema.protein_id,
-                self.schema.label,
+                self.schema.source_id,
+                self.schema.source_type,
+                self.schema.target_id,
+                self.schema.target_type,
                 self.schema.relation_type,
+                self.schema.label,
             }
             assert expected_cols_subset.issubset(set(final_df.columns))
 
@@ -137,33 +134,17 @@ class BaseProcessor(ABC):
 
     # --- Base类提供的通用、可复用的步骤 ---
 
-    def _filter_by_whitelist(self, df: pd.DataFrame) -> pd.DataFrame:
-        # ... (此方法代码不变) ...
-        # a. 验证 UniProt IDs
-        all_pids = set(df[self.schema.protein_id].dropna().unique())
-        valid_pids = get_human_uniprot_whitelist(all_pids, self.config)
-        df = df[df[self.schema.protein_id].isin(valid_pids)]
-        if df.empty:
-            return pd.DataFrame()
-
-        # b. 验证 PubChem CIDs
-        all_cids = set(df[self.schema.molecule_id].dropna().unique())
-        valid_cids = get_valid_pubchem_cids(all_cids, self.config)
-        df = df[df[self.schema.molecule_id].isin(valid_cids)]
-
-        return df
-
     def _get_final_columns(self) -> List[str]:
-        # ... (此方法代码不变) ...
         return [
-            self.schema.molecule_id,
-            self.schema.protein_id,
-            self.schema.label,
+            self.schema.source_id,
+            self.schema.source_type,
+            self.schema.target_id,
+            self.schema.target_type,
             self.schema.relation_type,
+            self.schema.label,
         ]
 
     def _finalize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        # ... (此方法代码不变) ...
         if self.schema.label not in df.columns:
             df[self.schema.label] = 1
 
@@ -171,9 +152,12 @@ class BaseProcessor(ABC):
         cols_to_keep = [col for col in final_cols if col in df.columns]
         final_df = df[cols_to_keep].copy()
         final_df.drop_duplicates(
-            subset=[self.schema.molecule_id, self.schema.protein_id],
+            subset=[
+                self.schema.source_id,
+                self.schema.target_id,
+                self.schema.relation_type,
+            ],
             inplace=True,
-            # (可选) keep='first' 保证了可复现性
             keep="first",
         )
         final_df = final_df.reset_index(drop=True)
@@ -181,16 +165,26 @@ class BaseProcessor(ABC):
         # --- 【核心修复】在这里进行最终的数据类型强制转换 ---
         # 只有在DataFrame不为空时才执行
         if not final_df.empty:
-            # 使用 .astype() 进行标准转换
-            final_df[self.schema.molecule_id] = final_df[
-                self.schema.molecule_id
-            ].astype(int)
-            final_df[self.schema.protein_id] = final_df[self.schema.protein_id].astype(
-                str
-            )
-            final_df[self.schema.label] = final_df[self.schema.label].astype(int)
+            # ID 列不再强制为 int，因为它们可能是字符串（如UniProt ID）
+            # 我们依赖 Processor 来确保ID类型的正确性
+            final_df[self.schema.source_id] = final_df[
+                self.schema.source_id
+            ]  # 保持原样
+            final_df[self.schema.target_id] = final_df[
+                self.schema.target_id
+            ]  # 保持原样
+
+            final_df[self.schema.source_type] = final_df[
+                self.schema.source_type
+            ].astype(str)
+            final_df[self.schema.target_type] = final_df[
+                self.schema.target_type
+            ].astype(str)
             final_df[self.schema.relation_type] = final_df[
                 self.schema.relation_type
             ].astype(str)
+
+            # label 可以是 int (分类) 或 float (回归)，所以我们只做数值转换
+            final_df[self.schema.label] = pd.to_numeric(final_df[self.schema.label])
 
         return final_df
