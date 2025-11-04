@@ -10,10 +10,6 @@ from omegaconf import OmegaConf
 from tqdm import tqdm
 
 from nasnet.configs import AppConfig, register_all_schemas
-from nasnet.data_processing.services import (
-    filter_molecules_by_properties,
-    purify_entities_dataframe_parallel,
-)
 from nasnet.utils import get_path, register_hydra_resolvers
 
 from .base_processor import BaseProcessor
@@ -21,38 +17,50 @@ from .base_processor import BaseProcessor
 
 class BindingdbProcessor(BaseProcessor):
     """
+    【V8 - 最终纯净架构版】
     一个专门负责处理BindingDB原始数据的处理器。
-    【V6 - 最终差异化流水线版】：
-    - 标准化所有可用列（ID和结构）。
-    - 在业务过滤步骤中，执行亲和力筛选和分子属性筛选。
+    它的职责被纯化为：
+    1. 从原始TSV加载数据。
+    2. 将数据“翻译”成内部的、带有辅助信息的规范化交互格式。
+    3. 执行BindingDB专属的“亲和力阈值”领域筛选。
     """
 
     def __init__(self, config: AppConfig):
         super().__init__(config)
+        # 引用外部schema，用于解析原始文件
         self.external_schema = self.config.data_structure.schema.external.bindingdb
 
-    # --- 步骤 1: 实现数据加载 (不变) ---
     def _load_raw_data(self) -> pd.DataFrame:
+        """
+        步骤1: 从BindingDB的原始TSV文件中加载人类相关的数据。
+        (此方法逻辑与之前版本基本一致)
+        """
         tsv_path = get_path(self.config, "raw.raw_tsv")
         if not tsv_path.exists():
             raise FileNotFoundError(f"Raw TSV file not found at '{tsv_path}'")
 
         columns_to_read = list(self.external_schema.values())
+
+        # 确保读取所有可能需要的列，包括亲和力和结构
+        required_cols_for_processing = set(columns_to_read)
+
         chunk_iterator = pd.read_csv(
             tsv_path,
             sep="\t",
             on_bad_lines="warn",
-            usecols=lambda c: c in columns_to_read,
+            usecols=lambda c: c in required_cols_for_processing,
             low_memory=False,
             chunksize=100000,
         )
+
         loaded_chunks = []
         disable_tqdm = self.verbose == 0
         for chunk in tqdm(
             chunk_iterator,
-            desc="    - Reading & Pre-filtering Chunks",
+            desc=f"    - Reading & Pre-filtering {self.__class__.__name__} Chunks",
             disable=disable_tqdm,
         ):
+            # 基础的、绝对必要的预过滤
             chunk = chunk[chunk[self.external_schema.organism] == "Homo sapiens"].copy()
             chunk.dropna(
                 subset=[
@@ -63,41 +71,45 @@ class BindingdbProcessor(BaseProcessor):
             )
             if not chunk.empty:
                 loaded_chunks.append(chunk)
+
         return (
             pd.concat(loaded_chunks, ignore_index=True)
             if loaded_chunks
             else pd.DataFrame()
         )
 
-    # --- 步骤 2: 实现关系提取 (直通) ---
     def _extract_relations(self, raw_data: pd.DataFrame) -> pd.DataFrame:
         """
-        对于BindingDB，原始数据已是关系格式，直接返回即可。
+        步骤2: 对于BindingDB，原始数据已是关系格式，此步骤为直通。
         """
         return raw_data
 
-    # --- 步骤 3: 实现ID和结构标准化 ---
     def _standardize_ids(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        【修改】职责：将原始DataFrame直接重塑为“规范化交互格式”。
+        步骤3: 将原始DataFrame重塑为“规范化交互格式”，并附带所有用于下游校验的辅助列。
         """
         if self.verbose > 0:
-            print("  - Reshaping DataFrame to canonical interaction format...")
+            print(
+                "  - Reshaping DataFrame to canonical format with auxiliary columns..."
+            )
 
         final_df = pd.DataFrame()
 
-        # 直接从 external_schema 映射到 canonical_schema
+        # 核心规范化列
+        entity_names = self.config.knowledge_graph.entity_types
         final_df[self.schema.source_id] = df[self.external_schema.molecule_id]
-        # TODO: config中
-        final_df[self.schema.source_type] = "molecule"
+        final_df[self.schema.source_type] = entity_names.molecule
         final_df[self.schema.target_id] = df[self.external_schema.protein_id]
-        final_df[self.schema.target_type] = "protein"
+        final_df[self.schema.target_type] = entity_names.protein
         final_df[self.schema.relation_type] = (
-            self.config.knwoledge_graph.relation_types.default
+            self.config.knowledge_graph.relation_types.default
         )
 
-        # 【重要】保留原始结构和亲和力列，以便下一步过滤使用
-        final_df["smiles"] = df[self.external_schema.molecule_sequence]
+        # 附带所有下游需要的“原材料”
+        final_df["structure_molecule"] = df[self.external_schema.molecule_sequence]
+        final_df["structure_protein"] = df[self.external_schema.protein_sequence]
+
+        # 附带亲和力数据以供下一步过滤
         for aff_type in [
             self.external_schema.ki,
             self.external_schema.ic50,
@@ -108,14 +120,14 @@ class BindingdbProcessor(BaseProcessor):
 
         return final_df
 
-    # --- 步骤 4 (覆盖): 实现业务规则过滤 ---
     def _filter_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        【覆盖实现】执行特定于BindingDB的业务规则过滤：
-        1. 亲和力筛选。
-        2. 分子属性筛选。
+        步骤4: 【职责纯化】只执行BindingDB领域专属的“亲和力”过滤。
         """
-        # 1. 计算并筛选亲和力
+        if self.verbose > 0:
+            print("  - Applying domain-specific filter: Affinity Threshold...")
+
+        # 1. 计算统一的亲和力值
         for aff_type in [
             self.external_schema.ki,
             self.external_schema.ic50,
@@ -126,31 +138,27 @@ class BindingdbProcessor(BaseProcessor):
                     df[aff_type].astype(str).str.replace("[><]", "", regex=True),
                     errors="coerce",
                 )
+
         df["affinity_nM"] = (
             df[self.external_schema.ki]
             .fillna(df[self.external_schema.kd])
             .fillna(df[self.external_schema.ic50])
         )
 
+        # 2. 应用亲和力阈值过滤
         affinity_threshold = self.config.data_params.affinity_threshold_nM
-        df.dropna(subset=["affinity_nM"], inplace=True)
-        df_filtered = df[df["affinity_nM"] <= affinity_threshold].copy()
-        if df_filtered.empty:
-            return pd.DataFrame()
 
-        # 2. 分子属性筛选 (因为这是主数据集，我们应用此步骤)
-        #    这个函数需要标准的'SMILES'列名，这在_standardize_ids中已完成
-        #     需要使用SMILES,所以先purify一下,不影响之后structure_provider作为唯一事实
-        df_purified = purify_entities_dataframe_parallel(
-            df_filtered, config=self.config
-        )
-        df_final_filtered = filter_molecules_by_properties(df_purified, self.config)
-        if not df_final_filtered.empty:
-            schema_config = self.config.data_structure.schema.internal.authoritative_dti
-            df_final_filtered[schema_config.relation_type] = (
-                self.config.knwoledge_graph.relation_types.default
+        # 在过滤前，先丢弃没有计算出 affinity_nM 的行
+        df.dropna(subset=["affinity_nM"], inplace=True)
+
+        df_filtered = df[df["affinity_nM"] <= affinity_threshold].copy()
+
+        if self.verbose > 0:
+            print(
+                f"    - {len(df_filtered)} / {len(df)} records passed affinity filter."
             )
-        return df_final_filtered
+
+        return df_filtered
 
 
 # --------------------------------------------------------------------------

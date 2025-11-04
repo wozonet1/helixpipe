@@ -69,54 +69,96 @@ class GtopdbProcessor(BaseProcessor):
     # --- 步骤 3: 实现ID和结构标准化 ---
     def _standardize_ids(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        重命名ID和SMILES列，并清洗UniProt ID格式。
+        步骤3: 【V2 - 最终重构版】
+        将原始DataFrame重塑为“规范化交互格式”，并附带所有用于下游校验的辅助列。
         """
-        # 清洗UniProt ID (e.g., 'P12345|...')
-        df[self.schema.protein_id] = (
+        if self.verbose > 0:
+            print(
+                "  - Reshaping DataFrame to canonical format with auxiliary columns..."
+            )
+
+        final_df = pd.DataFrame()
+
+        # --- 核心规范化列 ---
+        entity_names = self.config.knowledge_graph.entity_types
+
+        # 1. Source (Molecule)
+        # 我们不再在这里重命名，而是直接赋值给新列
+        final_df[self.schema.source_id] = df[self.external_schema.ligands.molecule_id]
+        final_df[self.schema.source_type] = (
+            entity_names.ligand
+        )  # GtoPdb的分子被定义为ligand
+
+        # 2. Target (Protein)
+        # 清洗UniProt ID (e.g., 'P12345|...')并赋值给新列
+        final_df[self.schema.target_id] = (
             df[self.external_schema.interactions.target_id].str.split("|").str[0]
         )
+        final_df[self.schema.target_type] = entity_names.protein
 
-        # 重命名列
-        return df.rename(
-            columns={
-                self.external_schema.ligands.molecule_id: self.schema.molecule_id,
-                self.external_schema.ligands.molecule_sequence: self.schema.molecule_sequence,
-            }
+        # 3. Relation Type
+        final_df[self.schema.relation_type] = (
+            self.config.knowledge_graph.relation_types.default
         )
 
-    # --- 步骤 4 (覆盖): 实现业务规则过滤 ---
+        # --- 附带下游需要的“原材料” ---
+
+        # 4. 结构信息
+        final_df["structure_molecule"] = df[
+            self.external_schema.ligands.molecule_sequence
+        ]
+        # GtoPdb不提供蛋白质序列，所以我们不创建 structure_protein 列
+
+        # 5. 用于下一步过滤的领域特定信息
+        final_df["affinity_nM"] = df[self.external_schema.interactions.affinity]
+        final_df["endogenous_flag"] = df[
+            self.external_schema.interactions.endogenous_flag
+        ]
+
+        return final_df
+
     def _filter_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        【覆盖实现 - 诊断版】执行特定于GtoPdb的业务规则过滤，并增加详细日志。
+        步骤4: 【V5 - 最终真相版】
+        根据确凿的数据证据，执行正确的领域筛选。
         """
-        gtopdb_schema = self.config.data_structure.schema.external.gtopdb
-
-        # a. 筛选内源性交互
-        is_endogenous = df[gtopdb_schema.interactions.endogenous_flag]
-        df = df[is_endogenous].copy()
-
-        # b. 过滤关键信息缺失的行
-        required_cols = [
-            gtopdb_schema.interactions.target_id,
-            gtopdb_schema.interactions.affinity,
-        ]
-        df.dropna(subset=required_cols, inplace=True)
-
-        # c. 根据亲和力阈值过滤
-        affinity_threshold = (
-            self.config.data_params.affinity_threshold_nM
-        )  # 注意：这里用了通用的阈值
-        df[gtopdb_schema.interactions.affinity] = pd.to_numeric(
-            df[gtopdb_schema.interactions.affinity], errors="coerce"
-        )
-        df.dropna(subset=[gtopdb_schema.interactions.affinity], inplace=True)
-        df = df[df[gtopdb_schema.interactions.affinity] <= affinity_threshold].copy()
-        if not df.empty:
-            schema_config = self.config.data_structure.schema.internal.authoritative_dti
-            df[schema_config.relation_type] = (
-                self.config.knowledge_graph.relation_types.default
+        if self.verbose > 0:
+            print(
+                "  - Applying domain-specific filters: Non-Endogenous & Affinity Threshold..."
             )
-        return df
+
+        # 1. 【核心修复】筛选非内源性（non-endogenous）交互。
+        #    我们现在知道该列是布尔类型，所以我们保留所有值为 False 的行。
+        #    使用 ~ (NOT) 操作符，代码更简洁、意图更清晰。
+        df_filtered = df[~df["endogenous_flag"]].copy()
+
+        if self.verbose > 0:
+            print(
+                f"    - {len(df_filtered)} / {len(df)} records passed non-endogenous filter."
+            )
+
+        if df_filtered.empty:
+            return pd.DataFrame()
+
+        # 2. 根据亲和力阈值过滤 (逻辑不变)
+        affinity_threshold = self.config.data_params.affinity_threshold_nM
+
+        df_filtered["affinity_nM"] = pd.to_numeric(
+            df_filtered["affinity_nM"], errors="coerce"
+        )
+        df_filtered.dropna(subset=["affinity_nM"], inplace=True)
+
+        initial_count_after_endo = len(df_filtered)
+        df_filtered = df_filtered[
+            df_filtered["affinity_nM"] <= affinity_threshold
+        ].copy()
+
+        if self.verbose > 0:
+            print(
+                f"    - {len(df_filtered)} / {initial_count_after_endo} records passed affinity filter."
+            )
+
+        return df_filtered
 
 
 if __name__ == "__main__":
