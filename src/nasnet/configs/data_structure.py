@@ -1,7 +1,7 @@
 # 文件: src/configs/data_structure.py
 
 from dataclasses import dataclass, field
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 # --------------------------------------------------------------------------
 # 这些是嵌套在主 DataStructureConfig 内部的、更小的配置块
@@ -18,6 +18,8 @@ class RawFilenames:
     dummy_file_to_get_dir: str = "dummy.txt"
     interactions: str = "interactions_default.csv"
     ligands: str = "ligands_default.csv"
+    protein_links: str = "default.protein.links.txt.gz"
+    protein_aliases: str = "default.protein.aliases.txt.gz"
 
 
 @dataclass
@@ -115,6 +117,8 @@ class RawPaths:
     dummy_file_to_get_dir: str = "${path:raw.dummy_file_to_get_dir}"
     interactions: str = "${path:raw.interactions}"
     ligands: str = "${path:raw.ligands}"
+    protein_links: str = "${path:raw.protein_links}"
+    protein_aliases: str = "${path:raw.protein_aliases}"
 
 
 @dataclass
@@ -200,18 +204,28 @@ class PathsConfig:
 
 
 # --- Schema相关的Dataclasses ---
-
-
 @dataclass
-class AuthoritativeDTISchema:
-    """定义项目内部黄金标准DataFrame的列名。(重命名，更清晰)"""
+class CanonicalInteractionSchema:
+    """定义项目内部“规范化交互DataFrame”的标准列名。"""
 
-    molecule_id: str = "PubChem_CID"
-    protein_id: str = "UniProt_ID"
-    molecule_sequence: str = "SMILES"
-    protein_sequence: str = "Sequence"
-    label: str = "Label"
+    source_id: str = "source_id"
+    source_type: str = "source_type"
+    target_id: str = "target_id"
+    target_type: str = "target_type"
     relation_type: str = "relation_type"
+    label: str = "label"
+
+
+# @dataclass
+# class AuthoritativeDTISchema:
+#     """定义项目内部黄金标准DataFrame的列名。(重命名，更清晰)"""
+
+#     molecule_id: str = "PubChem_CID"
+#     protein_id: str = "UniProt_ID"
+#     molecule_sequence: str = "SMILES"
+#     protein_sequence: str = "Sequence"
+#     label: str = "Label"
+#     relation_type: str = "relation_type"
 
 
 @dataclass
@@ -246,10 +260,16 @@ class NodesOutputSchema:
 class InternalSchemaConfig:  # <--- 新增一个层级
     """组织所有项目内部使用的Schema定义。"""
 
-    authoritative_dti: AuthoritativeDTISchema = AuthoritativeDTISchema()
+    canonical_interaction: CanonicalInteractionSchema = field(
+        default_factory=CanonicalInteractionSchema
+    )
+    # authoritative_dti: AuthoritativeDTISchema = AuthoritativeDTISchema()
     graph_output: GraphOutputSchema = GraphOutputSchema()
     labeled_edges_output: LabeledEdgesSchema = LabeledEdgesSchema()
     nodes_output: NodesOutputSchema = field(default_factory=NodesOutputSchema)
+    protein_id_columns: List[str] = field(
+        default_factory=lambda: ["UniProt_ID", "protein1_id", "protein2_id"]
+    )
 
 
 @dataclass
