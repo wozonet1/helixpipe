@@ -1,6 +1,7 @@
 # 文件: src/configs/training.py
 
 from dataclasses import dataclass, field
+from typing import List, Literal
 
 
 @dataclass
@@ -9,6 +10,12 @@ class ColdstartConfig:
 
     mode: str = "drug"
     test_fraction: float = 0.2
+
+    strictness: Literal["informed", "strict"] = "strict"
+    # 'allowed_leakage_types' 是一个白名单，只在 strictness='strict' 时生效
+    # 默认情况下，严格模式不允许任何背景边泄露
+    allowed_leakage_types: List[str] = field(default_factory=list)
+    scope: Literal["all_molecule_protein", "drug_only"] = "all_molecule_protein"
 
 
 @dataclass
@@ -24,3 +31,4 @@ class TrainingConfig:
     k_folds: int = 5
     batch_size: int = 512
     coldstart: ColdstartConfig = field(default_factory=ColdstartConfig)
+    test_set_scope: Literal["dti_only", "all_interactions"] = "dti_only"
