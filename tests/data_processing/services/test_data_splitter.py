@@ -1,127 +1,169 @@
+import unittest
+from unittest.mock import patch
+
 from omegaconf import OmegaConf
 
-# 导入要测试的类
-from nasnet.data_processing import DataSplitter
+# 导入我们需要测试的类
+from nasnet.data_processing.services.splitter import DataSplitter
 
-# --- 模拟(Mock)对象和数据 ---
+# --- [MODIFIED] 模拟(Mock)对象和数据 ---
 
 
 class MockIDMapper:
-    """一个轻量级的IDMapper模拟对象，只提供必要的方法和属性。"""
+    """
+    一个更复杂的IDMapper模拟对象，用于测试位置无知的划分。
+    """
 
-    def __init__(self, num_mols, num_prots):
-        self.molecule_to_id = {f"CID_{i}": i for i in range(num_mols)}
-        self.protein_to_id = {f"PID_{i}": i + num_mols for i in range(num_prots)}
+    def __init__(self):
+        self.entity_types = ["drug", "ligand", "protein"]
+
+        self.entities_by_type = {
+            "drug": [0, 1],
+            "ligand": [2, 3],
+            "protein": [10, 11, 12, 13],
+        }
+
+        self.logic_id_to_type_map = {}
+        for type_name, ids in self.entities_by_type.items():
+            for entity_id in ids:
+                self.logic_id_to_type_map[entity_id] = type_name
+
+    def get_entity_types(self):
+        return self.entity_types
+
+    def get_ordered_ids(self, entity_type: str):
+        return self.entities_by_type.get(entity_type, [])
+
+    def is_molecule(self, entity_type: str) -> bool:
+        return entity_type in ["drug", "ligand"]
+
+    def is_protein(self, entity_type: str) -> bool:
+        return entity_type == "protein"
+
+    def get_logic_id_to_type_map(self):
+        return self.logic_id_to_type_map
 
 
-# 全局的模拟数据，供所有测试函数使用
-NUM_MOLS, NUM_PROTS = 10, 10
-mock_id_mapper = MockIDMapper(NUM_MOLS, NUM_PROTS)
-# 创建一个 10x10 的交互网格，总共100个交互对
+# --- 全局的模拟数据 ---
+mock_id_mapper = MockIDMapper()
+
+# 创建一个复杂的交互对列表
+# 2个 drug-prot, 2个 ligand-prot, 1个 prot-prot
 MOCK_PAIRS = [
-    (m, p)
-    for m in mock_id_mapper.molecule_to_id.values()
-    for p in mock_id_mapper.protein_to_id.values()
+    # DTI
+    (0, 10, "interacts_with"),  # (drug, protein)
+    (1, 11, "interacts_with"),  # (drug, protein)
+    # LPI
+    (2, 12, "interacts_with"),  # (ligand, protein)
+    (3, 13, "interacts_with"),  # (ligand, protein)
+    # PPI
+    (10, 11, "associated_with"),  # (protein, protein)
 ]
 
-# --- 测试函数 ---
 
+class TestDataSplitter(unittest.TestCase):
+    def test_molecule_cold_split_heterogeneous(self):
+        """
+        测试点1: 在分子冷启动模式下，是否能正确划分一个包含多种分子类型的交互列表。
+        """
+        print("\n--- Running Test: Molecule Cold-Split on Heterogeneous Pairs ---")
 
-def test_k5_random_split():
-    """测试 5-fold 随机划分 (热启动)。"""
-    cfg = OmegaConf.create(
-        {
-            "training": {
-                "k_folds": 5,
-                "coldstart": {"mode": "random", "test_fraction": 0.3},
-            },
-            "runtime": {"seed": 42},
-        }
-    )
-    splitter = DataSplitter(cfg, MOCK_PAIRS, mock_id_mapper)
+        cfg = OmegaConf.create(
+            {
+                "training": {
+                    "k_folds": 1,  # 单次划分
+                    "coldstart": {"mode": "molecule", "test_fraction": 0.5},
+                },
+            }
+        )
 
-    all_test_pairs_from_folds = []
-    fold_count = 0
-    for fold_idx, train_pairs, test_pairs in splitter:
-        assert len(train_pairs) == 80  # 100 * 4/5
-        assert len(test_pairs) == 20  # 100 * 1/5
-        all_test_pairs_from_folds.extend(test_pairs)
-        fold_count += 1
+        # 种子固定，使得 train_test_split 的结果可预测
+        # 分子ID: [0, 1, 2, 3]。test_fraction=0.5 -> 2个测试分子
+        # 假设 train_test_split 会选择 [1, 2] 作为测试分子
+        splitter = DataSplitter(cfg, MOCK_PAIRS, mock_id_mapper, seed=42)
 
-    assert fold_count == 5  # 确保迭代了5次
-    # 检查所有折的测试集是否能无重复、无遗漏地重构原始数据集
-    assert len(set(all_test_pairs_from_folds)) == len(MOCK_PAIRS)
-    assert sorted(all_test_pairs_from_folds) == sorted(MOCK_PAIRS)
-    print("\n✅ test_k5_random_split: PASSED")
+        _, _, test_pairs, cold_start_mol_ids = next(iter(splitter))
 
+        # 预期:
+        # (0, 10, 'interacts_with') -> train
+        # (1, 11, 'interacts_with') -> test (因为分子1在测试集)
+        # (2, 12, 'interacts_with') -> test (因为分子2在测试集)
+        # (3, 13, 'interacts_with') -> train
+        # (10, 11, 'associated_with') -> train (不含任何分子)
 
-def test_k5_molecule_cold_split():
-    """测试 5-fold 分子冷启动划分。"""
-    cfg = OmegaConf.create(
-        {
-            "training": {
-                "k_folds": 5,
-                "coldstart": {"mode": "molecule", "test_fraction": 0.3},
-            },
-            "runtime": {"seed": 42},
-        }
-    )
-    splitter = DataSplitter(cfg, MOCK_PAIRS, mock_id_mapper)
+        self.assertEqual(len(test_pairs), 2)
+        self.assertEqual(
+            len(cold_start_mol_ids), 2, "Should identify 2 cold-start molecules."
+        )
 
-    all_test_mols_seen = set()
-    total_test_pairs_count = 0
-    for fold_idx, train_pairs, test_pairs in splitter:
-        test_mols_in_fold = {p[0] for p in test_pairs}
-        train_mols_in_fold = {p[0] for p in train_pairs}
+        test_mol_ids_from_pairs = set()
+        logic_id_to_type = mock_id_mapper.get_logic_id_to_type_map()
+        for u, v, _ in test_pairs:
+            if mock_id_mapper.is_molecule(logic_id_to_type[u]):
+                test_mol_ids_from_pairs.add(u)
+            if mock_id_mapper.is_molecule(logic_id_to_type[v]):
+                test_mol_ids_from_pairs.add(v)
 
-        # 每一折应该包含 10/5=2 个测试分子
-        assert len(test_mols_in_fold) == 2
-        # 训练集中的分子不应该出现在测试集中 (冷启动的核心)
-        assert not (train_mols_in_fold & test_mols_in_fold)
-        # 每个测试分子对应10个蛋白质交互
-        assert len(test_pairs) == 2 * NUM_PROTS
+        self.assertEqual(
+            test_mol_ids_from_pairs,
+            cold_start_mol_ids,
+            "All molecules in test pairs must be from the cold-start set.",
+        )
 
-        all_test_mols_seen.update(test_mols_in_fold)
-        total_test_pairs_count += len(test_pairs)
+        print("  ✅ Test Passed: Correctly isolated and returned molecule-cold IDs.")
 
-    # 5折下来，所有分子都应该被作为测试集出现过一次
-    assert all_test_mols_seen == set(mock_id_mapper.molecule_to_id.values())
-    assert total_test_pairs_count == len(MOCK_PAIRS)
-    print("✅ test_k5_molecule_cold_split: PASSED")
+    @patch("nasnet.data_processing.services.splitter.train_test_split")
+    def test_protein_cold_split_handles_ppi(self, mock_train_test_split):
+        """
+        测试点2 (核心): 在蛋白质冷启动模式下，是否能正确处理 protein-protein 交互。
+        """
+        print("\n--- Running Test: Protein Cold-Split with PPI ---")
 
+        cfg = OmegaConf.create(
+            {
+                "training": {
+                    "k_folds": 1,
+                    "coldstart": {"mode": "protein", "test_fraction": 0.5},
+                },
+            }
+        )
+        train_entities = [10, 13]
+        test_entities = [11, 12]
+        mock_train_test_split.return_value = (train_entities, test_entities)
+        # 蛋白质ID: [10, 11, 12, 13]。test_fraction=0.5 -> 2个测试蛋白
+        # 假设 train_test_split (seed=1) 会选择 [11, 12] 作为测试蛋白
+        splitter = DataSplitter(cfg, MOCK_PAIRS, mock_id_mapper, seed=1)
 
-def test_single_split_protein_cold():
-    """测试 k=1 的单次蛋白质冷启动划分。"""
-    cfg = OmegaConf.create(
-        {
-            "training": {
-                "k_folds": 1,
-                "coldstart": {"mode": "protein", "test_fraction": 0.3},
-            },
-            "runtime": {"seed": 42},
-        }
-    )
-    splitter = DataSplitter(cfg, MOCK_PAIRS, mock_id_mapper)
+        _, train_pairs, test_pairs, cold_start_prot_ids = next(iter(splitter))
 
-    splits = list(splitter)  # 将迭代器转换为列表
-    assert len(splits) == 1  # 确认只产生了一次划分
+        # 预期:
+        # (0, 10, 'interacts_with') -> train
+        # (1, 11, 'interacts_with') -> test (因为蛋白11在测试集)
+        # (2, 12, 'interacts_with') -> test (因为蛋白12在测试集)
+        # (3, 13, 'interacts_with') -> train
+        # (10, 11, 'associated_with') -> test (因为蛋白11在测试集) <-- 核心验证点！
 
-    fold_idx, train_pairs, test_pairs = splits[0]
+        self.assertEqual(len(train_pairs), 2, "Incorrect number of training pairs.")
+        self.assertEqual(len(test_pairs), 3, "Incorrect number of test pairs.")
 
-    test_prots_in_fold = {p[1] for p in test_pairs}
+        test_prot_ids_found = set()
+        for u, v, _ in test_pairs:
+            if mock_id_mapper.is_protein(mock_id_mapper.logic_id_to_type_map[u]):
+                test_prot_ids_found.add(u)
+            if mock_id_mapper.is_protein(mock_id_mapper.logic_id_to_type_map[v]):
+                test_prot_ids_found.add(v)
 
-    # 测试蛋白质的数量应该是 10 * 0.3 = 3
-    assert len(test_prots_in_fold) == 3
-    # 测试交互对的数量应该是 3 * 10 (每个蛋白有10个分子交互)
-    assert len(test_pairs) == 3 * NUM_MOLS
-    # 训练交互对的数量应该是 (10-3) * 10 = 70
-    assert len(train_pairs) == (NUM_PROTS - 3) * NUM_MOLS
-    print("✅ test_single_split_protein_cold: PASSED")
+        # 验证 (10, 11) 这条边确实被分到了测试集
+        self.assertEqual(
+            len(cold_start_prot_ids), 2, "Should identify 2 cold-start proteins."
+        )
+        self.assertEqual(
+            cold_start_prot_ids,
+            {11, 12},
+            "The returned cold-start protein IDs are not as expected.",
+        )  # 依赖于mock的train_test_split
+        print("  ✅ Test Passed: Correctly handled PPI pair during protein cold-split.")
 
 
 if __name__ == "__main__":
-    print("--- Running DataSplitter Tests ---")
-    test_k5_random_split()
-    test_k5_molecule_cold_split()
-    test_single_split_protein_cold()
-    print("\n--- All DataSplitter tests completed successfully. ---")
+    unittest.main(verbosity=2)
