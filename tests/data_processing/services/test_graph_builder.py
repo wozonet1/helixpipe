@@ -1,71 +1,89 @@
-# 文件: tests/data_processing/services/test_graph_builder.py (Builder模式测试版)
-
 import unittest
+from unittest.mock import patch
 
-import numpy as np
+import torch
 from omegaconf import OmegaConf
 
-# 导入我们需要测试的新类和旧的依赖
+# 导入我们需要测试的类
 from nasnet.data_processing.services.graph_builder import HeteroGraphBuilder
 from nasnet.data_processing.services.graph_director import GraphDirector
 
-
-# --- 模拟(Mock)对象和数据 ---
-class MockIDMapper:
-    """一个轻量级的IDMapper模拟对象，只提供必要的方法。"""
-
-    def __init__(self):
-        self.num_drugs = 2
-        self.num_ligands = 1
-        self.num_molecules = 3
-        self.num_proteins = 2
-
-    def get_node_type(self, node_id: int) -> str:
-        if 0 <= node_id < 2:
-            return "drug"
-        if 2 <= node_id < 3:
-            return "ligand"
-        if 3 <= node_id < 5:
-            return "protein"
-        raise ValueError(f"Invalid node ID {node_id} for mock IDMapper")
+# --- 模拟(Mock)对象 ---
 
 
-# --- 测试用例类 ---
-class TestGraphBuilderDirector(unittest.TestCase):
+class MockGraphBuildContext:
+    """
+    一个模拟的GraphBuildContext，用于精确控制测试场景。
+    """
+
+    def __init__(self, num_mols_train, num_prots_train, num_mols_cold, num_prots_cold):
+        self.num_local_mols = num_mols_train + num_mols_cold
+        self.num_local_prots = num_prots_train + num_prots_cold
+
+        self.mol_train_ids = set(range(num_mols_train))
+        self.prot_train_ids = set(
+            range(self.num_local_mols, self.num_local_mols + num_prots_train)
+        )
+        self.mol_cold_ids = set(range(num_mols_train, self.num_local_mols))
+        self.prot_cold_ids = set(
+            range(
+                self.num_local_mols + num_prots_train,
+                self.num_local_mols + self.num_local_prots,
+            )
+        )
+
+        self.local_id_to_type_map = {}
+        # 为了简化，我们假设所有分子都是'drug'类型
+        for i in range(self.num_local_mols):
+            self.local_id_to_type_map[i] = "drug"
+        for i in range(self.num_local_mols, self.num_local_mols + self.num_local_prots):
+            self.local_id_to_type_map[i] = "protein"
+
+    def get_local_node_type(self, local_id: int) -> str:
+        return self.local_id_to_type_map[local_id]
+
+    def get_local_protein_id_offset(self) -> int:
+        return self.num_local_mols
+
+
+class TestHeteroGraphBuilder(unittest.TestCase):
     def setUp(self):
-        """为每个测试设置一个包含所有模拟对象的“沙箱”环境。"""
-        # 1. 模拟 IDMapper
-        self.mock_id_mapper = MockIDMapper()
+        """
+        创建一个包含训练、测试和冷启动实体的模拟环境。
+        """
+        print("\n" + "=" * 80)
 
-        # 2. 模拟相似度矩阵
-        # 药物/配体矩阵 (d0, d1, l2)
-        self.mock_dl_sim = np.array(
-            [
-                [1.0, 0.9, 0.6],  # d0-d1 (pass, >0.8), d0-l2 (fail, <0.7)
-                [0.9, 1.0, 0.95],  # d1-d0 (skip), d1-l2 (pass, >0.7)
-                [0.6, 0.95, 1.0],  # l2-d0, l2-d1
-            ]
+        # 场景: 2个训练分子, 1个冷启动分子, 2个训练蛋白, 1个冷启动蛋白
+        self.context = MockGraphBuildContext(
+            num_mols_train=2, num_prots_train=2, num_mols_cold=1, num_prots_cold=1
         )
-        # 蛋白质矩阵 (p3, p4)
-        self.mock_prot_sim = np.array(
-            [
-                [1.0, 0.85],  # p3-p4 (pass, >0.8)
-                [0.85, 1.0],
-            ]
-        )
+        # 局部ID: mols=[0,1 (train), 2 (cold)], prots=[3,4 (train), 5 (cold)]
 
-        # 3. 模拟训练交互对 (包含最终关系类型)
-        self.mock_train_pairs = [
-            (0, 3, "interacts_with"),  # drug 0 - protein 3
-            (1, 4, "inhibits"),  # drug 1 - protein 4
-            (2, 4, "catalyzes"),  # ligand 2 - protein 4
-        ]
+        # 模拟嵌入（在新的测试策略下，这些不再直接使用，但保留以备将来）
+        self.mol_embeddings = torch.empty(3, 8)
+        self.prot_embeddings = torch.empty(3, 8)
 
-    def _get_test_config(self, relations_flags: dict) -> dict:
-        """创建一个模拟的、最小化的Config字典。"""
+        # 模拟训练集交互对（使用局部ID）
+        self.train_pairs = [(0, 3, "interacts_with")]  # mol 0 - prot 3
+
+    def _get_base_config(self):
+        """创建一个包含了所有必要依赖的基础配置。"""
         return OmegaConf.create(
             {
-                "runtime": {"verbose": 0},
+                "runtime": {"verbose": 1},
+                "knowledge_graph": {"relation_types": {"default": "interacts_with"}},
+                "data_params": {
+                    "similarity_top_k": 10,
+                    "similarity_thresholds": {"drug_drug": 0.8, "protein_protein": 0.8},
+                },
+                "relations": {
+                    "flags": {
+                        "interacts_with": True,
+                        "drug_drug_similarity": True,
+                        "protein_protein_similarity": True,
+                    }
+                },
+                "training": {"coldstart": {"strictness": "informed"}},
                 "data_structure": {
                     "schema": {
                         "internal": {
@@ -77,107 +95,116 @@ class TestGraphBuilderDirector(unittest.TestCase):
                         }
                     }
                 },
-                "data_params": {
-                    "similarity_thresholds": {
-                        "drug_drug": 0.8,
-                        "drug_ligand": 0.7,
-                        "ligand_ligand": 0.9,
-                        "protein_protein": 0.8,
-                    }
-                },
-                "relations": {"flags": relations_flags},
             }
         )
 
-    def test_build_all_edge_types(self):
+    @patch.object(HeteroGraphBuilder, "_add_similarity_edges_ann", autospec=True)
+    def test_build_informed_mode(self, mock_add_similarity_edges):
         """
-        集成测试 1: 所有关系开关都打开时，图是否被正确构建。
+        测试点1: 在 'informed' 模式下，所有背景边（包括接触冷启动节点的）都被创建。
         """
-        print("\n--- Running Test: GraphBuilder with ALL edge types enabled ---")
+        print("\n--- Running Test: Graph Build in 'informed' Mode ---")
 
-        # 1. 准备输入：一个开启所有开关的配置
-        config = self._get_test_config(
-            relations_flags={
-                "interacts_with": True,
-                "inhibits": True,
-                "catalyzes": True,
-                "drug_drug_similarity": True,
-                "drug_ligand_similarity": True,
-                "ligand_ligand_similarity": False,  # <-- 特意关闭一个来测试
-                "protein_protein_similarity": True,
-            }
-        )
+        cfg = self._get_base_config()
 
-        # 2. 实例化 Director 和 Builder
-        director = GraphDirector(config)
+        # 定义模拟方法的行为：直接向builder实例的_edges列表添加我们想要的边
+        def add_fake_edges(self_builder, entity_type, **kwargs):
+            if entity_type == "molecule":
+                # 添加一条训练集内部的 drug-drug 边
+                self_builder._edges.append([0, 1, "drug_drug_similarity"])
+            elif entity_type == "protein":
+                # 添加一条跨界的 protein-protein 边 (train <-> cold)
+                self_builder._edges.append([3, 5, "protein_protein_similarity"])
+
+        mock_add_similarity_edges.side_effect = add_fake_edges
+
         builder = HeteroGraphBuilder(
-            config, self.mock_id_mapper, self.mock_dl_sim, self.mock_prot_sim
+            config=cfg,
+            context=self.context,
+            molecule_embeddings=self.mol_embeddings,
+            protein_embeddings=self.prot_embeddings,
+            cold_start_entity_ids_local={2, 5},  # mol 2, prot 5
         )
+        director = GraphDirector(cfg)
 
-        # 3. 执行构建过程
-        director.construct(builder, self.mock_train_pairs)
-        result_df = builder.get_graph()
+        # Director 会调用我们模拟的 _add_similarity_edges_ann
+        director.construct(builder, self.train_pairs)
 
-        # (可选) 打印结果用于调试
-        print("Generated DataFrame:")
-        print(result_df.to_string())
+        # Director 在 informed 模式下不会调用过滤方法
+        graph_df = builder.get_graph()
 
-        # 4. 断言最终结果
+        # 预期边:
+        # 1. (0, 3, 'interacts_with') - 来自 construct
+        # 2. [0, 1, 'drug_drug_similarity'] - 来自 mock
+        # 3. [3, 5, 'protein_protein_similarity'] - 来自 mock (泄露边)
         self.assertEqual(
-            len(result_df), 6, "Incorrect total number of edges generated."
+            len(graph_df),
+            3,
+            "Should create all interaction and mocked similarity edges.",
         )
 
-        edge_counts = result_df["edge_type"].value_counts()
-        self.assertEqual(edge_counts.get("interacts_with", 0), 1)
-        self.assertEqual(edge_counts.get("inhibits", 0), 1)
-        self.assertEqual(edge_counts.get("catalyzes", 0), 1)
-        self.assertEqual(edge_counts.get("drug_drug_similarity", 0), 1)
-        self.assertEqual(edge_counts.get("drug_ligand_similarity", 0), 1)
-        self.assertEqual(edge_counts.get("protein_protein_similarity", 0), 1)
-        # 确认被关闭的边没有生成
-        self.assertNotIn("ligand_ligand_similarity", edge_counts)
+        edge_types = set(graph_df["edge_type"])
+        self.assertIn(
+            "protein_protein_similarity",
+            edge_types,
+            "Leaky P-P edge should exist in informed mode.",
+        )
 
-        print("  ✅ All edge counts are correct.")
+        print("  ✅ Test Passed: 'informed' mode correctly constructed the graph.")
 
-    def test_build_only_interaction_edges(self):
+    @patch.object(HeteroGraphBuilder, "_add_similarity_edges_ann", autospec=True)
+    def test_build_strict_mode(self, mock_add_similarity_edges):
         """
-        集成测试 2: 只有部分交互关系开关打开时，是否只生成了对应的边。
+        测试点2 (核心): 在 'strict' 模式下，接触冷启动节点的背景边被正确过滤。
         """
-        print(
-            "\n--- Running Test: GraphBuilder with ONLY specific interaction edges ---"
-        )
+        print("\n--- Running Test: Graph Build in 'strict' Mode ---")
 
-        # 1. 准备输入：一个只开启 'inhibits' 和 'catalyzes' 的配置
-        config = self._get_test_config(
-            relations_flags={
-                "interacts_with": False,  # <-- 关闭
-                "inhibits": True,
-                "catalyzes": True,
-                "drug_drug_similarity": False,
-                "drug_ligand_similarity": False,
-                "ligand_ligand_similarity": False,
-                "protein_protein_similarity": False,
-            }
-        )
+        cfg = self._get_base_config()
+        OmegaConf.update(cfg, "training.coldstart.strictness", "strict")
 
-        # 2. 实例化并执行
-        director = GraphDirector(config)
+        # 模拟方法的行为与上面完全相同
+        def add_fake_edges(self_builder, entity_type, **kwargs):
+            if entity_type == "molecule":
+                self_builder._edges.append([0, 1, "drug_drug_similarity"])
+            elif entity_type == "protein":
+                self_builder._edges.append([3, 5, "protein_protein_similarity"])
+
+        mock_add_similarity_edges.side_effect = add_fake_edges
+
         builder = HeteroGraphBuilder(
-            config, self.mock_id_mapper, self.mock_dl_sim, self.mock_prot_sim
+            config=cfg,
+            context=self.context,
+            molecule_embeddings=self.mol_embeddings,
+            protein_embeddings=self.prot_embeddings,
+            cold_start_entity_ids_local={2, 5},  # 冷启动实体是 mol 2 和 prot 5
         )
-        director.construct(builder, self.mock_train_pairs)
-        result_df = builder.get_graph()
+        director = GraphDirector(cfg)
 
-        # 3. 断言
-        self.assertEqual(len(result_df), 2)
-        edge_counts = result_df["edge_type"].value_counts()
-        self.assertEqual(edge_counts.get("inhibits", 0), 1)
-        self.assertEqual(edge_counts.get("catalyzes", 0), 1)
-        self.assertNotIn("interacts_with", edge_counts)
-        # 确认没有任何相似性边
-        self.assertFalse(any("similarity" in s for s in edge_counts.index))
+        # Director 现在应该会调用 builder.filter_background_edges_for_strict_mode
+        director.construct(builder, self.train_pairs)
 
-        print("  ✅ Correctly generated only specified interaction edges.")
+        graph_df = builder.get_graph()
+
+        # 预期边:
+        # 1. (0, 3, 'interacts_with') - 保留
+        # 2. [0, 1, 'drug_drug_similarity'] - 保留 (训练集内部)
+        # 3. [3, 5, 'protein_protein_similarity'] - 被过滤 (因为接触了冷启动蛋白 5)
+        self.assertEqual(
+            len(graph_df),
+            2,
+            "Should filter background edges connected to cold-start nodes.",
+        )
+
+        edge_types = set(graph_df["edge_type"])
+        self.assertIn("interacts_with", edge_types)
+        self.assertIn("drug_drug_similarity", edge_types)
+        self.assertNotIn(
+            "protein_protein_similarity",
+            edge_types,
+            "Leaky P-P edge should be removed in strict mode.",
+        )
+
+        print("  ✅ Test Passed: 'strict' mode correctly filtered the graph.")
 
 
 if __name__ == "__main__":

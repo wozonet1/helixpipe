@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from typing import List, Tuple, Union
+from typing import List, Set, Tuple, Union
 
 import faiss
 import numpy as np
@@ -57,6 +57,7 @@ class HeteroGraphBuilder(GraphBuilder):
         context: GraphBuildContext,
         molecule_embeddings: torch.Tensor,
         protein_embeddings: torch.Tensor,
+        cold_start_entity_ids_local: Union[Set[int], None] = None,
     ):
         """
         初始化具体的生成器。
@@ -74,7 +75,7 @@ class HeteroGraphBuilder(GraphBuilder):
 
         self._edges: List[List] = []
         self._graph_schema = self.config.data_structure.schema.internal.graph_output
-
+        self._cold_start_entity_ids = cold_start_entity_ids_local
         if self.verbose > 0:
             print(
                 "--- [HeteroGraphBuilder] Initialized for on-the-fly similarity computation. ---"
@@ -149,7 +150,13 @@ class HeteroGraphBuilder(GraphBuilder):
         # [MODIFIED] 根据模式选择不同的输出容器
         candidate_pairs_for_analysis = [] if analysis_mode else None
         edge_counts = defaultdict(int)
-
+        if self.verbose > 1:
+            print(
+                f"\n    --- [DEBUG] Inside _add_similarity_edges_ann for '{entity_type}' ---"
+            )
+            print(
+                f"    - Thresholds dictionary being used: {self.config.data_params.similarity_thresholds}"
+            )
         for i in range(num_embeddings):
             for neighbor_idx in range(1, k + 1):
                 j = indices[i, neighbor_idx]
@@ -191,6 +198,18 @@ class HeteroGraphBuilder(GraphBuilder):
                         if similarity > threshold:
                             self._edges.append([source_id, target_id, final_edge_type])
                             edge_counts[final_edge_type] += 1
+                        # [NEW DEBUG PRINT] 打印每一个候选边的决策过程
+                        if self.verbose > 1:
+                            # 只打印相似度较高的，避免刷屏
+                            if similarity > 0.5:
+                                print(
+                                    f"      - Candidate Edge: ({local_id_i}, {local_id_j}), "
+                                    f"Type: {final_edge_type}, "
+                                    f"RelationPrefix: '{relation_prefix}', "
+                                    f"Similarity: {similarity:.4f}, "
+                                    f"Threshold: {threshold}, "
+                                    f"Passes?: {similarity > threshold}"
+                                )
 
         if not analysis_mode:
             if self.verbose > 0 and edge_counts:
@@ -216,6 +235,47 @@ class HeteroGraphBuilder(GraphBuilder):
                 self._graph_schema.edge_type,
             ],
         )
+
+    # [NEW] 新增的、职责专一的过滤方法
+    # TODO: 精细化调控
+    def filter_background_edges_for_strict_mode(self):
+        """
+        如果处于 'strict' 模式，则从已添加的边 (_edges) 中，
+        移除所有接触到冷启动实体的背景知识边。
+        这是一个 in-place 操作。
+        """
+        if self.config.runtime.verbose > 0:
+            print(
+                "    - [Builder] Applying 'strict' cold-start filter to background edges..."
+            )
+
+        # a. 识别出所有背景知识边类型
+        interaction_rel_types = set(self.config.knowledge_graph.relation_types.values())
+
+        # b. 遍历当前的 _edges 列表，只保留那些应该留下的
+        edges_to_keep = []
+        num_removed = 0
+        for edge in self._edges:
+            source, target, edge_type = edge
+
+            is_background = edge_type not in interaction_rel_types
+            is_touching_cold = (source in self._cold_start_entity_ids) or (
+                target in self._cold_start_entity_ids
+            )
+
+            # 保留条件：(不是背景边) OR (是背景边 但不接触冷启动实体)
+            if not is_background or not is_touching_cold:
+                edges_to_keep.append(edge)
+            else:
+                num_removed += 1
+
+        if self.config.runtime.verbose > 0 and num_removed > 0:
+            print(
+                f"      - Removed {num_removed} background edges connected to cold-start entities."
+            )
+
+        # c. 用过滤后的列表替换掉旧的列表
+        self._edges = edges_to_keep
 
     # [NEW] 新增的公共分析方法
     def analyze_similarities(self) -> pd.DataFrame:

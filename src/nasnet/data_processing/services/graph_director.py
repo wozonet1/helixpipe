@@ -84,5 +84,9 @@ class GraphDirector:
                 print("  -> Instructing builder to add PPI edges...")
             # builder.add_ppi_edges() # <-- 调用未来的方法
 
+        if self.config.training.coldstart.strictness == "strict":
+            if self.verbose > 0:
+                print("  -> Instructing builder to apply strict cold-start filter...")
+            builder.filter_background_edges_for_strict_mode()
         if self.verbose > 0:
             print("--- [GraphDirector] Graph construction process finished. ---")
