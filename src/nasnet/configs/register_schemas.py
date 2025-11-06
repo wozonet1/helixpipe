@@ -1,11 +1,14 @@
 # 文件: src/configs/register_schemas.py (V4.0 - 最终稳定版)
 
 import dataclasses
+import sys
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List
 
 from hydra.core.config_store import ConfigStore
+from omegaconf import ValidationError
 
 from .analysis import AnalysisConfig
 from .data_params import DataParamsConfig
@@ -64,27 +67,57 @@ def register_all_schemas():
     【最终版】将静态定义的AppConfig及其所有组件注册到Config Store。
     它还包含一个检查步骤，以确保AppConfig没有遗漏任何configs目录下的模块。
     """
-    cs = ConfigStore.instance()
+    try:
+        cs = ConfigStore.instance()
 
-    # a. 注册主schema
-    cs.store(name="base_app_schema", node=AppConfig)
+        # a. 注册主schema
+        cs.store(name="base_app_schema", node=AppConfig)
 
-    # b. 自动发现并注册所有【组】schema
-    #    我们通过 inspect AppConfig 的字段来找到它们
-    grouped_schemas = {
-        "data_structure": DataStructureConfig,
-        "data_params": DataParamsConfig,
-        "relations": RelationsConfig,
-        "predictor": PredictorConfig,
-        "analysis": AnalysisConfig,
-        "validators": ValidatorsConfig,
-        "dataset_collection": DatasetCollectionConfig,
-        # 注意：training, runtime等顶层节点没有“组”的概念，所以不在这里注册
-    }
+        # b. 自动发现并注册所有【组】schema
+        #    我们通过 inspect AppConfig 的字段来找到它们
+        grouped_schemas = {
+            "data_structure": DataStructureConfig,
+            "data_params": DataParamsConfig,
+            "relations": RelationsConfig,
+            "predictor": PredictorConfig,
+            "analysis": AnalysisConfig,
+            "validators": ValidatorsConfig,
+            "dataset_collection": DatasetCollectionConfig,
+            # 注意：training, runtime等顶层节点没有“组”的概念，所以不在这里注册
+        }
 
-    for group_name, schema_cls in grouped_schemas.items():
-        schema_name = f"base_{group_name}"
-        cs.store(name=schema_name, group=group_name, node=schema_cls)
+        for group_name, schema_cls in grouped_schemas.items():
+            schema_name = f"base_{group_name}"
+            cs.store(name=schema_name, group=group_name, node=schema_cls)
+    # 【核心修改】捕获更具体的错误，并提供更精准的建议
+    except ValidationError as e:
+        print("\n" + "=" * 80)
+        print(
+            "❌ FATAL: Hydra Schema Validation Failed. Your dataclass definitions are likely incompatible."
+        )
+        print("=" * 80)
+        print(f"   Error Type: {type(e).__name__}")
+        print(f"   Error Message: {e}")
+
+        # 【新增】针对 Literal 类型的专属提示
+        if "Unexpected type annotation: Literal" in str(e):
+            print("\n" + "-" * 30 + " [ SPECIFIC SUGGESTION ] " + "-" * 30)
+            print(
+                "   This is a known compatibility issue with older versions of OmegaConf."
+            )
+            print("   To fix this, you can either:")
+            print(
+                "     1. (Quick Fix): In the dataclass mentioned above, replace `Literal[...]` with `str`."
+            )
+            print(
+                "     2. (Long-term): Upgrade your `omegaconf` and `hydra-core` libraries to the latest versions."
+            )
+            print("-" * 80)
+
+        print("\n--- Full Stack Trace ---")
+        traceback.print_exc()
+        print("------------------------")
+        sys.exit(1)
 
     # c. (可选但推荐) 自动验证，确保没有遗漏
     _validate_completeness()
