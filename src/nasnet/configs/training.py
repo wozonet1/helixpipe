@@ -1,21 +1,43 @@
 # 文件: src/configs/training.py
 
 from dataclasses import dataclass, field
-from typing import List, Literal
+from typing import List, Optional, Tuple
+
+
+# 【新增】一个用于定义实体选择器的dataclass
+@dataclass
+class EntitySelectorConfig:
+    """定义一个用于从IDMapper中筛选实体的规则。"""
+
+    # 必须满足所有指定的类型
+    entity_types: Optional[List[str]] = None
+    # 必须满足所有指定的元类型
+    meta_types: Optional[List[str]] = None
+    # 必须至少来自其中一个指定的来源
+    from_sources: Optional[List[str]] = None
 
 
 @dataclass
 class ColdstartConfig:
-    """定义冷启动的配置。"""
+    """【V2 - 策略定义版】"""
 
-    mode: str = "drug"
+    mode: str = "molecule"
     test_fraction: float = 0.2
 
-    strictness: Literal["informed", "strict"] = "strict"
+    # 【核心修改】'pool_scope' 现在是一个结构化的选择器
+    pool_scope: EntitySelectorConfig = field(
+        default_factory=lambda: EntitySelectorConfig(
+            # 默认情况下，不对实体池做任何限制
+        )
+    )
+    # 【核心修改】'evaluation_scope' 也是一个结构化的选择器
+    # 它定义了“边”的选择，所以需要两个选择器
+    evaluation_scope: Optional[Tuple[EntitySelectorConfig, EntitySelectorConfig]] = None
+
+    strictness: str = "strict"
     # 'allowed_leakage_types' 是一个白名单，只在 strictness='strict' 时生效
     # 默认情况下，严格模式不允许任何背景边泄露
     allowed_leakage_types: List[str] = field(default_factory=list)
-    scope: Literal["all_molecule_protein", "drug_only"] = "all_molecule_protein"
 
 
 @dataclass
@@ -31,4 +53,3 @@ class TrainingConfig:
     k_folds: int = 5
     batch_size: int = 512
     coldstart: ColdstartConfig = field(default_factory=ColdstartConfig)
-    test_set_scope: Literal["dti_only", "all_interactions"] = "dti_only"

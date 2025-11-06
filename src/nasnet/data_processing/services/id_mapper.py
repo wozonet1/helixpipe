@@ -1,10 +1,11 @@
 from collections import defaultdict
-from typing import Any, Callable, Dict, List, Set, Union
+from typing import Any, Callable, Dict, List, Optional, Set
 
 import pandas as pd
 import research_template as rt
 
-from nasnet.configs import AppConfig
+# TODO: 考虑解耦
+from nasnet.configs import AppConfig, EntitySelectorConfig
 from nasnet.configs.knowledge_graph import EntityMetaConfig
 from nasnet.utils import get_path
 
@@ -85,6 +86,7 @@ class IDMapper:
         """
         接收一个纯净的实体ID集合，并只为这些实体执行类型合并和最终的ID分配。
         """
+        verbose = self._config.runtime.verbose
         if self.is_finalized:
             print("--> [IDMapper V5.1] Mappings already finalized. Skipping.")
             return
@@ -113,16 +115,24 @@ class IDMapper:
                     "type": final_type,
                     "sources": meta["sources"],
                 }
-
+                if verbose > 1:
+                    print(
+                        f"      - ID: {entity_id:<10} | Types: {str(entity_types):<30} | Final Type: {final_type}"
+                    )
         # 2. 按最终确定的类型对实体进行分组
         for entity_id, final_meta in self._final_entity_map.items():
             final_type = final_meta["type"]
             self.entities_by_type[final_type].append(entity_id)
-
+        if verbose > 1:
+            for t, ents in self.entities_by_type.items():
+                print(
+                    f"      - Type: {t:<10} | Count: {len(ents)} | Sample IDs: {ents[:3]}"
+                )
         # 3. 分配连续的逻辑ID
         current_id = 0
         sorted_types = sorted(self.entities_by_type.keys())
-
+        if verbose > 1:
+            print(f"      - ID assignment order: {sorted_types}")
         for entity_type in sorted_types:
             try:
                 # 尝试进行排序。如果类型混合，这里会失败。
@@ -148,8 +158,11 @@ class IDMapper:
                     f"Problematic entities (sample): {culprits[:5]}"
                 )
             self.entities_by_type[entity_type] = sorted_entities
-
-            for logic_id, auth_id in enumerate(sorted_entities):
+            if verbose > 1:
+                print(
+                    f"        - Assigning IDs for type '{entity_type}' (starts at {current_id})..."
+                )
+            for logic_id, auth_id in enumerate(sorted_entities, start=current_id):
                 # 构建logic_id -> type 的map
                 self._logic_id_to_type_map[logic_id] = entity_type
                 # 加入总体的auth_id <->logic_id map中
@@ -164,6 +177,9 @@ class IDMapper:
                 f"  - Found {self.get_num_entities(entity_type)} unique '{entity_type}' entities."
             )
         print(f"  - Total entities: {self.num_total_entities}")
+        if verbose > 1:
+            print(self._auth_id_to_logic_id_map)
+            print(self._logic_id_to_auth_id_map)
 
     def build_entity_manifest(self) -> pd.DataFrame:
         """
@@ -235,8 +251,14 @@ class IDMapper:
         print(f"--> Core metadata file 'nodes.csv' saved to: {output_path}")
 
     # --- 公共 Getter 和查询 API ---
+    def get_meta_by_auth_id(self, auth_id: Any) -> Optional[Dict[str, Any]]:
+        """【新增】根据【权威ID】，获取一个实体最终的元信息。"""
+        if not self.is_finalized:
+            raise RuntimeError("IDMapper must be finalized first.")
 
-    def get_entity_meta(self, logic_id: int) -> Union[Dict[str, Any], None]:
+        return self._final_entity_map.get(auth_id)
+
+    def get_meta_by_logic_id(self, logic_id: int) -> Optional[Dict[str, Any]]:
         """根据逻辑ID，获取一个实体最终的元信息（最终类型、来源等）。"""
         if not self.is_finalized:
             raise RuntimeError("IDMapper must be finalized first.")
@@ -259,6 +281,52 @@ class IDMapper:
             for entity_id, meta in self._final_entity_map.items()
             if filter_func(meta)
         ]
+
+    # 【核心新增】
+    def get_ids_by_selector(self, selector: EntitySelectorConfig) -> List[int]:
+        """
+        【新增】一个强大的查询接口，它解析一个EntitySelectorConfig对象，
+        并返回所有满足其组合条件的【逻辑ID】列表。
+        """
+        if not self.is_finalized:
+            raise RuntimeError("IDMapper must be finalized before using selectors.")
+
+        # --- 1. 从配置中获取实体元数据定义 ---
+        entity_meta_config = self._config.knowledge_graph.entity_meta
+
+        # --- 2. 构建一个复合的过滤函数 ---
+        def combined_filter(meta: Dict[str, Any]) -> bool:
+            """
+            这个内部函数会逐一检查selector中定义的所有规则。
+            所有规则之间是“与”（AND）的关系。
+            """
+
+            # a. 检查 entity_types 规则
+            if selector.entity_types:
+                # 实体的最终类型必须在selector指定的类型列表中
+                if meta["type"] not in selector.entity_types:
+                    return False
+
+            # b. 检查 meta_types 规则
+            if selector.meta_types:
+                # 获取实体最终类型的元类型
+                entity_type = meta["type"]
+                meta_type = entity_meta_config.get(entity_type, {}).get("metatype")
+                if meta_type is None or meta_type not in selector.meta_types:
+                    return False
+
+            # c. 检查 from_sources 规则
+            if selector.from_sources:
+                # 实体的来源集合，必须与selector指定的来源集合有交集
+                # .isdisjoint() 方法检查两个集合是否没有共同元素，我们取其反
+                if meta["sources"].isdisjoint(selector.from_sources):
+                    return False
+
+            # 如果通过了所有检查，则返回True
+            return True
+
+        # --- 3. 调用底层的 get_ids_by_filter 方法来执行这个复合过滤器 ---
+        return self.get_ids_by_filter(combined_filter)
 
     @property
     def num_molecules(self) -> int:
