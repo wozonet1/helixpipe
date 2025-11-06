@@ -5,6 +5,12 @@ from typing import Dict, Optional
 
 
 @dataclass
+class EntityMetaConfig:
+    metatype: str  # 'molecule', 'protein', 'gene', etc.
+    priority: int
+
+
+@dataclass
 class EntityTypeNames:
     """定义项目中所有已知实体类型的权威名称字符串。"""
 
@@ -38,21 +44,21 @@ class KnowledgeGraphConfig:
     # 实体类型名称的官方注册表
     entity_types: EntityTypeNames = field(default_factory=EntityTypeNames)
     relation_types: RelationTypeNames = field(default_factory=RelationTypeNames)
-    type_merge_priority: Dict[str, int] = field(
+    entity_meta: Dict[str, EntityMetaConfig] = field(
         default_factory=lambda: {
-            # 分子亚型
-            "drug": 0,  # 最高优先级
-            "exogenous_ligand": 1,  # 外源性配体，次之
-            "ligand": 2,  # 普通配体，再次之
-            "endogenous_ligand": 3,  # 内源性配体，优先级最低的分子
-            "molecule": 9,  # 通用分子类型，优先级非常低
-            # 蛋白质亚型 (为未来预留)
-            "enzyme": 10,
-            "receptor": 11,
-            "protein": 19,  # 通用蛋白质类型
-            # 其他类型
-            "gene": 20,
-            "disease": 30,
+            # 分子大类
+            "drug": EntityMetaConfig(metatype="molecule", priority=0),
+            "exogenous_ligand": EntityMetaConfig(metatype="molecule", priority=1),
+            "ligand": EntityMetaConfig(metatype="molecule", priority=2),
+            "endogenous_ligand": EntityMetaConfig(metatype="molecule", priority=3),
+            "molecule": EntityMetaConfig(metatype="molecule", priority=9),
+            # 蛋白质/基因大类
+            "enzyme": EntityMetaConfig(metatype="protein", priority=10),
+            "receptor": EntityMetaConfig(metatype="protein", priority=11),
+            "protein": EntityMetaConfig(metatype="protein", priority=19),
+            "gene": EntityMetaConfig(metatype="gene", priority=20),
+            # 其他大类
+            "disease": EntityMetaConfig(metatype="disease", priority=30),
         }
     )
     type_mapping_strategy: Optional[Dict[str, str]] = None

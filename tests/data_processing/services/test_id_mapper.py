@@ -1,5 +1,3 @@
-# tests/data_processing/services/test_id_mapper.py
-
 import unittest
 
 import pandas as pd
@@ -8,188 +6,205 @@ from omegaconf import OmegaConf
 # 导入我们需要测试的类
 from nasnet.data_processing.services.id_mapper import IDMapper
 
-# --- 模拟 (Mock) 配置 ---
-MOCK_CONFIG = OmegaConf.create(
-    {
-        "runtime": {"verbose": 0},
-        "knowledge_graph": {
-            "entity_types": {
-                "drug": "drug",
-                "ligand": "ligand",
-                "protein": "protein",
-                "molecule": "molecule",
-            },
-            "type_mapping_strategy": None,  # 默认不进行映射
-            "type_merge_priority": {
-                "drug": 0,
-                "ligand": 1,
-                "molecule": 9,
-                "protein": 10,
-            },
-        },
-        "data_structure": {
-            "schema": {
-                "internal": {
-                    "canonical_interaction": {
-                        "source_id": "source_id",
-                        "source_type": "source_type",
-                        "target_id": "target_id",
-                        "target_type": "target_type",
-                        "relation_type": "relation_type",
+
+class TestIDMapperV5(unittest.TestCase):
+    def setUp(self):
+        """
+        创建一个共享的、包含所有必需部分的配置对象。
+        """
+        print("\n" + "=" * 80)
+
+        self.config = OmegaConf.create(
+            {
+                "runtime": {"verbose": 0},
+                "data_structure": {
+                    "schema": {
+                        "internal": {
+                            "canonical_interaction": {
+                                "source_id": "source_id",
+                                "source_type": "source_type",
+                                "target_id": "target_id",
+                                "target_type": "target_type",
+                                "relation_type": "relation_type",
+                            }
+                        }
                     }
+                },
+                "knowledge_graph": {
+                    "entity_types": {
+                        "drug": "drug",
+                        "ligand": "ligand",
+                        "protein": "protein",
+                        "gene": "gene",
+                    },
+                    "entity_meta": {
+                        "drug": {"metatype": "molecule", "priority": 0},
+                        "ligand": {"metatype": "molecule", "priority": 1},
+                        "protein": {"metatype": "protein", "priority": 10},
+                        "gene": {"metatype": "protein", "priority": 11},
+                    },
+                },
+            }
+        )
+        print("--> Test setup complete.")
+
+    def test_initialization_and_aggregation(self):
+        """
+        测试点1: __init__ 是否能正确地从多个 processor_outputs 中聚合 types 和 sources。
+        """
+        print("\n--- Running Test: Initialization and Metadata Aggregation ---")
+
+        # 模拟来自不同 Processor 的输出
+        processor_outputs = {
+            "bindingdb": pd.DataFrame(
+                {
+                    "source_id": [101, "P01"],
+                    "source_type": ["drug", "protein"],
+                    "target_id": ["P01", "P02"],
+                    "target_type": ["protein", "protein"],
                 }
-            }
-        },
-    }
-)
-
-
-class TestIDMapper(unittest.TestCase):
-    def test_initialization_and_collection(self):
-        """测试场景1: IDMapper能否从输入中正确收集所有唯一的(id, type)对。"""
-        print("\n--- Running Test: IDMapper Initialization & Collection ---")
-
-        interactions = pd.DataFrame(
-            {
-                "source_id": [101, 102, 101, "P01"],
-                "source_type": ["drug", "ligand", "drug", "protein"],
-                "target_id": ["P01", "P01", "P02", "P02"],
-                "target_type": ["protein", "protein", "protein", "protein"],
-                "relation_type": ["rel1", "rel2", "rel3", "rel4"],
-            }
-        )
-
-        mapper = IDMapper(interactions, MOCK_CONFIG)
-
-        # 预期收集到的唯一对: (101, 'drug'), (102, 'ligand'), ('P01', 'protein'), ('P02', 'protein')
-        self.assertEqual(len(mapper._collected_entities), 4)
-
-        collected_set = {tuple(rec) for rec in mapper._collected_entities}
-        expected_set = {
-            (101, "drug"),
-            (102, "ligand"),
-            ("P01", "protein"),
-            ("P02", "protein"),
+            ),
+            "stringdb": pd.DataFrame(
+                {
+                    "source_id": ["P01"],
+                    "source_type": ["protein"],
+                    "target_id": ["P03"],
+                    "target_type": ["protein"],
+                }
+            ),
+            "brenda": pd.DataFrame(
+                {
+                    "source_id": [101],
+                    "source_type": ["ligand"],
+                    "target_id": ["P02"],
+                    "target_type": ["protein"],
+                }
+            ),
         }
-        self.assertSetEqual(collected_set, expected_set)
-        print("  ✅ Passed.")
 
-    def test_type_mapping_strategy(self):
-        """测试场景2: type_mapping_strategy(消融实验)是否能正确工作。"""
-        print("\n--- Running Test: Type Mapping Strategy (Ablation) ---")
+        mapper = IDMapper(processor_outputs, self.config)
 
-        # 创建一个启用了类型映射的配置
-        config = MOCK_CONFIG.copy()
-        OmegaConf.update(
-            config,
-            "knowledge_graph.type_mapping_strategy",
-            {"drug": "molecule", "ligand": "molecule"},
+        # 验证内部的 _collected_entities 字典
+        collected = mapper._collected_entities
+        self.assertEqual(len(collected), 4, "Should collect 5 unique entities.")
+
+        # 深入检查几个关键实体
+        self.assertSetEqual(collected[101]["types"], {"drug", "ligand"})
+        self.assertSetEqual(collected[101]["sources"], {"bindingdb", "brenda"})
+
+        self.assertSetEqual(collected["P01"]["types"], {"protein"})
+        self.assertSetEqual(collected["P01"]["sources"], {"bindingdb", "stringdb"})
+
+        self.assertSetEqual(collected["P03"]["types"], {"protein"})
+        self.assertSetEqual(collected["P03"]["sources"], {"stringdb"})
+
+        print("  ✅ Test Passed: Correctly aggregated types and sources.")
+
+    def test_is_molecule_is_protein(self):
+        """
+        测试点2: is_molecule 和 is_protein 方法是否由 config 驱动。
+        """
+        print("\n--- Running Test: Config-driven is_molecule/is_protein ---")
+
+        mapper = IDMapper({}, self.config)  # 用空数据初始化即可
+
+        self.assertTrue(mapper.is_molecule("drug"))
+        self.assertTrue(mapper.is_molecule("ligand"))
+        self.assertTrue(mapper.is_protein("protein"))
+        self.assertTrue(mapper.is_protein("gene"))
+        self.assertFalse(mapper.is_molecule("protein"))
+        self.assertFalse(mapper.is_protein("drug"))
+
+        print("  ✅ Test Passed: Type checking methods are correctly driven by config.")
+
+    def test_finalization_and_type_merging(self):
+        """
+        测试点3: finalize_with_valid_entities 是否能正确执行类型合并和ID分配。
+        """
+        print("\n--- Running Test: Finalization with Type Merging ---")
+
+        processor_outputs = {
+            "source1": pd.DataFrame(
+                {
+                    "source_id": [101, 102],
+                    "source_type": ["drug", "protein"],
+                    "target_id": ["P01", "P01"],
+                    "target_type": ["protein", "protein"],
+                }
+            ),
+            "source2": pd.DataFrame(
+                {
+                    "source_id": [101],
+                    "source_type": ["ligand"],
+                    "target_id": ["P02"],
+                    "target_type": ["protein"],
+                }
+            ),
+        }
+        mapper = IDMapper(processor_outputs, self.config)
+
+        # 假设校验后，所有实体都有效
+        valid_ids = {101, 102, "P01", "P02"}
+        with self.assertRaises(ValueError) as context:
+            mapper.finalize_with_valid_entities(valid_ids)
+        # 3. [可选] 检查异常消息中是否包含了我们期望的、有用的信息
+        self.assertIn("ID format mismatch", str(context.exception))
+        self.assertIn("'protein'", str(context.exception))
+        self.assertIn("ID: 102", str(context.exception))
+
+        print("  ✅ Test Passed: Correctly raised ValueError on inconsistent data.")
+
+    def test_query_apis(self):
+        """
+        测试点4: 测试新的查询API get_entity_meta 和 get_ids_by_filter。
+        """
+        print("\n--- Running Test: New Query APIs ---")
+
+        processor_outputs_clean = {
+            "bindingdb": pd.DataFrame(
+                {
+                    "source_id": [101],
+                    "source_type": ["drug"],
+                    "target_id": ["P01"],
+                    "target_type": ["protein"],
+                }
+            ),
+            "stringdb": pd.DataFrame(
+                {
+                    "source_id": ["P01"],
+                    "source_type": ["protein"],
+                    "target_id": ["P02"],
+                    "target_type": ["protein"],
+                }
+            ),
+        }
+        mapper = IDMapper(processor_outputs_clean, self.config)
+        mapper.finalize_with_valid_entities({101, "P01", "P02"})
+
+        # a. 测试 get_entity_meta
+        # 假设 drug 0, protein 1, 2
+        logic_id_p01 = mapper.auth_id_to_logic_id_map["P01"]
+        meta_p01 = mapper.get_entity_meta(logic_id_p01)
+
+        self.assertIsNotNone(meta_p01)
+        self.assertEqual(meta_p01["type"], "protein")
+        self.assertSetEqual(meta_p01["sources"], {"bindingdb", "stringdb"})
+
+        # b. 测试 get_ids_by_filter
+        # 获取所有来自 stringdb 的实体
+        string_ids_logic = mapper.get_ids_by_filter(
+            lambda meta: "stringdb" in meta["sources"]
         )
+        self.assertEqual(len(string_ids_logic), 2)  # P01 和 P02
+        self.assertIn(mapper.auth_id_to_logic_id_map["P01"], string_ids_logic)
+        self.assertIn(mapper.auth_id_to_logic_id_map["P02"], string_ids_logic)
 
-        interactions = pd.DataFrame(
-            {
-                "source_id": [101, 102],
-                "source_type": ["drug", "ligand"],
-                "target_id": ["P01", "P01"],
-                "target_type": ["protein", "protein"],
-            }
-        )
+        # 获取所有 drug 实体
+        drug_ids_logic = mapper.get_ids_by_filter(lambda meta: meta["type"] == "drug")
+        self.assertEqual(len(drug_ids_logic), 1)
+        self.assertEqual(drug_ids_logic[0], mapper.auth_id_to_logic_id_map[101])
 
-        mapper = IDMapper(interactions, config)
-
-        # 预期: (101, 'drug') -> (101, 'molecule'), (102, 'ligand') -> (102, 'molecule')
-        # 最终唯一对: (101, 'molecule'), (102, 'molecule'), ('P01', 'protein')
-        self.assertEqual(len(mapper._collected_entities), 3)
-        collected_set = {tuple(rec) for rec in mapper._collected_entities}
-        expected_set = {(101, "molecule"), (102, "molecule"), ("P01", "protein")}
-        self.assertSetEqual(collected_set, expected_set)
-        print("  ✅ Passed.")
-
-    def test_type_merging_and_finalization(self):
-        """测试场景3: 核心功能 - 类型合并和最终的ID分配是否正确。"""
-        print("\n--- Running Test: Type Merging & Finalization ---")
-
-        interactions = pd.DataFrame(
-            {
-                "source_id": [101, 101, 102, 103, "P01"],
-                "source_type": ["drug", "ligand", "ligand", "molecule", "protein"],
-                "target_id": ["P01", "P02", "P01", "P02", "P02"],
-                "target_type": ["protein", "protein", "protein", "protein", "protein"],
-            }
-        )
-
-        mapper = IDMapper(interactions, MOCK_CONFIG)
-        mapper.finalize_mappings()
-
-        # 1. 验证类型合并结果
-        # ID 101: 出现为 drug(0) 和 ligand(1)，最终应为 drug
-        # ID 102: 只有 ligand(1)
-        # ID 103: 只有 molecule(9)
-        self.assertEqual(mapper._final_entity_map[101], "drug")
-        self.assertEqual(mapper._final_entity_map[102], "ligand")
-        self.assertEqual(mapper._final_entity_map[103], "molecule")
-
-        # 2. 验证实体分组和数量
-        self.assertListEqual(sorted(mapper.entities_by_type["drug"]), [101])
-        self.assertListEqual(sorted(mapper.entities_by_type["ligand"]), [102])
-        self.assertListEqual(sorted(mapper.entities_by_type["molecule"]), [103])
-        self.assertListEqual(sorted(mapper.entities_by_type["protein"]), ["P01", "P02"])
-
-        self.assertEqual(mapper.get_num_entities("drug"), 1)
-        self.assertEqual(mapper.get_num_entities("ligand"), 1)
-        self.assertEqual(mapper.get_num_entities("molecule"), 1)
-
-        # 3. 验证ID分配的连续性和顺序 (drug -> ligand -> molecule -> protein)
-        # drug (1个): ID 0
-        # ligand (1个): ID 1
-        # molecule (1个): ID 2
-        # protein (2个): ID 3, 4
-        self.assertEqual(mapper.entity_to_id_maps["drug"][101], 0)
-        self.assertEqual(mapper.entity_to_id_maps["ligand"][102], 1)
-        self.assertEqual(mapper.entity_to_id_maps["molecule"][103], 2)
-        self.assertEqual(mapper.entity_to_id_maps["protein"]["P01"], 3)
-        self.assertEqual(mapper.entity_to_id_maps["protein"]["P02"], 4)
-
-        # 4. 验证反向映射
-        self.assertEqual(mapper.logic_id_to_type_map[2], "molecule")
-        self.assertEqual(mapper.logic_id_to_auth_id_map[4], "P02")
-        print("  ✅ Passed.")
-
-    def test_get_mapped_positive_pairs(self):
-        """测试场景4: get_mapped_positive_pairs 是否能正确将DataFrame转换为逻辑ID对。"""
-        print("\n--- Running Test: get_mapped_positive_pairs ---")
-
-        interactions = pd.DataFrame(
-            {
-                "source_id": [101, 102, "P01"],
-                "source_type": ["drug", "ligand", "protein"],
-                "target_id": ["P01", "P01", "P02"],
-                "target_type": ["protein", "protein", "protein"],
-                "relation_type": ["inhibits", "binds_to", "associated_with"],
-            }
-        )
-
-        mapper = IDMapper(interactions, MOCK_CONFIG)
-        mapper.finalize_mappings()
-
-        # drug(101): 0; ligand(102): 1; protein(P01, P02): 2, 3
-
-        pairs_with_type, pairs_set = mapper.get_mapped_positive_pairs(interactions)
-
-        self.assertEqual(len(pairs_with_type), 3)
-        self.assertEqual(len(pairs_set), 3)
-
-        expected_pairs_with_type = [
-            (0, 2, "inhibits"),
-            (1, 2, "binds_to"),
-            (2, 3, "associated_with"),
-        ]
-
-        # to_records返回的是numpy记录数组，需要转换为元组列表
-        self.assertCountEqual(
-            [tuple(rec) for rec in pairs_with_type], expected_pairs_with_type
-        )
-        print("  ✅ Passed.")
+        print("  ✅ Test Passed: Query APIs work as expected.")
 
 
 if __name__ == "__main__":

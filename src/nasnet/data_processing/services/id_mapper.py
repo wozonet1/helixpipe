@@ -1,117 +1,122 @@
-# src/nasnet/data_processing/services/id_mapper.py
-
 from collections import defaultdict
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Callable, Dict, List, Set, Union
 
 import pandas as pd
 import research_template as rt
 
 from nasnet.configs import AppConfig
+from nasnet.configs.knowledge_graph import EntityMetaConfig
 from nasnet.utils import get_path
 
 
 class IDMapper:
     """
-    【V4 - 通用实体注册表版】
-    一个纯粹的、通用的实体身份管理器。
-    它接收一个或多个纯净的“规范化交互DataFrame”，并为所有实体分配和管理逻辑ID。
-    核心功能包括：
-    - 动态处理任意实体类型。
-    - 基于配置的“类型映射策略”，用于控制语义粒度（例如，用于消融实验）。
-    - 基于配置的“类型优先级合并”，用于解决同一实体在不同数据源中的类型冲突。
+    【V5.1 - 元数据中心版】
+    一个纯粹的、通用的实体身份管理器，能够追踪每个实体的来源和多重类型，
+    并提供丰富的、由配置驱动的查询API。
     """
 
-    def __init__(self, pure_interactions_df: pd.DataFrame, config: AppConfig):
+    def __init__(self, processor_outputs: Dict[str, pd.DataFrame], config: AppConfig):
         """
-        构造函数只负责从纯净的交互数据中收集所有原始的 (id, type) 对。
+        构造函数从 Processor 的输出字典中，聚合所有实体的元信息，
+        并预处理实体类型的元数据。
         """
-        print("--- [IDMapper V4] Initializing with pure interaction data...")
+        print(
+            "--- [IDMapper V5.1] Initializing with metadata-aware entity aggregation..."
+        )
         self._config = config
         self._schema = config.data_structure.schema.internal.canonical_interaction
 
-        # 1. 收集所有唯一的 (id, type) 对
-        source_entities = pure_interactions_df[
-            [self._schema.source_id, self._schema.source_type]
-        ].rename(
-            columns={self._schema.source_id: "id", self._schema.source_type: "type"}
-        )
-        target_entities = pure_interactions_df[
-            [self._schema.target_id, self._schema.target_type]
-        ].rename(
-            columns={self._schema.target_id: "id", self._schema.target_type: "type"}
-        )
+        # --- 1. 预处理实体元类型 ---
+        self._molecule_subtypes = set()
+        self._protein_subtypes = set()
+        entity_meta_config = config.knowledge_graph.entity_meta
 
-        collected_df = pd.concat([source_entities, target_entities]).drop_duplicates()
+        # 遍历所有已注册的实体类型及其元信息
+        for entity_type, meta in entity_meta_config.items():
+            if meta.metatype == "molecule":
+                self._molecule_subtypes.add(entity_type)
+            elif meta.metatype in [
+                "protein",
+                "gene",
+            ]:  # 我们可以定义哪些元类型属于蛋白质大类
+                self._protein_subtypes.add(entity_type)
 
-        self._collected_entities = collected_df.to_records(index=False)
-
-        # 2. (可选) 应用类型映射策略
-        mapping_strategy = self._config.knowledge_graph.type_mapping_strategy
-        if mapping_strategy:
-            if self._config.runtime.verbose > 0:
-                print(
-                    "  - Applying type mapping strategy for semantic granularity control..."
-                )
-
-            mapped_records = []
-            for entity_id, entity_type in self._collected_entities:
-                mapped_type = mapping_strategy.get(entity_type, entity_type)
-                mapped_records.append((entity_id, mapped_type))
-
-            self._collected_entities = (
-                pd.DataFrame(mapped_records, columns=["id", "type"])
-                .drop_duplicates()
-                .to_records(index=False)
+        if self._config.runtime.verbose > 1:
+            print(
+                f"    - [DEBUG] Identified molecule subtypes: {self._molecule_subtypes}"
+            )
+            print(
+                f"    - [DEBUG] Identified protein subtypes: {self._protein_subtypes}"
             )
 
-            if self._config.runtime.verbose > 0:
-                print(
-                    f"    - Remapped entities. New unique (id, type) pairs: {len(self._collected_entities)}"
-                )
-
-        print(
-            f"--> Collected {len(self._collected_entities)} final unique (id, type) pairs to be processed."
+        # --- 2. 聚合实体元信息 ---
+        self._collected_entities: Dict[Any, Dict[str, Set]] = defaultdict(
+            lambda: {"types": set(), "sources": set()}
         )
+        for source_dataset, df in processor_outputs.items():
+            if df.empty:
+                continue
 
-        # 3. 初始化内部状态变量
+            source_df = df[[self._schema.source_id, self._schema.source_type]]
+            for entity_id, entity_type in source_df.itertuples(index=False, name=None):
+                self._collected_entities[entity_id]["types"].add(entity_type)
+                self._collected_entities[entity_id]["sources"].add(source_dataset)
+
+            target_df = df[[self._schema.target_id, self._schema.target_type]]
+            for entity_id, entity_type in target_df.itertuples(index=False, name=None):
+                self._collected_entities[entity_id]["types"].add(entity_type)
+                self._collected_entities[entity_id]["sources"].add(source_dataset)
+
+        if self._config.runtime.verbose > 0:
+            print(
+                f"--> Collected metadata for {len(self._collected_entities)} unique entities across all sources."
+            )
+
+        # --- 3. 初始化内部状态变量 ---
         self.is_finalized = False
-        self._final_entity_map: Dict[
-            Any, str
-        ] = {}  # { entity_id -> final_entity_type }
+        self._final_entity_map: Dict[Any, Dict[str, Any]] = {}
         self.entities_by_type: Dict[str, List] = defaultdict(list)
-        self.entity_to_id_maps: Dict[str, Dict] = defaultdict(dict)
-        self.id_to_entity_maps: Dict[str, Dict] = defaultdict(dict)
-        self.logic_id_to_type_map: Dict[int, str] = {}
-        self.logic_id_to_auth_id_map: Dict[int, Any] = {}
+        self._logic_id_to_type_map: Dict[int, str] = {}
+        self._logic_id_to_auth_id_map: Dict[int, Any] = {}
+        self._auth_id_to_logic_id_map: Dict[Any, int] = {}
 
-    def finalize_mappings(self):
+    def finalize_with_valid_entities(self, valid_entity_ids: Set[Any]):
         """
-        在所有实体数据被收集和预处理后，执行类型合并和最终的ID分配。
-        由于entity(类型映射或者清洗)本身可能相对容易改变,而逻辑id映射又是不应该被改变的,应该是一次性的,
-        (虽然这不是计算上昂贵的),所以我们为了一种逻辑上的严谨性,
-        设计一个"锁",确保两种id转换是永远满足不定式,不可修改的
+        接收一个纯净的实体ID集合，并只为这些实体执行类型合并和最终的ID分配。
         """
         if self.is_finalized:
-            print("--> [IDMapper V4] Mappings already finalized. Skipping.")
+            print("--> [IDMapper V5.1] Mappings already finalized. Skipping.")
             return
 
-        print("\n--- [IDMapper V4] Finalizing all ID mappings with type merging... ---")
+        print(
+            "\n--- [IDMapper V5.1] Finalizing mappings for valid entities only... ---"
+        )
 
-        type_priority = self._config.knowledge_graph.type_merge_priority
+        entity_meta_config = self._config.knowledge_graph.entity_meta
 
-        # 1. 实现类型合并策略
-        for entity_id, entity_type in self._collected_entities:
-            current_type = self._final_entity_map.get(entity_id)
-            if current_type is None:
-                self._final_entity_map[entity_id] = entity_type
-            else:
-                current_priority = type_priority.get(current_type, 999)
-                new_priority = type_priority.get(entity_type, 999)
-                if new_priority < current_priority:
-                    self._final_entity_map[entity_id] = entity_type
+        # 1. 类型合并，但只针对有效实体
+        for entity_id in valid_entity_ids:
+            if entity_id in self._collected_entities:
+                meta = self._collected_entities[entity_id]
+                entity_types = meta["types"]
+                if not entity_types:
+                    continue
+
+                final_type = min(
+                    entity_types,
+                    key=lambda t: entity_meta_config.get(
+                        t, EntityMetaConfig(metatype="unknown", priority=999)
+                    ).priority,
+                )
+                self._final_entity_map[entity_id] = {
+                    "type": final_type,
+                    "sources": meta["sources"],
+                }
 
         # 2. 按最终确定的类型对实体进行分组
-        for entity_id, final_type in self._final_entity_map.items():
+        for entity_id, final_meta in self._final_entity_map.items():
+            final_type = final_meta["type"]
             self.entities_by_type[final_type].append(entity_id)
 
         # 3. 分配连续的逻辑ID
@@ -119,172 +124,227 @@ class IDMapper:
         sorted_types = sorted(self.entities_by_type.keys())
 
         for entity_type in sorted_types:
-            # 排序以保证映射的确定性
-            sorted_entities = sorted(self.entities_by_type[entity_type])
+            try:
+                # 尝试进行排序。如果类型混合，这里会失败。
+                sorted_entities = sorted(self.entities_by_type[entity_type])
+            except TypeError:
+                # [NEW] 捕获TypeError，并包装成一个信息量更大的ValueError
+                # 我们可以做一个快速检查，找出罪魁祸首
+                culprits = []
+                for entity_id in self.entities_by_type[entity_type]:
+                    if (
+                        self.is_molecule(entity_type) and not isinstance(entity_id, int)
+                    ) or (
+                        self.is_protein(entity_type) and not isinstance(entity_id, str)
+                    ):
+                        culprits.append(
+                            f"(ID: {entity_id}, Type: {type(entity_id).__name__})"
+                        )
+
+                raise ValueError(
+                    f"ID format mismatch detected for entity type '{entity_type}'. "
+                    f"This type expects a specific ID format, but received mixed types. "
+                    f"This indicates an error in the upstream data validation. "
+                    f"Problematic entities (sample): {culprits[:5]}"
+                )
             self.entities_by_type[entity_type] = sorted_entities
 
-            type_map = {
-                auth_id: i + current_id for i, auth_id in enumerate(sorted_entities)
-            }
-
-            self.entity_to_id_maps[entity_type] = type_map
-            self.id_to_entity_maps[entity_type] = {
-                i: auth_id for auth_id, i in type_map.items()
-            }
-
-            for auth_id, logic_id in type_map.items():
-                self.logic_id_to_type_map[logic_id] = entity_type
-                self.logic_id_to_auth_id_map[logic_id] = auth_id
-
+            for logic_id, auth_id in enumerate(sorted_entities):
+                # 构建logic_id -> type 的map
+                self._logic_id_to_type_map[logic_id] = entity_type
+                # 加入总体的auth_id <->logic_id map中
+                self._logic_id_to_auth_id_map[logic_id] = auth_id
+                self._auth_id_to_logic_id_map[auth_id] = logic_id
             current_id += len(sorted_entities)
 
         self.is_finalized = True
-        print("--- [IDMapper V4] Finalization complete. Final counts: ---")
+        print("--- [IDMapper V5.1] Finalization complete. Final counts: ---")
         for entity_type in sorted_types:
             print(
                 f"  - Found {self.get_num_entities(entity_type)} unique '{entity_type}' entities."
             )
         print(f"  - Total entities: {self.num_total_entities}")
 
-    # --- 公共 Getter 和属性 ---
-
-    def get_num_entities(self, entity_type: str) -> int:
-        """获取指定类型的实体数量。"""
-        return len(self.entities_by_type.get(entity_type, []))
-
-    @property
-    def num_total_entities(self) -> int:
-        """获取所有实体的总数。"""
-        return len(self._final_entity_map)
-
-    def get_ordered_ids(self, entity_type: str) -> List:
-        """获取指定类型的、排序后的权威ID列表。"""
-        if not self.is_finalized:
-            raise RuntimeError("IDMapper must be finalized first.")
-        return self.entities_by_type.get(entity_type, [])
-
-    def get_entity_types(self) -> List[str]:
-        """获取所有最终存在的实体类型列表。"""
-        return sorted(self.entities_by_type.keys())
-
-    def get_logic_id_to_type_map(self) -> Dict[int, str]:
-        """获取 逻辑ID -> 实体类型 的映射。"""
-        return self.logic_id_to_type_map
-
-    def is_molecule(self, entity_type: str) -> bool:
-        """检查一个实体类型是否属于“分子”大类。"""
-        # 这是一个简单的、基于字符串的约定
-        return (
-            "molecule" in entity_type
-            or "drug" in entity_type
-            or "ligand" in entity_type
-        )
-
-    def is_protein(self, entity_type: str) -> bool:
-        """检查一个实体类型是否属于“蛋白质”大类。"""
-        return "protein" in entity_type
-
-    # --- 核心映射方法 ---
-
-    def get_mapped_positive_pairs(
-        self, pure_interactions_df: pd.DataFrame
-    ) -> Tuple[List[Tuple[int, int, str]], Set[Tuple[int, int]]]:
+    def build_entity_manifest(self) -> pd.DataFrame:
         """
-        将纯净的交互DataFrame高效地映射为逻辑ID对。
+        根据收集到的原始实体信息，构建一个用于下游丰富化和校验的“实体清单”DataFrame。
         """
-        if not self.is_finalized:
-            raise RuntimeError("IDMapper must be finalized before mapping pairs.")
+        print("--- [IDMapper V5.1] Building initial entity manifest...")
+        manifest_data = []
+        entity_meta_config = self._config.knowledge_graph.entity_meta
 
-        if self._config.runtime.verbose > 0:
-            print("  - Mapping pure interactions to logic ID pairs...")
-
-        # 1. 创建一个全局的 权威ID -> 逻辑ID 映射
-        global_auth_to_logic_id_map = {}
-        for type_map in self.entity_to_id_maps.values():
-            global_auth_to_logic_id_map.update(type_map)
-
-        # 2. 使用 .map() 进行高效映射
-        source_logic_ids = pure_interactions_df[self._schema.source_id].map(
-            global_auth_to_logic_id_map
-        )
-        target_logic_ids = pure_interactions_df[self._schema.target_id].map(
-            global_auth_to_logic_id_map
-        )
-
-        # 3. 将结果与关系类型组合
-        result_df = (
-            pd.DataFrame(
+        for entity_id, meta in self._collected_entities.items():
+            primary_type = min(
+                meta["types"],
+                key=lambda t: entity_meta_config.get(
+                    t, EntityMetaConfig(metatype="unknown", priority=999)
+                ).priority,
+            )
+            manifest_data.append(
                 {
-                    "source": source_logic_ids,
-                    "target": target_logic_ids,
-                    "rel": pure_interactions_df[self._schema.relation_type],
+                    "entity_id": entity_id,
+                    "entity_type": primary_type,
+                    "all_types": list(meta["types"]),
+                    "all_sources": list(meta["sources"]),
+                    "structure": None,
                 }
             )
-            .dropna()
-            .astype({"source": int, "target": int})
-        )
+        return pd.DataFrame(manifest_data)
 
-        # 4. 转换为所需的元组和集合格式
-        mapped_pairs_with_type = list(result_df.to_records(index=False))
-        mapped_pairs_set = set(zip(result_df["source"], result_df["target"]))
-
-        if self._config.runtime.verbose > 0:
-            print(
-                f"    - Successfully mapped {len(mapped_pairs_set)} unique interaction pairs."
-            )
-
-        return mapped_pairs_with_type, mapped_pairs_set
-
-    def save_maps_for_debugging(self, entities_with_structures: pd.DataFrame):
+    def save_maps_to_csv(self, entities_with_structures: pd.DataFrame):
         """
-        【V2 - 适配新架构版】将IDMapper内部的所有核心映射关系保存到磁盘 (nodes.csv)。
-        现在需要外部传入包含结构信息的DataFrame。
+        将IDMapper内部的所有核心映射关系，结合外部提供的结构信息，保存到'nodes.csv'。
         """
         if not self.is_finalized:
             print(
-                "--> [IDMapper] Warning: Mappings not finalized. Skipping save_maps_for_debugging."
+                "--> [IDMapper] Warning: Mappings not finalized. Skipping saving debug maps."
             )
             return
 
-        print("\n--- [IDMapper V4] Saving internal maps for debugging...")
+        print("\n--- [IDMapper V5.1] Saving final nodes metadata ('nodes.csv')... ---")
 
         nodes_schema = self._config.data_structure.schema.internal.nodes_output
         node_data = []
 
-        # 遍历所有已分配逻辑ID的实体
-        for logic_id, auth_id in self.logic_id_to_auth_id_map.items():
-            entity_type = self.logic_id_to_type_map[logic_id]
+        for logic_id, auth_id in self._logic_id_to_auth_id_map.items():
+            meta = self._final_entity_map[auth_id]
             node_data.append(
                 {
                     nodes_schema.global_id: logic_id,
-                    nodes_schema.node_type: entity_type,
+                    nodes_schema.node_type: meta["type"],
                     nodes_schema.authoritative_id: auth_id,
+                    "sources": ",".join(sorted(list(meta["sources"]))),
                 }
             )
 
         if not node_data:
-            print("--> No data to save for debugging.")
+            print("--> No finalized data to save for debugging.")
             return
 
         nodes_df = pd.DataFrame(node_data).sort_values(by=nodes_schema.global_id)
 
-        # 【核心修改】将结构信息从外部DataFrame合并进来
-        # 创建一个可用于合并的实体ID列
-        entities_with_structures["auth_id_for_merge"] = entities_with_structures[
-            "entity_id"
-        ]
-        nodes_df = pd.merge(
-            nodes_df,
-            entities_with_structures[["auth_id_for_merge", "structure"]],
-            left_on="authoritative_id",
-            right_on="auth_id_for_merge",
-            how="left",
-        ).drop(columns=["auth_id_for_merge"])
-
-        # 重命名 'structure' 列以符合 schema
-        nodes_df.rename(columns={"structure": nodes_schema.structure}, inplace=True)
+        structure_map = entities_with_structures.set_index("entity_id")["structure"]
+        nodes_df[nodes_schema.structure] = nodes_df[nodes_schema.authoritative_id].map(
+            structure_map
+        )
+        nodes_df[nodes_schema.structure].fillna("", inplace=True)  # 确保没有NaN
 
         output_path = get_path(self._config, "processed.common.nodes_metadata")
         rt.ensure_path_exists(output_path)
         nodes_df.to_csv(output_path, index=False)
-        print(f"--> Debug file 'nodes.csv' saved to: {output_path}")
+        print(f"--> Core metadata file 'nodes.csv' saved to: {output_path}")
+
+    # --- 公共 Getter 和查询 API ---
+
+    def get_entity_meta(self, logic_id: int) -> Union[Dict[str, Any], None]:
+        """根据逻辑ID，获取一个实体最终的元信息（最终类型、来源等）。"""
+        if not self.is_finalized:
+            raise RuntimeError("IDMapper must be finalized first.")
+        auth_id = self._logic_id_to_auth_id_map.get(logic_id)
+        return self._final_entity_map.get(auth_id) if auth_id else None
+
+    def get_all_final_ids(self) -> List[Any]:
+        """返回所有【最终纯净的】权威实体ID。"""
+        if not self.is_finalized:
+            raise RuntimeError("IDMapper must be finalized first.")
+        return list(self._final_entity_map.keys())
+
+    def get_ids_by_filter(self, filter_func: Callable[[Dict], bool]) -> List[Any]:
+        """一个通用的查询接口，返回所有元信息满足过滤条件的【逻辑ID】。"""
+        if not self.is_finalized:
+            raise RuntimeError("IDMapper must be finalized before filtering.")
+
+        return [
+            self._auth_id_to_logic_id_map[entity_id]
+            for entity_id, meta in self._final_entity_map.items()
+            if filter_func(meta)
+        ]
+
+    @property
+    def num_molecules(self) -> int:
+        """【V2】返回所有“分子”大类的实体总数。"""
+        if not self.is_finalized:
+            raise RuntimeError("IDMapper must be finalized before querying counts.")
+
+        # 遍历所有已知的实体类型，累加所有属于“分子”元类型的实体数量
+        count = 0
+        for entity_type in self.entity_types:
+            if self.is_molecule(entity_type):
+                count += self.get_num_entities(entity_type)
+        return count
+
+    @property
+    def num_proteins(self) -> int:
+        """【V2】返回所有“蛋白质/基因”大类的实体总数。"""
+        if not self.is_finalized:
+            raise RuntimeError("IDMapper must be finalized before querying counts.")
+
+        count = 0
+        for entity_type in self.entity_types:
+            if self.is_protein(entity_type):
+                count += self.get_num_entities(entity_type)
+        return count
+
+    @property
+    def num_total_entities(self) -> int:
+        """【V2】返回所有实体总数。"""
+        if not self.is_finalized:
+            raise RuntimeError("IDMapper must be finalized before querying counts.")
+        return len(self._logic_id_to_auth_id_map)
+
+    def get_num_entities(self, entity_type: str) -> int:
+        """
+        获取指定【最终】实体类型的实体数量。
+
+        Args:
+            entity_type (str): 要查询的最终实体类型字符串 (e.g., 'drug', 'protein')。
+
+        Returns:
+            int: 该类型的实体数量。如果类型不存在，返回0。
+        """
+        if not self.is_finalized:
+            raise RuntimeError(
+                "IDMapper must be finalized before querying entity counts."
+            )
+        return len(self.entities_by_type.get(entity_type, []))
+
+    def get_ordered_ids(self, entity_type: str) -> List:
+        if not self.is_finalized:
+            raise RuntimeError("IDMapper must be finalized first.")
+        return self.entities_by_type.get(entity_type, [])
+
+    @property
+    def entity_types(self) -> List[str]:
+        """获取所有最终存在的、排序后的实体类型列表。"""
+        if not self.is_finalized:
+            raise RuntimeError("IDMapper must be finalized first.")
+        return sorted(self.entities_by_type.keys())
+
+    @property
+    def logic_id_to_auth_id_map(self) -> Dict[int, Any]:
+        """获取 逻辑ID -> 权威ID 的映射字典。"""
+        if not self.is_finalized:
+            raise RuntimeError("IDMapper must be finalized first.")
+        return self._logic_id_to_auth_id_map
+
+    @property
+    def logic_id_to_type_map(self) -> Dict[int, str]:
+        """获取 逻辑ID -> 实体类型 的映射字典。"""
+        if not self.is_finalized:
+            raise RuntimeError("IDMapper must be finalized first.")
+        return self._logic_id_to_type_map
+
+    @property
+    def auth_id_to_logic_id_map(self) -> Dict[Any, int]:
+        """获取 权威ID -> 逻辑ID 的映射字典。"""
+        if not self.is_finalized:
+            raise RuntimeError("IDMapper must be finalized first.")
+        return self._auth_id_to_logic_id_map
+
+    def is_molecule(self, entity_type: str) -> bool:
+        """通过查询配置，检查一个实体类型是否属于“分子”大类。"""
+        return entity_type in self._molecule_subtypes
+
+    def is_protein(self, entity_type: str) -> bool:
+        """通过查询配置，检查一个实体类型是否属于“蛋白质/基因”大类。"""
+        return entity_type in self._protein_subtypes
