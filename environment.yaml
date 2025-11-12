@@ -8,7 +8,7 @@
 #   $ mamba env update -f environment.yml --prune
 # ===================================================================
 
-name: nasnet-gnn # A new, clean name for our GNN-ready environment
+name: helixpipe-gnn # A new, clean name for our GNN-ready environment
 
 channels:
   - pytorch

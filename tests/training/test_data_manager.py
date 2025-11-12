@@ -8,11 +8,11 @@ import pandas as pd
 import research_template as rt
 from torch_geometric.data import HeteroData
 
-from nasnet.configs import register_all_schemas
+from helixpipe.configs import register_all_schemas
 
 # 导入我们需要测试的类
-from nasnet.training import DataManager
-from nasnet.utils import get_path, register_hydra_resolvers
+from helixpipe.training import DataManager
+from helixpipe.utils import get_path, register_hydra_resolvers
 
 # 全局注册
 register_all_schemas()

@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 
 from omegaconf import OmegaConf
 
-from nasnet.configs.training import ColdstartConfig, EntitySelectorConfig
-from nasnet.data_processing.services.splitter import DataSplitter
+from helixpipe.configs.training import ColdstartConfig, EntitySelectorConfig
+from helixpipe.data_processing.services.splitter import DataSplitter
 
 
 # --- 【最终版 V3】MockIDMapper ---
@@ -49,7 +49,7 @@ class MockIDMapper:
 
 
 class TestDataSplitter(unittest.TestCase):
-    @patch("nasnet.data_processing.services.splitter.train_test_split")
+    @patch("helixpipe.data_processing.services.splitter.train_test_split")
     def test_strictness_modes_for_background_edges(self, mock_train_test_split):
         print("\n--- Running Test: DataSplitter Strictness Modes (V3 Corrected) ---")
 

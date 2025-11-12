@@ -3,14 +3,14 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "dti_project" # 给您的项目起个名字
+name = "HelixPipe" # 给您的项目起个名字
 version = "0.1.0"
 description = "A framework for DTI prediction using heterogeneous GNNs."
 requires-python = ">=3.9"
 
 [tool.setuptools.packages.find]
 where = ["src"]  # 告诉setuptools，包的根目录是 'src'
-include = ["nasnet*"]  # 包含所有以 'nasnet' 开头的包
+include = ["helixpipe*"]  # 包含所有以 'helixpipe' 开头的包
 exclude = []  # 可以排除特定的子包
 
 [tool.ruff.lint]

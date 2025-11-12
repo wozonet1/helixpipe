@@ -3,8 +3,8 @@ import unittest
 import pandas as pd
 
 # 导入我们需要测试的类和相关的dataclass
-from nasnet.configs import EntitySelectorConfig, InteractionSelectorConfig
-from nasnet.data_processing.services.selector_executor import SelectorExecutor
+from helixpipe.configs import EntitySelectorConfig, InteractionSelectorConfig
+from helixpipe.data_processing.services.selector_executor import SelectorExecutor
 
 # --- 模拟 (Mock) 依赖 ---
 

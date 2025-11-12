@@ -5,7 +5,7 @@ import pandas as pd
 import research_template as rt
 from omegaconf import DictConfig, OmegaConf
 
-from nasnet.utils import get_path, register_hydra_resolvers, run_online_validation
+from helixpipe.utils import get_path, register_hydra_resolvers, run_online_validation
 
 register_hydra_resolvers()
 

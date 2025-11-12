@@ -5,8 +5,8 @@ import torch
 from omegaconf import OmegaConf
 
 # 导入我们需要测试的类
-from nasnet.data_processing.services.graph_builder import HeteroGraphBuilder
-from nasnet.data_processing.services.graph_director import GraphDirector
+from helixpipe.data_processing.services.graph_builder import HeteroGraphBuilder
+from helixpipe.data_processing.services.graph_director import GraphDirector
 
 # --- 模拟(Mock)对象 ---
 

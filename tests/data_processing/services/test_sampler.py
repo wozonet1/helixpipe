@@ -7,7 +7,7 @@ from typing import List, Tuple
 from omegaconf import OmegaConf
 
 # 导入我们新的、统一的采样函数
-from nasnet.data_processing.services.sampler import sample_interactions
+from helixpipe.data_processing.services.sampler import sample_interactions
 
 # --- 模拟(Mock)对象和数据 (与之前版本相同) ---
 

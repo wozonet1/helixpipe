@@ -47,7 +47,7 @@
     - 所有底层的、重复的交互匹配逻辑，将从 `sampler` 和 `splitter` 中移除，统一收归到 `InteractionStore.query` 方法中。
 
 4.  **引入 `selectors.py` 模块：**
-    - 创建一个新的 `src/nasnet/configs/selectors.py` 文件。
+    - 创建一个新的 `src/helixpipe/configs/selectors.py` 文件。
     - `EntitySelectorConfig` 将从 `training.py` 移动到此文件中。
     - 新增 `InteractionSelectorConfig` 的定义，用于 `sampler` 和 `splitter` 的声明式配置。
 

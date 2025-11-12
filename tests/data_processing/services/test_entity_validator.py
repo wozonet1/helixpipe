@@ -7,7 +7,7 @@ import pandas as pd
 from omegaconf import OmegaConf
 
 # 导入我们需要测试的主函数
-from nasnet.data_processing.services.entity_validator import (
+from helixpipe.data_processing.services.entity_validator import (
     validate_and_filter_entities,
 )
 
@@ -101,9 +101,9 @@ class TestEntityValidator(unittest.TestCase):
 
     # 使用 @patch 装饰器来“模拟”所有外部依赖（ID白名单检查）
     # 这让我们的测试变成了“单元/集成”混合测试，不依赖网络
-    @patch("nasnet.data_processing.services.entity_validator.get_valid_pubchem_cids")
+    @patch("helixpipe.data_processing.services.entity_validator.get_valid_pubchem_cids")
     @patch(
-        "nasnet.data_processing.services.entity_validator.get_human_uniprot_whitelist"
+        "helixpipe.data_processing.services.entity_validator.get_human_uniprot_whitelist"
     )
     def test_end_to_end_validation_pipeline(
         self, mock_uniprot_whitelist, mock_cid_whitelist

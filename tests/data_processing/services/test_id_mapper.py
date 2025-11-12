@@ -6,7 +6,7 @@ import pandas as pd
 from omegaconf import OmegaConf
 
 # 导入我们需要测试的类和相关的dataclass
-from nasnet.data_processing.services.id_mapper import IDMapper
+from helixpipe.data_processing.services.id_mapper import IDMapper
 
 # --- 模拟 (Mock) 配置 ---
 MOCK_CONFIG = OmegaConf.create(

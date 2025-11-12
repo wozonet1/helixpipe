@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 # --- 动态路径设置 ---
-# 这部分保持不变，确保能找到 nasnet 模块
+# 这部分保持不变，确保能找到 helixpipe 模块
 try:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
@@ -15,13 +15,13 @@ except IndexError:
     raise RuntimeError("Could not determine project root.")
 
 # --- 导入 ---
+# 在路径设置好之后，再导入我们项目的模块
 from omegaconf import DictConfig, OmegaConf
 from rdkit import Chem
 
-# 在路径设置好之后，再导入我们项目的模块
-from nasnet.configs import register_all_schemas
-from nasnet.data_processing import StructureProvider
-from nasnet.utils import register_hydra_resolvers
+from helixpipe.configs import register_all_schemas
+from helixpipe.data_processing import StructureProvider
+from helixpipe.utils import register_hydra_resolvers
 
 # 全局注册一次
 register_all_schemas()

@@ -11,11 +11,11 @@ import pandas as pd
 import torch
 from omegaconf import DictConfig
 
-from nasnet.configs import register_all_schemas
+from helixpipe.configs import register_all_schemas
 
 # 导入我们需要测试的主函数和所有相关模块
-from nasnet.pipelines.main_pipeline import process_data
-from nasnet.utils import get_path, register_hydra_resolvers
+from helixpipe.pipelines.main_pipeline import process_data
+from helixpipe.utils import get_path, register_hydra_resolvers
 
 # 全局执行一次注册
 register_all_schemas()
@@ -52,10 +52,10 @@ class TestMainPipeline(unittest.TestCase):
         return cfg
 
     # 使用 patch 装饰器来模拟所有外部和耗时的调用
-    @patch("nasnet.data_processing.services.structure_provider.StructureProvider")
-    @patch("nasnet.features.similarity_calculators.calculate_embedding_similarity")
-    @patch("nasnet.features.extractors.extract_chemberta_molecule_embeddings")
-    @patch("nasnet.features.extractors.extract_esm_protein_embeddings")
+    @patch("helixpipe.data_processing.services.structure_provider.StructureProvider")
+    @patch("helixpipe.features.similarity_calculators.calculate_embedding_similarity")
+    @patch("helixpipe.features.extractors.extract_chemberta_molecule_embeddings")
+    @patch("helixpipe.features.extractors.extract_esm_protein_embeddings")
     def test_end_to_end_pipeline_with_brenda(
         self, mock_esm, mock_chemberta, mock_sim, mock_structure_provider
     ):
@@ -128,7 +128,7 @@ class TestMainPipeline(unittest.TestCase):
 
         # a. 运行主处理流水线 (黑盒调用)
         # 注意：在真实的 main.py 中，load_datasets 是在 process_data 外部调用的
-        from nasnet.data_loader_strategy import load_datasets
+        from helixpipe.data_loader_strategy import load_datasets
 
         base_df, extra_dfs = load_datasets(cfg)
         process_data(cfg, base_df=base_df, extra_dfs=extra_dfs)

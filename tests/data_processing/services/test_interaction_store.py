@@ -4,13 +4,13 @@ import pandas as pd
 from omegaconf import OmegaConf
 
 # 导入我们需要测试的类和相关的dataclass
-from nasnet.configs import (
+from helixpipe.configs import (
     AppConfig,
     EntitySelectorConfig,
     InteractionSelectorConfig,
     register_all_schemas,
 )
-from nasnet.data_processing.services.interaction_store import InteractionStore
+from helixpipe.data_processing.services.interaction_store import InteractionStore
 
 # --- 模拟 (Mock) 依赖 ---
 

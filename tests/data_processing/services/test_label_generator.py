@@ -5,10 +5,10 @@ from unittest.mock import MagicMock, patch
 
 from omegaconf import OmegaConf
 
-from nasnet.configs.training import ColdstartConfig, EntitySelectorConfig
+from helixpipe.configs.training import ColdstartConfig, EntitySelectorConfig
 
 # 导入我们需要测试的类和相关的dataclass
-from nasnet.data_processing.services.label_generator import SupervisionFileManager
+from helixpipe.data_processing.services.label_generator import SupervisionFileManager
 
 
 # --- 模拟 (Mock) 的 IDMapper ---
@@ -60,7 +60,7 @@ class TestSupervisionFileManager(unittest.TestCase):
         self.mock_id_mapper.get_meta_by_logic_id.side_effect = meta_side_effect
 
     # 我们需要mock get_path 和 DataFrame.to_csv，因为我们不想在测试中真正写入文件
-    @patch("nasnet.data_processing.services.label_generator.get_path")
+    @patch("helixpipe.data_processing.services.label_generator.get_path")
     @patch("pandas.DataFrame.to_csv")
     def test_evaluation_scope_filtering(self, mock_to_csv, mock_get_path):
         """
@@ -130,7 +130,7 @@ class TestSupervisionFileManager(unittest.TestCase):
 
         print("  ✅ Passed.")
 
-    @patch("nasnet.data_processing.services.label_generator.get_path")
+    @patch("helixpipe.data_processing.services.label_generator.get_path")
     @patch("pandas.DataFrame.to_csv")
     def test_selector_driven_negative_sampling(self, mock_to_csv, mock_get_path):
         """

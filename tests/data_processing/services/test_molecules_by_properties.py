@@ -6,7 +6,7 @@ import pandas as pd
 from omegaconf import OmegaConf
 
 # 导入我们需要独立测试的函数
-from nasnet.data_processing.services.filter import filter_molecules_by_properties
+from helixpipe.data_processing.services.filter import filter_molecules_by_properties
 
 # --- 模拟 (Mock) 配置 ---
 # 这个配置与 test_entity_validator 中的完全一致

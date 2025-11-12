@@ -8,12 +8,12 @@ import hydra
 import research_template as rt
 from omegaconf import DictConfig, OmegaConf
 
-from nasnet.configs import register_all_schemas
-from nasnet.data_processing.services.id_validation_service import (
+from helixpipe.configs import register_all_schemas
+from helixpipe.data_processing.services.id_validation_service import (
     get_human_uniprot_whitelist,
     get_valid_pubchem_cids,
 )
-from nasnet.utils import get_path, register_hydra_resolvers
+from helixpipe.utils import get_path, register_hydra_resolvers
 
 
 class TestIDValidationServiceOffline(unittest.TestCase):
@@ -40,7 +40,7 @@ class TestIDValidationServiceOffline(unittest.TestCase):
         # 在内存中清除全局缓存，确保每个测试都重新加载文件
         # 这需要我们在 id_validation_service.py 中稍微修改一下
         # 假设我们有一个重置函数：reset_whitelist_cache()
-        from nasnet.data_processing.services import id_validation_service
+        from helixpipe.data_processing.services import id_validation_service
 
         id_validation_service._local_human_uniprot_whitelist = None
 
