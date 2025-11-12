@@ -1,168 +1,145 @@
+# tests/data_processing/services/test_data_splitter.py
+
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from omegaconf import OmegaConf
 
-# 导入我们需要测试的类
+from nasnet.configs.training import ColdstartConfig, EntitySelectorConfig
 from nasnet.data_processing.services.splitter import DataSplitter
 
-# --- [MODIFIED] 模拟(Mock)对象和数据 ---
 
-
+# --- 【最终版 V3】MockIDMapper ---
 class MockIDMapper:
     """
-    一个更复杂的IDMapper模拟对象，用于测试位置无知的划分。
+    一个模拟的IDMapper，现在精确地模拟了 get_ids_by_selector 的行为。
     """
 
     def __init__(self):
-        self.entity_types = ["drug", "ligand", "protein"]
-
-        self.entities_by_type = {
-            "drug": [0, 1],
-            "ligand": [2, 3],
-            "protein": [10, 11, 12, 13],
+        self.logic_id_to_type_map = {
+            0: "drug",
+            1: "drug",
+            100: "protein",
+            101: "protein",
         }
 
-        self.logic_id_to_type_map = {}
-        for type_name, ids in self.entities_by_type.items():
-            for entity_id in ids:
-                self.logic_id_to_type_map[entity_id] = type_name
+        # 【核心修正】: 我们不再简单地mock get_ids_by_selector，
+        # 而是给它一个真实的、能够响应不同selector的实现。
+        self.get_ids_by_selector = MagicMock(side_effect=self._selector_side_effect)
 
-    def get_entity_types(self):
-        return self.entity_types
+    def _selector_side_effect(self, selector: EntitySelectorConfig):
+        """这个函数模拟真实的 get_ids_by_selector 的行为。"""
+        # DataSplitter 在 presplit 时会调用这个
+        if selector.meta_types == ["molecule"]:
+            return {0, 1}  # 所有 drug 的 ID
+        if selector.meta_types == ["protein"]:
+            return {100, 101}  # 所有 protein 的 ID
 
-    def get_ordered_ids(self, entity_type: str):
-        return self.entities_by_type.get(entity_type, [])
+        # DataSplitter 在准备冷启动实体池时也会调用这个
+        # 我们的测试场景下，pool_scope 也是 meta_types=['molecule']，所以上面的if会命中
 
-    def is_molecule(self, entity_type: str) -> bool:
-        return entity_type in ["drug", "ligand"]
+        return set()  # 默认返回空集合
 
-    def is_protein(self, entity_type: str) -> bool:
-        return entity_type == "protein"
+    # 剩下的方法 splitter 在 V6 中不再直接使用，但保留无妨
+    def is_molecule(self, t):
+        return t == "drug"
 
-    def get_logic_id_to_type_map(self):
-        return self.logic_id_to_type_map
-
-
-# --- 全局的模拟数据 ---
-mock_id_mapper = MockIDMapper()
-
-# 创建一个复杂的交互对列表
-# 2个 drug-prot, 2个 ligand-prot, 1个 prot-prot
-MOCK_PAIRS = [
-    # DTI
-    (0, 10, "interacts_with"),  # (drug, protein)
-    (1, 11, "interacts_with"),  # (drug, protein)
-    # LPI
-    (2, 12, "interacts_with"),  # (ligand, protein)
-    (3, 13, "interacts_with"),  # (ligand, protein)
-    # PPI
-    (10, 11, "associated_with"),  # (protein, protein)
-]
+    def is_protein(self, t):
+        return t == "protein"
 
 
 class TestDataSplitter(unittest.TestCase):
-    def test_molecule_cold_split_heterogeneous(self):
-        """
-        测试点1: 在分子冷启动模式下，是否能正确划分一个包含多种分子类型的交互列表。
-        """
-        print("\n--- Running Test: Molecule Cold-Split on Heterogeneous Pairs ---")
-
-        cfg = OmegaConf.create(
-            {
-                "training": {
-                    "k_folds": 1,  # 单次划分
-                    "coldstart": {"mode": "molecule", "test_fraction": 0.5},
-                },
-            }
-        )
-
-        # 种子固定，使得 train_test_split 的结果可预测
-        # 分子ID: [0, 1, 2, 3]。test_fraction=0.5 -> 2个测试分子
-        # 假设 train_test_split 会选择 [1, 2] 作为测试分子
-        splitter = DataSplitter(cfg, MOCK_PAIRS, mock_id_mapper, seed=42)
-
-        _, _, test_pairs, cold_start_mol_ids = next(iter(splitter))
-
-        # 预期:
-        # (0, 10, 'interacts_with') -> train
-        # (1, 11, 'interacts_with') -> test (因为分子1在测试集)
-        # (2, 12, 'interacts_with') -> test (因为分子2在测试集)
-        # (3, 13, 'interacts_with') -> train
-        # (10, 11, 'associated_with') -> train (不含任何分子)
-
-        self.assertEqual(len(test_pairs), 2)
-        self.assertEqual(
-            len(cold_start_mol_ids), 2, "Should identify 2 cold-start molecules."
-        )
-
-        test_mol_ids_from_pairs = set()
-        logic_id_to_type = mock_id_mapper.get_logic_id_to_type_map()
-        for u, v, _ in test_pairs:
-            if mock_id_mapper.is_molecule(logic_id_to_type[u]):
-                test_mol_ids_from_pairs.add(u)
-            if mock_id_mapper.is_molecule(logic_id_to_type[v]):
-                test_mol_ids_from_pairs.add(v)
-
-        self.assertEqual(
-            test_mol_ids_from_pairs,
-            cold_start_mol_ids,
-            "All molecules in test pairs must be from the cold-start set.",
-        )
-
-        print("  ✅ Test Passed: Correctly isolated and returned molecule-cold IDs.")
-
     @patch("nasnet.data_processing.services.splitter.train_test_split")
-    def test_protein_cold_split_handles_ppi(self, mock_train_test_split):
-        """
-        测试点2 (核心): 在蛋白质冷启动模式下，是否能正确处理 protein-protein 交互。
-        """
-        print("\n--- Running Test: Protein Cold-Split with PPI ---")
+    def test_strictness_modes_for_background_edges(self, mock_train_test_split):
+        print("\n--- Running Test: DataSplitter Strictness Modes (V3 Corrected) ---")
 
-        cfg = OmegaConf.create(
+        mock_id_mapper = MockIDMapper()
+        # 【核心修正】: 我们需要确保 splitter 在请求冷启动池时，get_ids_by_selector 也能正确响应
+        # 在我们的测试中，pool_scope 和 presplit 的 source_scope 是一样的，所以没问题。
+
+        mock_train_test_split.return_value = ([1], [0])
+
+        all_pairs = [
+            (0, 100, "interacts_with"),  # -> evaluable -> test
+            (1, 101, "interacts_with"),  # -> evaluable -> train
+            (0, 1, "drug_drug_similarity"),  # -> background
+        ]
+
+        pool_scope = EntitySelectorConfig(meta_types=["molecule"])
+        eval_scope = (
+            EntitySelectorConfig(meta_types=["molecule"]),
+            EntitySelectorConfig(meta_types=["protein"]),
+        )
+
+        # --- 测试 'strict' 模式 ---
+        print("  -> Testing 'strict' mode...")
+        cfg_strict = ColdstartConfig(
+            pool_scope=pool_scope,
+            evaluation_scope=eval_scope,
+            strictness="strict",
+            test_fraction=0.5,
+        )
+        conf_strict = OmegaConf.create(
             {
-                "training": {
-                    "k_folds": 1,
-                    "coldstart": {"mode": "protein", "test_fraction": 0.5},
-                },
+                "training": {"coldstart": cfg_strict, "k_folds": 1},
+                "runtime": {"verbose": 0},
+                "data_structure": {"primary_dataset": ""},
             }
         )
-        train_entities = [10, 13]
-        test_entities = [11, 12]
-        mock_train_test_split.return_value = (train_entities, test_entities)
-        # 蛋白质ID: [10, 11, 12, 13]。test_fraction=0.5 -> 2个测试蛋白
-        # 假设 train_test_split (seed=1) 会选择 [11, 12] 作为测试蛋白
-        splitter = DataSplitter(cfg, MOCK_PAIRS, mock_id_mapper, seed=1)
+        # 这里的 all_pairs 会被正确地 presplit
+        # _evaluable_pairs = [(0, 100, ...), (1, 101, ...)]
+        # _background_pairs = [(0, 1, ...)]
+        splitter_strict = DataSplitter(conf_strict, all_pairs, mock_id_mapper, 42)
+        (
+            _,
+            train_graph_edges_strict,
+            train_labels_strict,
+            test_pairs_strict,
+            _,
+        ) = next(iter(splitter_strict))
 
-        _, train_pairs, test_pairs, cold_start_prot_ids = next(iter(splitter))
-
-        # 预期:
-        # (0, 10, 'interacts_with') -> train
-        # (1, 11, 'interacts_with') -> test (因为蛋白11在测试集)
-        # (2, 12, 'interacts_with') -> test (因为蛋白12在测试集)
-        # (3, 13, 'interacts_with') -> train
-        # (10, 11, 'associated_with') -> test (因为蛋白11在测试集) <-- 核心验证点！
-
-        self.assertEqual(len(train_pairs), 2, "Incorrect number of training pairs.")
-        self.assertEqual(len(test_pairs), 3, "Incorrect number of test pairs.")
-
-        test_prot_ids_found = set()
-        for u, v, _ in test_pairs:
-            if mock_id_mapper.is_protein(mock_id_mapper.logic_id_to_type_map[u]):
-                test_prot_ids_found.add(u)
-            if mock_id_mapper.is_protein(mock_id_mapper.logic_id_to_type_map[v]):
-                test_prot_ids_found.add(v)
-
-        # 验证 (10, 11) 这条边确实被分到了测试集
-        self.assertEqual(
-            len(cold_start_prot_ids), 2, "Should identify 2 cold-start proteins."
+        # 断言现在应该完全正确
+        self.assertCountEqual(test_pairs_strict, [(0, 100, "interacts_with")])
+        self.assertCountEqual(train_labels_strict, [(1, 101, "interacts_with")])
+        self.assertCountEqual(
+            train_graph_edges_strict,
+            [(1, 101, "interacts_with")],
+            "Strict mode failed: Leaky background edge was NOT removed.",
         )
-        self.assertEqual(
-            cold_start_prot_ids,
-            {11, 12},
-            "The returned cold-start protein IDs are not as expected.",
-        )  # 依赖于mock的train_test_split
-        print("  ✅ Test Passed: Correctly handled PPI pair during protein cold-split.")
+        print("    ✅ 'strict' mode behaved as expected.")
+
+        # --- 测试 'informed' 模式 ---
+        print("  -> Testing 'informed' mode...")
+        cfg_informed = ColdstartConfig(
+            pool_scope=pool_scope,
+            evaluation_scope=eval_scope,
+            strictness="informed",
+            test_fraction=0.5,
+        )
+        conf_informed = OmegaConf.create(
+            {
+                "training": {"coldstart": cfg_informed, "k_folds": 1},
+                "runtime": {"verbose": 0},
+                "data_structure": {"primary_dataset": ""},
+            }
+        )
+        splitter_informed = DataSplitter(conf_informed, all_pairs, mock_id_mapper, 42)
+        (
+            _,
+            train_graph_edges_informed,
+            train_labels_informed,
+            test_pairs_informed,
+            _,
+        ) = next(iter(splitter_informed))
+
+        self.assertCountEqual(test_pairs_informed, [(0, 100, "interacts_with")])
+        self.assertCountEqual(train_labels_informed, [(1, 101, "interacts_with")])
+        self.assertCountEqual(
+            train_graph_edges_informed,
+            [(1, 101, "interacts_with"), (0, 1, "drug_drug_similarity")],
+            "Informed mode failed: Leaky background edge was NOT kept.",
+        )
+        print("    ✅ 'informed' mode behaved as expected.")
 
 
 if __name__ == "__main__":

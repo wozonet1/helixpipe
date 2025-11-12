@@ -1,29 +1,59 @@
 # 文件: src/configs/data_params.py (完整修正版)
 
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional
 
+from .training import EntitySelectorConfig
 
 # --------------------------------------------------------------------------
 # 嵌套的 Dataclasses (这部分保持不变)
 # --------------------------------------------------------------------------
+
+
+@dataclass
+class StratumConfig:
+    """定义一个采样层的配置规则。"""
+
+    name: str  # 每个层的唯一名称，用于被其他层引用
+    selector: EntitySelectorConfig  # 定义该层包含哪些交互 (通过源实体来判断)
+    fraction: Optional[float] = 1.0  # 采样比例 (与 ratio_to 互斥)
+    ratio_to: Optional[str] = None  # (可选) 引用另一个层的 name
+    ratio: Optional[float] = 1.0  # 与 ratio_to 配合使用，定义采样比例
+
+
+@dataclass
+class StratifiedSamplingConfig:
+    """定义分层采样的所有规则。"""
+
+    enabled: bool = False
+    # strata 是一个规则列表，采样器会按顺序应用
+    strata: List[StratumConfig] = field(default_factory=list)
+
+
+@dataclass
+class UniformSamplingConfig:
+    """定义在分层采样之后进行的全局统一采样。"""
+
+    enabled: bool = False
+    fraction: float = 1.0
+
+
 @dataclass
 class DownstreamSamplingConfig:
-    """
-    定义下游交互对采样的策略。
-    """
+    """顶层的采样配置块。"""
 
-    # 总开关
     enabled: bool = False
+    stratified_sampling: StratifiedSamplingConfig = field(
+        default_factory=StratifiedSamplingConfig
+    )
+    uniform_sampling: UniformSamplingConfig = field(
+        default_factory=UniformSamplingConfig
+    )
 
-    # 【方案1: 统一采样】对所有正样本进行统一比例的随机采样
-    # fraction: 采样比例 (0.0 to 1.0) 或 采样数量 (int)
-    fraction: Optional[Union[float, int]] = 1.0
 
-    # 【方案2: 分层采样】根据 Drug vs Ligand 的比例进行采样
-    # drug_to_ligand_ratio: 'drug'交互数量与'ligand'交互数量的比例
-    # 例如: 1.0 表示 1:1, 10.0 表示 10:1
-    drug_to_ligand_ratio: Optional[float] = None
+# --------------------------------------------------------------------------
+# 2. 修改主 Dataclass (DataParamsConfig)，替换掉旧的 sampling 字段
+# --------------------------------------------------------------------------
 
 
 @dataclass

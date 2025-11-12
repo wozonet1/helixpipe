@@ -7,26 +7,22 @@ import research_template as rt
 from tqdm import tqdm
 
 from nasnet.configs import AppConfig
-from nasnet.utils import get_path
 
 if TYPE_CHECKING:
-    # [MODIFIED] 不再需要 GraphBuildContext，因为它现在只在全局空间工作
-    from .id_mapper import IDMapper
+    from nasnet.data_processing import IDMapper
 
 
 class SupervisionFileManager:
     """
     【V2 - 全局空间版】
     一个专门负责为一个Fold生成并持久化所有模型监督文件的服务类。
-    它现在直接接收和处理【全局ID】对。
+    它现在直接接收和处理【全局ID】对，并能为任意目标边类型生成负样本。
     """
 
-    # [MODIFIED] __init__ 的签名已更新
     def __init__(
         self,
         fold_idx: int,
         config: AppConfig,
-        # [REMOVED] 不再需要 context 对象
         global_id_mapper: "IDMapper",
         global_positive_pairs_set: Set[Tuple[int, int]],
         seed: int,
@@ -42,11 +38,10 @@ class SupervisionFileManager:
         self.rng = np.random.default_rng(seed)
 
         self.labels_schema = config.data_structure.schema.internal.labeled_edges_output
-        self.labels_path_factory = get_path(
+        self.labels_path_factory = rt.get_path(
             config, "processed.specific.labels_template"
         )
 
-    # [MODIFIED] generate_and_save 的签名已更新
     def generate_and_save(
         self,
         train_pairs_global: List[Tuple[int, int, str]],
@@ -61,7 +56,6 @@ class SupervisionFileManager:
         self._save_train_labels(train_pairs_global)
         self._save_test_labels(test_pairs_global)
 
-    # [MODIFIED] _save_train_labels 的实现已简化
     def _save_train_labels(self, train_pairs_global: List[Tuple[int, int, str]]):
         """处理训练标签文件 (仅正样本)，直接使用全局ID。"""
 
@@ -83,9 +77,8 @@ class SupervisionFileManager:
                 f"      - Saved {len(train_pairs_global_df)} positive training pairs to '{train_labels_path.name}'."
             )
 
-    # [MODIFIED] _save_test_labels 的实现已简化
     def _save_test_labels(self, test_pairs_global: List[Tuple[int, int, str]]):
-        """处理测试标签文件 (正样本 + 负样本)，直接使用全局ID。"""
+        """处理测试标签文件 (正样本 + 负样本)，使用类型感知的负采样。"""
 
         test_labels_path = self.labels_path_factory(
             prefix=f"fold_{self.fold_idx}", suffix="test"
@@ -107,9 +100,18 @@ class SupervisionFileManager:
             ).to_csv(test_labels_path, index=False)
             return
 
-        # 负采样在全局空间进行
+        # 从配置中获取目标边类型
+        edge_cfg = self.config.training.target_edge
+        target_edge_type = (
+            edge_cfg.source_type,
+            edge_cfg.relation_type,
+            edge_cfg.target_type,
+        )
+
+        # 调用新的、类型感知的负采样方法
         negative_pairs_global = self._perform_negative_sampling(
-            num_to_sample=len(test_pairs_for_eval_global)
+            num_to_sample=len(test_pairs_for_eval_global),
+            target_edge_type=target_edge_type,
         )
 
         # 组合正负样本 (所有操作都在全局ID空间)
@@ -144,18 +146,40 @@ class SupervisionFileManager:
                 f"      - Saved {len(labeled_df_global)} labeled test pairs (1:{ratio:.0f} pos/neg ratio) to '{test_labels_path.name}'."
             )
 
-    # [MODIFIED] _perform_negative_sampling 方法的签名和实现保持不变，因为它本来就在全局空间工作
-    def _perform_negative_sampling(self, num_to_sample: int) -> List[Tuple[int, int]]:
-        """在全局ID空间执行负采样。"""
+    def _perform_negative_sampling(
+        self, num_to_sample: int, target_edge_type: Tuple[str, str, str]
+    ) -> List[Tuple[int, int]]:
+        """
+        【V2 - 类型感知版】
+        在全局ID空间，为指定的目标边类型，执行随机负采样。
+        """
+        if self.verbose > 1:
+            print(
+                f"      - Performing negative sampling for edge type: {target_edge_type}"
+            )
+
         negative_pairs_global = []
 
-        all_molecule_ids_global = list(self.global_id_mapper.molecule_to_id.values())
-        all_protein_ids_global = list(self.global_id_mapper.protein_to_id.values())
+        source_type, _, target_type = target_edge_type
 
-        if not all_molecule_ids_global or not all_protein_ids_global:
-            print("      - WARNING: Not enough entities to generate negative samples.")
+        # 动态地从 IDMapper 获取源和目标实体的“采样池”
+        try:
+            # 依赖于 IDMapper V4 的 entities_by_type 属性
+            source_pool = self.global_id_mapper.entities_by_type[source_type]
+            target_pool = self.global_id_mapper.entities_by_type[target_type]
+        except KeyError as e:
+            print(
+                f"    - WARNING: Cannot perform negative sampling. Entity type '{e.args[0]}' not found in IDMapper."
+            )
             return []
 
+        if not source_pool or not target_pool:
+            print(
+                "      - WARNING: Not enough entities in source/target pool to generate negative samples."
+            )
+            return []
+
+        # 通用的采样循环
         sampling_strategy = self.config.data_params.negative_sampling_strategy
         disable_tqdm = self.verbose == 0
         with tqdm(
@@ -164,14 +188,20 @@ class SupervisionFileManager:
             disable=disable_tqdm,
         ) as pbar:
             while len(negative_pairs_global) < num_to_sample:
-                mol_id_global = self.rng.choice(all_molecule_ids_global)
-                prot_id_global = self.rng.choice(all_protein_ids_global)
+                source_id_global = self.rng.choice(source_pool)
+                target_id_global = self.rng.choice(target_pool)
 
                 if (
-                    mol_id_global,
-                    prot_id_global,
+                    source_id_global,
+                    target_id_global,
                 ) not in self.global_positive_pairs_set:
-                    negative_pairs_global.append((mol_id_global, prot_id_global))
+                    # 额外检查：对于同质边(如PPI)，确保 u != v
+                    if (
+                        source_type == target_type
+                        and source_id_global == target_id_global
+                    ):
+                        continue
+                    negative_pairs_global.append((source_id_global, target_id_global))
                     pbar.update(1)
 
         return negative_pairs_global

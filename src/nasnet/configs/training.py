@@ -1,27 +1,16 @@
 # 文件: src/configs/training.py
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
-
-# 【新增】一个用于定义实体选择器的dataclass
-@dataclass
-class EntitySelectorConfig:
-    """定义一个用于从IDMapper中筛选实体的规则。"""
-
-    # 必须满足所有指定的类型
-    entity_types: Optional[List[str]] = None
-    # 必须满足所有指定的元类型
-    meta_types: Optional[List[str]] = None
-    # 必须至少来自其中一个指定的来源
-    from_sources: Optional[List[str]] = None
+from .selectors import EntitySelectorConfig, InteractionSelectorConfig
 
 
 @dataclass
 class ColdstartConfig:
     """【V2 - 策略定义版】"""
 
-    mode: str = "molecule"
+    # 注意对于实体来说,这是实体的比例,而非边的比例
     test_fraction: float = 0.2
 
     # 【核心修改】'pool_scope' 现在是一个结构化的选择器
@@ -32,7 +21,7 @@ class ColdstartConfig:
     )
     # 【核心修改】'evaluation_scope' 也是一个结构化的选择器
     # 它定义了“边”的选择，所以需要两个选择器
-    evaluation_scope: Optional[Tuple[EntitySelectorConfig, EntitySelectorConfig]] = None
+    evaluation_scope: Optional[InteractionSelectorConfig] = None
 
     strictness: str = "strict"
     # 'allowed_leakage_types' 是一个白名单，只在 strictness='strict' 时生效

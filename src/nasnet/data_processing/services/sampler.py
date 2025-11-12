@@ -82,6 +82,7 @@ def sample_interactions(
             )
         else:
             # 1. 再次分离出经过第一步处理后的 drug 和 ligand 组
+            # TODO:仍然依赖于位置编码与数量顺序,实现基于source与entity的正交采样
             drug_pairs_stratum = [
                 p for p in working_pairs if p[0] < id_mapper.num_drugs
             ]

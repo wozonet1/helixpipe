@@ -1,4 +1,5 @@
 # src/nasnet/data_processing/datasets/string_processor.py
+# src/nasnet/data_processing/datasets/string_processor.py
 from typing import Dict
 
 import pandas as pd
@@ -12,17 +13,19 @@ from .base_processor import BaseProcessor
 
 class StringProcessor(BaseProcessor):
     """
-    【V3 - 架构纯净版】
+    【V3 - 最终纯净架构版】
     专门处理 STRING DB 原始数据的处理器。
-    严格遵循 BaseProcessor 的流水线职责划分。
+    它的职责被纯化为：
+    1. 从原始 .gz 文件加载 links 和 aliases 数据。
+    2. 将 STRING ID 映射为 UniProt ID。
+    3. 将数据“翻译”成内部的规范化交互格式。
     """
 
     def __init__(self, config: AppConfig):
         super().__init__(config)
         self.external_schema = self.config.data_structure.schema.external.string
-
-        # 【修改1】在初始化时，就准备好作为内部状态的ID映射字典
-        self._id_map = self._build_id_map()
+        # 在初始化时，就加载并准备好作为内部状态的ID映射字典
+        self._id_map: Dict[str, str] = self._build_id_map()
 
     def _build_id_map(self) -> Dict[str, str]:
         """一个私有辅助方法，用于构建并返回 STRING ID -> UniProt ID 的映射字典。"""
@@ -43,16 +46,19 @@ class StringProcessor(BaseProcessor):
         alias_col = self.external_schema.alias
         source_col = self.external_schema.source
 
+        # 使用 .rename() 清理带'#'的列名，以便后续方便地使用属性访问
         clean_string_id_col = string_id_col.lstrip("#")
         aliases_df.rename(columns={string_id_col: clean_string_id_col}, inplace=True)
 
+        # 过滤出包含 UniProt Accession (AC) 的来源
         uniprot_aliases = aliases_df[
             aliases_df[source_col].str.contains("UniProt_AC")
         ].copy()
+
+        # 去重并创建映射字典
         uniprot_aliases.drop_duplicates(
             subset=[clean_string_id_col, alias_col], inplace=True
         )
-
         id_map_df = uniprot_aliases.drop_duplicates(
             subset=[clean_string_id_col], keep="first"
         )
@@ -67,13 +73,23 @@ class StringProcessor(BaseProcessor):
 
     def _load_raw_data(self) -> pd.DataFrame:
         """
-        【修改2】步骤1: 只加载主要的'links'数据，并返回一个DataFrame。
+        步骤1: 只加载主要的'links'数据，并返回一个DataFrame。
         """
         links_path = get_path(self.config, "raw.protein_links")
         if not links_path.exists():
             raise FileNotFoundError(f"STRING links file not found at '{links_path}'")
 
-        return pd.read_csv(links_path, sep="\t", compression="gzip")
+        # 使用 usecols 提前筛选所需列
+        protein1_col = self.external_schema.protein1
+        protein2_col = self.external_schema.protein2
+        score_col = self.external_schema.combined_score
+
+        return pd.read_csv(
+            links_path,
+            sep="\t",
+            compression="gzip",
+            usecols=[protein1_col, protein2_col, score_col],
+        )
 
     def _extract_relations(self, raw_data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -85,7 +101,7 @@ class StringProcessor(BaseProcessor):
         protein1_col = self.external_schema.protein1
         protein2_col = self.external_schema.protein2
 
-        # 使用 .map() 进行高效映射，并将结果存入新列
+        # 使用 .map() 进行高效映射
         links_df["protein1_uniprot"] = links_df[protein1_col].map(self._id_map)
         links_df["protein2_uniprot"] = links_df[protein2_col].map(self._id_map)
 
@@ -94,27 +110,35 @@ class StringProcessor(BaseProcessor):
 
     def _standardize_ids(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        【修改3】步骤3: 严格履行职责，只进行ID列的重命名。
+        步骤3: 将DataFrame重塑为“规范化交互格式”。
         """
-        # 将上一步创建的临时列名，重命名为我们内部的标准列名
-        return df.rename(
-            columns={
-                "protein1_uniprot": "protein1_id",
-                "protein2_uniprot": "protein2_id",
-            }
+        if self.verbose > 0:
+            print("  - Reshaping DataFrame to canonical interaction format...")
+
+        final_df = pd.DataFrame()
+        entity_names = self.config.knowledge_graph.entity_types
+
+        # 核心规范化列
+        final_df[self.schema.source_id] = df["protein1_uniprot"]
+        final_df[self.schema.source_type] = entity_names.protein
+        final_df[self.schema.target_id] = df["protein2_uniprot"]
+        final_df[self.schema.target_type] = entity_names.protein
+        final_df[self.schema.relation_type] = (
+            self.config.knowledge_graph.relation_types.ppi
         )
+
+        # STRING数据不包含结构信息，所以我们不附带 structure_* 列
+
+        return final_df
 
     def _filter_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        步骤4: 添加 'relation_type' 列。
+        步骤4: 无需进行任何过滤。
+        - 置信度过滤已在下载时完成。
+        - 通用校验（如ID白名单）将在下游的 EntityValidator 中统一进行。
         """
         if self.verbose > 0:
-            print("  - Skipping confidence score filtering (pre-filtered at download).")
-
-        if not df.empty:
-            ppi_relation_name = self.config.knowledge_graph.relation_types.ppi
-            relation_type_col = self.schema.relation_type
-            df[relation_type_col] = ppi_relation_name
+            print("  - No domain-specific filters to apply for StringProcessor.")
 
         return df
 
