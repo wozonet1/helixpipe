@@ -6,7 +6,10 @@ from typing import Callable, Generator, Tuple, Union
 
 import research_template as rt
 from omegaconf import DictConfig, ListConfig, OmegaConf
-from omegaconf.errors import ConfigKeyError, InterpolationResolutionError
+from omegaconf.errors import (
+    ConfigKeyError,
+    InterpolationResolutionError,
+)
 from research_template import check_paths_exist as generic_check_paths_exist
 from research_template.errors import ConfigPathError
 
@@ -143,21 +146,23 @@ def get_path(
     try:
         resolved_path_str = OmegaConf.select(cfg, full_key)
 
-    except (ConfigKeyError, InterpolationResolutionError) as e:
-        # 统一的、用户友好的错误包装 (保持不变)
-        missing_key_guess = str(e).splitlines()[0]
-        if isinstance(e, InterpolationResolutionError) and e.__cause__:
-            missing_key_guess = f"{type(e.__cause__).__name__}: {e.__cause__}"
+    except InterpolationResolutionError as e:
+        # 【核心修改】捕获插值错误，并传递更丰富的上下文
         raise ConfigPathError(
-            message=f"Error resolving path key '{full_key}'.",
-            missing_key=missing_key_guess,
+            message="Failed to resolve path due to an interpolation error.",
             file_key=full_key,
+            failed_interpolation_key=str(e).split("'")[1]
+            if "'" in str(e)
+            else "unknown",  # 尝试提取出错的键
+            original_exception=e,
         ) from e
-
-    if not isinstance(resolved_path_str, str):
-        raise TypeError(
-            f"Resolved path for key '{full_key}' is not a string, but {type(resolved_path_str)}."
-        )
+    except ConfigKeyError as e:
+        # 【核心修改】捕获键错误
+        raise ConfigPathError(
+            message="A required configuration key was not found.",
+            file_key=full_key,
+            original_exception=e,
+        ) from e
 
     # --- 核心的、双模式逻辑 ---
 
