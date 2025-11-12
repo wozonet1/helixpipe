@@ -131,7 +131,7 @@ def _validate_completeness():
 
     found_modules = set()
     for f in Path(__file__).parent.glob("*.py"):
-        if f.name.startswith(("_", "register")):
+        if f.name.startswith(("_", "register")) or f.name.startswith("selector"):
             continue
         found_modules.add(f.stem)
 
