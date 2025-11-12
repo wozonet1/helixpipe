@@ -21,3 +21,7 @@ tests/fake*
 .ruff_cache/
 .pytest_cache/
 .vscode/
+sync_codes/
+test_temp*/
+analysis_outputs/
+todolist/
