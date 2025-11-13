@@ -4,11 +4,10 @@ from typing import TYPE_CHECKING, Any, Dict, List, Set, Tuple
 
 import pandas as pd
 
+from .selector_executor import SelectorExecutor
+
 if TYPE_CHECKING:
-    from helixpipe.configs import (
-        AppConfig,
-        InteractionSelectorConfig,
-    )
+    from helixpipe.configs import AppConfig, InteractionSelectorConfig
 
     from .id_mapper import IDMapper
 
@@ -302,37 +301,42 @@ class InteractionStore:
         self, selector: InteractionSelectorConfig, id_mapper: IDMapper
     ) -> InteractionStore:
         """
-        【不可变操作】
+        【V3 - Executor 委托版】
         根据一个复杂的交互选择器，返回一个新的、只包含匹配结果的InteractionStore。
+
+        此方法现在将所有复杂的匹配逻辑完全委托给 SelectorExecutor 服务。
         """
-        if self._df.empty or selector is None:
+        if self._df.empty:
+            if self._verbose > 0:
+                print("    - [Store.query] Store is empty, returning self.")
+            return self
+        if selector is None:
+            if self._verbose > 0:
+                print("    - [Store.query] Selector is None, returning self.")
             return self
 
-        # 1. 初始掩码：假设所有交互都通过
-        final_mask = pd.Series(True, index=self._df.index)
+        # 1. 实例化执行器
+        #    我们在这里传入一个 verbose 参数，以便于未来需要时进行调试
+        executor = SelectorExecutor(id_mapper, verbose=self._verbose > 1)
 
-        # 2. 逐一应用选择器规则
+        # 2. 【核心变化】直接调用 executor 来获取最终的匹配掩码
+        #    executor 内部已经封装了所有逻辑（关系类型过滤、实体过滤、双向匹配）。
+        final_mask = executor.get_interaction_match_mask(
+            df=self._df,
+            selector=selector,
+            source_col=self._schema.source_id,
+            target_col=self._schema.target_id,
+            relation_col=self._schema.relation_type,
+        )
 
-        # a. 按关系类型过滤 (最快，先执行)
-        if selector.relation_types:
-            final_mask &= self._df[self._schema.relation_type].isin(
-                selector.relation_types
+        if self._verbose > 0:
+            print(
+                f"    - [Store.query] Executed selector, {final_mask.sum()} / {len(self._df)} interactions matched."
             )
 
-        # b. 按源/目标节点过滤 (如果DataFrame已经很小，可以提前筛选以加速)
-        if not final_mask.any():
-            return self._from_dataframe(self._df.iloc[0:0], self._config)
+        # 3. 使用最终掩码筛选 DataFrame，并创建新实例
+        filtered_df = self._df.loc[final_mask]
 
-        if selector.source_selector or selector.target_selector:
-            # 【核心变化】我们不创建 subset_df，而是直接将当前的 final_mask 传入
-            # _get_match_mask，让它只在需要的地方进行计算。
-            entity_match_mask = self._get_match_mask(
-                self._df, selector, id_mapper, initial_mask=final_mask
-            )
-            final_mask &= entity_match_mask
-
-        # 3. 使用最终掩码筛选DataFrame，并创建新实例
-        filtered_df = self._df[final_mask].copy()
         return self._from_dataframe(filtered_df, self._config)
 
     def __len__(self) -> int:

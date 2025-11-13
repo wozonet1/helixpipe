@@ -12,6 +12,8 @@ from .services import (
     GraphBuildContext,
     GraphDirector,
     IDMapper,
+    InteractionStore,
+    SelectorExecutor,
     StructureProvider,
     SupervisionFileManager,
     filter_molecules_by_properties,
@@ -22,6 +24,8 @@ from .services import (
 __all__ = [
     # 顶层服务
     IDMapper,
+    InteractionStore,
+    SelectorExecutor,
     DataSplitter,
     StructureProvider,
     GraphDirector,
