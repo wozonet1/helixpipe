@@ -1,316 +1,356 @@
-# src/helixpipe/data_processing/services/splitter.py
+import logging
+from typing import Iterator, Set, Tuple
 
-from collections import Counter
-from typing import TYPE_CHECKING, Iterator, List, Set, Tuple, Union
-
+import numpy as np
+import pandas as pd
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 
 from helixpipe.configs import AppConfig
-from helixpipe.configs.training import EntitySelectorConfig  # 确保导入
+from helixpipe.configs.training import (
+    EntitySelectorConfig,
+    InteractionSelectorConfig,
+)
 
-# 使用前向引用进行类型提示
-if TYPE_CHECKING:
-    from .id_mapper import IDMapper
+from .id_mapper import IDMapper
+from .interaction_store import InteractionStore
+from .selector_executor import SelectorExecutor
+
+logger = logging.getLogger(__name__)
 
 
 class DataSplitter:
     """
-    【V6 - 终极版: 评估范围感知的划分器】
-    它在划分前，会根据 evaluation_scope 配置预先分离出“可评估交互”和“背景知识”，
-    确保划分比例的精确性，并使职责更加清晰。
+    【V7 - "InteractionStore" 驱动版】
+    一个智能的、由策略驱动的数据分区引擎。它消费InteractionStore对象，
+    并为交叉验证的每个fold，产出划分好的InteractionStore子集。
     """
 
     def __init__(
         self,
         config: AppConfig,
-        positive_pairs: List[Tuple[int, int, str]],
+        store: "InteractionStore",
         id_mapper: "IDMapper",
+        executor: "SelectorExecutor",
         seed: int,
     ):
         """
         初始化DataSplitter，并执行核心的预处理步骤。
         """
-        print("--- [DataSplitter V6] Initializing with evaluation-scope awareness...")
+        logger.info(
+            "--- [DataSplitter V7] Initializing with InteractionStore and Executor..."
+        )
         self.config = config
+        self.store = store
         self.id_mapper = id_mapper
+        self.executor = executor
         self.seed = seed
+        self.rng = np.random.default_rng(seed)
 
         self.coldstart_cfg = config.training.coldstart
         self.num_folds = config.training.k_folds
-        pool_scope = self.coldstart_cfg.pool_scope
-        self.is_cold_start = (
-            False
-            if (
-                pool_scope.entity_types is None
-                and pool_scope.meta_types is None
-                and pool_scope.from_sources is None
+        self.is_cold_start = self.coldstart_cfg.mode == "cold"
+
+        # 只有在确定是冷启动模式下，才去初始化 scope
+        if self.is_cold_start:
+            self._initialize_cold_start_scopes()
+
+        self._evaluable_store, self._background_store = (
+            self._presplit_by_evaluation_scope()
+        )
+
+        if self.is_cold_start:
+            # 冷启动时，我们划分的是实体ID（权威ID）
+            self._items_to_split = sorted(
+                list(self.executor.select_entities(self.coldstart_cfg.pool_scope))
             )
-            else True
-        )
-        # 在 __init__ 中执行一次智能修正
-        self._initialize_scopes()
+        else:
+            # 热启动时，我们划分的是可评估的交互 DataFrame
+            self._items_to_split = self._evaluable_store.dataframe
 
-        # 【核心重构】预先分离“可评估交互”和“背景知识”
-        self._evaluable_pairs, self._background_pairs = (
-            self._presplit_by_evaluation_scope(positive_pairs)
-        )
-
-        # 后续所有划分，都只针对 evaluable_pairs
-        self._pairs_to_split = self._evaluable_pairs
-
-        # 初始化内部状态变量
-        self._entities_to_split: List[Union[int, Tuple]] = []
-        self._iterator: Union[Iterator, None] = None
-
-        print(
-            f"--> Splitter ready. Found {len(self._evaluable_pairs)} evaluable pairs and {len(self._background_pairs)} background knowledge pairs."
+        self._iterator: Iterator | None = None
+        logger.info(
+            f"Splitter ready. Found {len(self._evaluable_store)} evaluable pairs and {len(self._background_store)} background pairs."
         )
 
-    def _initialize_scopes(self):
-        """检查并智能地修正 coldstart 配置中所有与 scope 相关的部分。"""
-        # --- 修正 pool_scope ---
+    def _initialize_cold_start_scopes(self):
+        """
+        (私有) 检查并智能地修正 coldstart 配置中的 `pool_scope` 和 `evaluation_scope`。
+
+        - 如果 pool_scope 未定义，默认为对“分子”元类型进行冷启动。
+        - 如果 evaluation_scope 未定义，默认为评估“主角DTI”（即源自主要数据集的 drug-protein 交互）。
+        """
+
+        # --- 1. 修正 pool_scope (决定冷启动划分的对象) ---
         pool_scope = self.coldstart_cfg.pool_scope
-        is_pool_scope_default = (
-            pool_scope.entity_types is None
-            and pool_scope.meta_types is None
-            and pool_scope.from_sources is None
+
+        # 检查 pool_scope 是否为“空”的默认配置
+        is_pool_scope_default = not (
+            pool_scope.entity_types or pool_scope.meta_types or pool_scope.from_sources
         )
-        if is_pool_scope_default:
-            # 默认进行分子冷启动
-            if self.config.runtime.verbose > 0:
-                print(
-                    "  - [DataSplitter] `pool_scope` is default. Auto-configuring to 'molecule' metatype cold-start."
-                )
+
+        if is_pool_scope_default:  # 只有在交叉验证时才应用默认冷启动
+            logger.info(
+                "  - [DataSplitter] `pool_scope` is default. Auto-configuring for 'molecule' metatype cold-start."
+            )
+            # 直接修改传入的 config 对象
             self.coldstart_cfg.pool_scope.meta_types = ["molecule"]
-            self.is_cold_start = True  # 更新状态
 
-        # --- 修正 evaluation_scope ---
+        # --- 2. 修正 evaluation_scope (决定最终评估的交互) ---
         if self.coldstart_cfg.evaluation_scope is None:
-            primary_dataset = self.config.data_structure.primary_dataset
-            if self.config.runtime.verbose > 0:
-                print(
-                    f"  - [DataSplitter] `evaluation_scope` is default. Auto-configuring to 'protagonist DTI' from primary dataset '{primary_dataset}'."
+            # a. 从配置中获取主数据集的名称
+            try:
+                primary_dataset = self.config.data_structure.primary_dataset
+            except Exception:
+                # 如果找不到主数据集名称，无法设定默认值，这是一个错误
+                raise ValueError(
+                    "`data_structure.primary_dataset` must be defined to set a default evaluation_scope."
                 )
 
+            logger.info(
+                f"  - [DataSplitter] `evaluation_scope` is not defined. "
+                f"Auto-configuring to evaluate 'protagonist DTI' from primary dataset '{primary_dataset}'."
+            )
+
+            # b. 创建默认的选择器
+            # 默认源: 是 'molecule' 元类型，并且必须来自主数据集
             source_selector = EntitySelectorConfig(
                 meta_types=["molecule"], from_sources=[primary_dataset]
             )
+            # 默认目标: 是 'protein' 元类型，并且也必须来自主数据集
             target_selector = EntitySelectorConfig(
                 meta_types=["protein"], from_sources=[primary_dataset]
             )
-            relation_types = ["interaction"]
-            self.coldstart_cfg.evaluation_scope = (
-                source_selector,
-                target_selector,
-                relation_types,
+
+            # c. 组合成 InteractionSelectorConfig 并赋值
+            self.coldstart_cfg.evaluation_scope = InteractionSelectorConfig(
+                source_selector=source_selector,
+                target_selector=target_selector,
+                # 默认情况下，我们不按关系类型进行限制
+                relation_types=None,
             )
 
-    # FIXME: 使用interaction_store 筛选
     def _presplit_by_evaluation_scope(
-        self, all_pairs: List[Tuple[int, int, str]]
-    ) -> Tuple[List, List]:
-        """
-        【核心修正】使用 IDMapper 的批量查询API来高效地划分。
-        """
-        evaluation_scope = self.coldstart_cfg.evaluation_scope
-
-        if self.config.runtime.verbose > 0:
-            print(
-                "  - Pre-splitting pairs into 'evaluable' and 'background' sets (efficiently)..."
-            )
-
-        evaluable, background = [], []
-        source_selector, target_selector = evaluation_scope
-
-        # 1. 一次性获取所有满足条件的源实体和目标实体的ID集合
-        source_pool = set(self.id_mapper.get_ids_by_selector(source_selector))
-        target_pool = set(self.id_mapper.get_ids_by_selector(target_selector))
-
-        # 2. 遍历交互，使用高效的 'in' 操作进行判断
-        for pair in all_pairs:
-            u, v, _ = pair
-
-            # 检查 (u, v) 是否符合 (source, target) 或 (target, source) 的规则
-            u_in_source = u in source_pool
-            v_in_target = v in target_pool
-            u_in_target = u in target_pool
-            v_in_source = v in source_pool
-
-            if (u_in_source and v_in_target) or (u_in_target and v_in_source):
-                evaluable.append(pair)
-            else:
-                background.append(pair)
-
-        return evaluable, background
+        self,
+    ) -> Tuple["InteractionStore", "InteractionStore"]:
+        """使用 store.query() 和 store.difference() 高效分流。"""
+        logger.info("Pre-splitting pairs into 'evaluable' and 'background' sets...")
+        evaluable_store = self.store.query(
+            self.coldstart_cfg.evaluation_scope, self.id_mapper
+        )
+        background_store = self.store.difference(evaluable_store)
+        return evaluable_store, background_store
 
     def _prepare_iterator(self):
         """根据 self.is_cold_start 的状态，初始化正确的sklearn迭代器。"""
-        if self.num_folds <= 1:
-            self._iterator = iter([None])
+        if self.num_folds <= 1 or len(self._items_to_split) == 0:
+            self._iterator = iter([None])  # 单次运行或没有数据可分
             return
 
         if self.is_cold_start:
-            entity_pool_ids = self.id_mapper.get_ids_by_selector(
-                self.coldstart_cfg.pool_scope
-            )
-            self._entities_to_split = sorted(entity_pool_ids)
+            # 冷启动：在实体列表上进行KFold
             kf = KFold(n_splits=self.num_folds, shuffle=True, random_state=self.seed)
-            self._iterator = iter(kf.split(self._entities_to_split))
-        else:  # 热启动
-            self._entities_to_split = self._pairs_to_split
-            if not self._entities_to_split:
-                self._iterator = iter([])  # 如果没有可评估的对，则迭代器为空
-                return
-            dummy_y = [p[1] for p in self._entities_to_split]
-            class_counts = Counter(dummy_y)
-            if len(class_counts) <= 1 or min(class_counts.values()) < self.num_folds:
+            self._iterator = iter(kf.split(self._items_to_split))
+        else:  # 热启动：在交互DataFrame上进行分层KFold
+            df = self._items_to_split
+            # 使用 target 节点的权威ID作为分层依据
+            y_stratify = df[self.store._schema.target_id]
+            class_counts = y_stratify.value_counts()
+
+            # 如果某个类别的样本数少于fold数，无法进行分层，回退到普通KFold
+            if min(class_counts) < self.num_folds:
+                logger.warning(
+                    "Cannot use StratifiedKFold due to small class sizes. Falling back to KFold."
+                )
                 kf = KFold(
                     n_splits=self.num_folds, shuffle=True, random_state=self.seed
                 )
-                self._iterator = iter(kf.split(self._entities_to_split))
+                self._iterator = iter(kf.split(df))
             else:
                 skf = StratifiedKFold(
                     n_splits=self.num_folds, shuffle=True, random_state=self.seed
                 )
-                self._iterator = iter(skf.split(self._entities_to_split, dummy_y))
+                self._iterator = iter(skf.split(df, y_stratify))
 
     def _split_data(
-        self, split_result: Union[Tuple[List[int], List[int]], None]
-    ) -> Tuple[List, List, Set, Set]:
+        self, split_result
+    ) -> Tuple[InteractionStore, InteractionStore, InteractionStore, Set[int]]:
         """
-        【V8.1 - 最终修正版】
-        执行实际的数据切分逻辑，并根据 'strictness' 精确地处理背景知识。
+        【V2 - 极限调试版】
+        执行实际的数据切分，操作InteractionStore对象，并打印详细的日志。
         """
-        train_eval_pairs: List[Tuple[int, int, str]]
-        test_eval_pairs: List[Tuple[int, int, str]]
-        cold_start_entity_ids: Set[int] = set()
+        logger.debug("--- [_split_data] START ---")
+
+        train_eval_store: InteractionStore
+        test_store: InteractionStore
+        cold_start_entity_ids_auth: Set = set()
+
+        evaluable_df = self._evaluable_store.dataframe
+        logger.debug(f"Evaluable store contains {len(evaluable_df)} interactions.")
 
         if self.is_cold_start:
             # --- 冷启动逻辑 ---
-            if self.num_folds > 1:  # K-Fold
-                if not self._entities_to_split:
-                    return self._pairs_to_split, [], set(), set()
-                train_indices, test_indices = split_result
-                test_entity_ids = {self._entities_to_split[i] for i in test_indices}
-            else:  # Single Split
-                entity_list = sorted(
-                    list(
-                        set(
-                            self.id_mapper.get_ids_by_selector(
-                                self.coldstart_cfg.pool_scope
-                            )
-                        )
+            logger.debug("Mode: Cold-Start")
+            if self._items_to_split:
+                if self.num_folds > 1 and split_result:
+                    _, test_indices = split_result
+                    test_entity_ids = {self._items_to_split[i] for i in test_indices}
+                elif self.num_folds <= 1:
+                    # 单次运行
+                    train_entities, test_entities = train_test_split(
+                        self._items_to_split,
+                        test_size=self.coldstart_cfg.test_fraction,
+                        random_state=self.seed,
+                        shuffle=True,
                     )
-                )
-                if not entity_list or not self._pairs_to_split:
-                    return self._pairs_to_split, [], set(), set()
-                _, test_entities = train_test_split(
-                    entity_list,
-                    test_size=self.coldstart_cfg.test_fraction,
-                    random_state=self.seed,
-                )
-                test_entity_ids = set(test_entities)
+                    test_entity_ids = set(test_entities)
+                else:  # 交叉验证但 split_result 为 None
+                    test_entity_ids = set()
+            else:  # 没有可划分的实体
+                test_entity_ids = set()
 
-            cold_start_entity_ids = test_entity_ids
-            train_eval_pairs, test_eval_pairs = [], []
-            logic_id_to_type = self.id_mapper.logic_id_to_type_map
-            # 动态推断划分的元类型
-            target_metatype = (
-                self.coldstart_cfg.pool_scope.meta_types[0]
-                if self.coldstart_cfg.pool_scope.meta_types
-                else "molecule"
-            )
-            is_target_metatype = (
-                self.id_mapper.is_molecule
-                if target_metatype == "molecule"
-                else self.id_mapper.is_protein
+            cold_start_entity_ids_auth = test_entity_ids
+            logger.debug(
+                f"Identified {len(cold_start_entity_ids_auth)} cold-start auth IDs: {cold_start_entity_ids_auth if len(cold_start_entity_ids_auth) < 10 else '...'}"
             )
 
-            for pair in self._pairs_to_split:
-                u, v, _ = pair
-                is_involved = (
-                    is_target_metatype(logic_id_to_type.get(u, ""))
-                    and u in test_entity_ids
-                ) or (
-                    is_target_metatype(logic_id_to_type.get(v, ""))
-                    and v in test_entity_ids
+            if not evaluable_df.empty:
+                s_col, t_col = (
+                    self._evaluable_store._schema.source_id,
+                    self._evaluable_store._schema.target_id,
                 )
-                if is_involved:
-                    test_eval_pairs.append(pair)
-                else:
-                    train_eval_pairs.append(pair)
+                is_in_test = evaluable_df[s_col].isin(test_entity_ids) | evaluable_df[
+                    t_col
+                ].isin(test_entity_ids)
+
+                test_df = evaluable_df[is_in_test]
+                train_eval_df = evaluable_df[~is_in_test]
+            else:
+                test_df = pd.DataFrame()
+                train_eval_df = pd.DataFrame()
+
+            test_store = InteractionStore._from_dataframe(test_df, self.config)
+            train_eval_store = InteractionStore._from_dataframe(
+                train_eval_df, self.config
+            )
         else:
             # --- 热启动逻辑 ---
-            if not self._pairs_to_split:
-                return [], [], set()
-            if self.num_folds > 1:
-                train_indices, test_indices = split_result
-                train_eval_pairs = [self._entities_to_split[i] for i in train_indices]
-                test_eval_pairs = [self._entities_to_split[i] for i in test_indices]
-            else:
-                labels = [p[1] for p in self._pairs_to_split]
-                try:
-                    train_eval_pairs, test_eval_pairs = train_test_split(
-                        self._pairs_to_split,
-                        test_size=self.coldstart_cfg.test_fraction,
-                        random_state=self.seed,
-                        stratify=labels,
-                    )
-                except ValueError:
-                    train_eval_pairs, test_eval_pairs = train_test_split(
-                        self._pairs_to_split,
-                        test_size=self.coldstart_cfg.test_fraction,
-                        random_state=self.seed,
-                        stratify=None,
-                    )
-
-        # 1. 定义最终的测试集 (保持不变)
-        final_test_pairs = test_eval_pairs
-
-        # 2. 定义最终的训练【标签】(监督信号)
-        #    它只包含从可评估集中划分出来的训练部分。
-        final_train_labels = train_eval_pairs
-
-        # 3. 定义最终的训练【图结构边】
-        #    它包含了训练标签，并根据strictness有条件地包含背景知识。
-        final_train_graph_edges = list(train_eval_pairs)  # 显式拷贝
-
-        if not self.is_cold_start:
-            # 热启动时，所有背景知识都可以安全加入
-            final_train_graph_edges.extend(self._background_pairs)
-        else:
-            # 冷启动时，需要根据 strictness 对背景知识进行筛选
-            strictness_mode = self.coldstart_cfg.strictness
-            if self.config.runtime.verbose > 0:
-                print(
-                    f"  - Handling {len(self._background_pairs)} background pairs with strictness='{strictness_mode}'..."
+            logger.debug("Mode: Hot-Start")
+            if self._items_to_split.empty:
+                logger.debug("Items to split is empty. Returning all empty stores.")
+                return (
+                    self._from_empty(),
+                    self._from_empty(),
+                    self._from_empty(),
+                    set(),
                 )
 
-            leaky_background_pairs_count = 0
-            safe_background_pairs = []
+            if self.num_folds > 1 and split_result:
+                train_indices, test_indices = split_result
+                train_eval_df = self._items_to_split.iloc[train_indices]
+                test_df = self._items_to_split.iloc[test_indices]
+            else:  # 单次运行
+                df = self._items_to_split
+                y_stratify = df[self.store._schema.target_id]
+                try:
+                    train_eval_df, test_df = train_test_split(
+                        df,
+                        test_size=self.coldstart_cfg.test_fraction,
+                        random_state=self.seed,
+                        stratify=y_stratify,
+                        shuffle=True,
+                    )
+                except ValueError:
+                    logger.warning(
+                        "Stratification failed in train_test_split. Falling back to random split."
+                    )
+                    train_eval_df, test_df = train_test_split(
+                        df,
+                        test_size=self.coldstart_cfg.test_fraction,
+                        random_state=self.seed,
+                        shuffle=True,
+                    )
 
-            for pair in self._background_pairs:
-                u, v, _ = pair
-                is_leaky = (u in cold_start_entity_ids) or (v in cold_start_entity_ids)
+            test_store = InteractionStore._from_dataframe(test_df, self.config)
+            train_eval_store = InteractionStore._from_dataframe(
+                train_eval_df, self.config
+            )
 
-                if not is_leaky:
-                    safe_background_pairs.append(pair)
-                elif strictness_mode == "informed":
-                    # 在 informed 模式下，泄露的边也被加入图结构
-                    safe_background_pairs.append(pair)
-                    leaky_background_pairs_count += 1
-                else:  # strict mode
-                    leaky_background_pairs_count += 1
+        logger.debug(
+            f"Split results: train_eval_store size={len(train_eval_store)}, test_store size={len(test_store)}"
+        )
 
-            final_train_graph_edges.extend(safe_background_pairs)
-            # ... (日志打印逻辑可以相应调整)
+        # --- 组装最终产物 ---
+        final_test_store = test_store
+        final_train_labels_store = train_eval_store
 
-        # 【修改2】返回四个值
+        train_graph_stores_to_concat = [final_train_labels_store]
+        logger.debug(
+            f"Initially, train_graph_stores_to_concat has 1 store (the train_labels_store with {len(final_train_labels_store)} interactions)."
+        )
+
+        if len(self._background_store) > 0:
+            logger.debug(
+                f"Found {len(self._background_store)} background interactions to process."
+            )
+
+            if not self.is_cold_start:
+                logger.debug(
+                    "Hot-start mode: Adding all background interactions to train graph."
+                )
+                train_graph_stores_to_concat.append(self._background_store)
+
+            elif self.coldstart_cfg.strictness == "informed":
+                logger.debug(
+                    "Cold-start 'informed' mode: Adding all background interactions to train graph."
+                )
+                train_graph_stores_to_concat.append(self._background_store)
+
+            elif self.coldstart_cfg.strictness == "strict":
+                logger.debug(
+                    "Cold-start 'strict' mode: Filtering background interactions..."
+                )
+                bg_df = self._background_store.dataframe
+                s_col, t_col = (
+                    self._background_store._schema.source_id,
+                    self._background_store._schema.target_id,
+                )
+
+                is_leaky = bg_df[s_col].isin(cold_start_entity_ids_auth) | bg_df[
+                    t_col
+                ].isin(cold_start_entity_ids_auth)
+                safe_bg_df = bg_df[~is_leaky]
+
+                logger.debug(
+                    f"Found {is_leaky.sum()} leaky interactions. Keeping {len(safe_bg_df)} safe background interactions."
+                )
+
+                if not safe_bg_df.empty:
+                    safe_bg_store = InteractionStore._from_dataframe(
+                        safe_bg_df, self.config
+                    )
+                    train_graph_stores_to_concat.append(safe_bg_store)
+        else:
+            logger.debug("No background interactions to process.")
+
+        final_train_graph_store = InteractionStore.concat(
+            train_graph_stores_to_concat, self.config
+        )
+        logger.debug(
+            f"Final train_graph_store size after concatenation: {len(final_train_graph_store)}"
+        )
+
+        cold_start_entity_ids_logic = {
+            self.id_mapper.auth_id_to_logic_id_map[auth_id]
+            for auth_id in cold_start_entity_ids_auth
+            if auth_id in self.id_mapper.auth_id_to_logic_id_map
+        }
+
+        logger.debug("--- [_split_data] END ---")
         return (
-            final_train_graph_edges,
-            final_train_labels,
-            final_test_pairs,
-            cold_start_entity_ids,
+            final_train_graph_store,
+            final_train_labels_store,
+            final_test_store,
+            cold_start_entity_ids_logic,
         )
 
     def __iter__(self) -> "DataSplitter":
@@ -321,15 +361,8 @@ class DataSplitter:
     def __next__(
         self,
     ) -> Tuple[
-        int,
-        List[Tuple[int, int, str]],
-        List[Tuple[int, int, str]],
-        List[Tuple[int, int, str]],
-        Set[int],
+        int, "InteractionStore", "InteractionStore", "InteractionStore", Set[int]
     ]:
-        """
-        【修改】返回一个包含分离的训练图边和训练标签的元组。
-        """
         if self.fold_idx > self.num_folds:
             raise StopIteration
 
@@ -338,30 +371,30 @@ class DataSplitter:
         except StopIteration:
             raise StopIteration
 
-        # 【修改3】解包四个返回值
         (
-            final_train_graph_edges,
-            final_train_labels,
-            final_test_pairs,
-            cold_start_entity_ids,
+            final_train_graph_store,
+            final_train_labels_store,
+            final_test_store,
+            cold_start_entity_ids_logic,
         ) = self._split_data(split_result)
 
-        if self.config.runtime.verbose > 0:
-            # 更新日志，使其反映新的数据结构
-            print(
-                f"  - [Splitter Fold {self.fold_idx}] "
-                f"Train Graph Edges: {len(final_train_graph_edges)} | "
-                f"Train Labels: {len(final_train_labels)} | "
-                f"Test Labels: {len(final_test_pairs)}"
-            )
+        logger.info(
+            f"[Splitter Fold {self.fold_idx}] "
+            f"Train Graph: {len(final_train_graph_store)} edges | "
+            f"Train Labels: {len(final_train_labels_store)} | "
+            f"Test Set: {len(final_test_store)}"
+        )
 
-        # 【修改4】返回五个值的元组
         result = (
             self.fold_idx,
-            final_train_graph_edges,
-            final_train_labels,
-            final_test_pairs,
-            cold_start_entity_ids,
+            final_train_graph_store,
+            final_train_labels_store,
+            final_test_store,
+            cold_start_entity_ids_logic,
         )
         self.fold_idx += 1
         return result
+
+    def _from_empty(self) -> "InteractionStore":
+        """(私有) 辅助函数，创建一个空的InteractionStore。"""
+        return InteractionStore._from_dataframe(pd.DataFrame(), self.config)

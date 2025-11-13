@@ -10,6 +10,8 @@ from .selectors import EntitySelectorConfig, InteractionSelectorConfig
 class ColdstartConfig:
     """【V2 - 策略定义版】"""
 
+    # warm or cold
+    mode: str = "cold"
     # 注意对于实体来说,这是实体的比例,而非边的比例
     test_fraction: float = 0.2
 
