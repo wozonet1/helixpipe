@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict
+import logging
+from typing import TYPE_CHECKING, Dict, Set
 
 import pandas as pd
 
@@ -10,6 +11,8 @@ if TYPE_CHECKING:
     from helixpipe.configs import EntitySelectorConfig, InteractionSelectorConfig
 
     from .id_mapper import IDMapper
+
+logger = logging.getLogger(__name__)
 
 
 class SelectorExecutor:
@@ -112,3 +115,40 @@ class SelectorExecutor:
         ):
             return False
         return True
+
+    def select_entities(self, selector: EntitySelectorConfig | None) -> Set:
+        """
+        根据实体选择器，从 IDMapper 中筛选出匹配的【权威ID】集合。
+        """
+        if self.verbose:
+            logger.debug(
+                f"--- [Executor] Starting select_entities with selector: {selector}"
+            )
+
+        # 1. 获取所有最终化的实体ID作为全集
+        all_final_auth_ids = self.id_mapper.get_all_final_ids()
+        if not all_final_auth_ids:
+            return set()
+
+        # 2. 如果选择器为空，直接返回全集
+        if selector is None or not any(selector.__dict__.values()):
+            if self.verbose:
+                logger.debug(
+                    f"Selector is empty, returning all {len(all_final_auth_ids)} entities."
+                )
+            return set(all_final_auth_ids)
+
+        # 3. 遍历全集，应用筛选逻辑
+        matching_ids = set()
+        for auth_id in all_final_auth_ids:
+            # a. 获取元数据
+            meta = self.id_mapper.get_meta_by_auth_id(auth_id)
+
+            # b. 调用我们已经测试过的、可靠的匹配函数
+            if self._entity_meta_matches_selector(meta, selector):
+                matching_ids.add(auth_id)
+
+        if self.verbose:
+            logger.debug(f"Found {len(matching_ids)} matching entities.")
+
+        return matching_ids

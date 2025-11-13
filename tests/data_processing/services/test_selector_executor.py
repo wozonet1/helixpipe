@@ -25,6 +25,9 @@ class MockIDMapper:
     def get_meta_by_auth_id(self, auth_id):
         return self.meta_data.get(auth_id)
 
+    def get_all_final_ids(self):
+        return list(self.meta_data.keys())
+
     def is_molecule(self, entity_type):
         return entity_type in ["drug", "ligand"]
 
@@ -142,6 +145,47 @@ class TestSelectorExecutor(unittest.TestCase):
         print(
             "  ✅ Passed (b): Correctly handles None selector in bidirectional match."
         )
+
+    def test_select_entities(self):
+        """测试点: SelectorExecutor.select_entities 方法。"""
+        print("--- Running Test: select_entities ---")
+
+        # 场景a: 按 entity_types 筛选
+        selector_a = EntitySelectorConfig(entity_types=["drug", "ligand"])
+        result_a = self.executor.select_entities(selector_a)
+        # 预期: 101, 102, 201
+        self.assertSetEqual(result_a, {101, 102, 201})
+        print("  ✅ Passed (a): Correctly selects by entity_types.")
+
+        # 场景b: 按 meta_types 筛选
+        selector_b = EntitySelectorConfig(meta_types=["molecule"])
+        result_b = self.executor.select_entities(selector_b)
+        # 预期: 101, 102, 201 (drug 和 ligand 都属于 molecule)
+        self.assertSetEqual(result_b, {101, 102, 201})
+        print("  ✅ Passed (b): Correctly selects by meta_types.")
+
+        # 场景c: 按 from_sources 筛选
+        selector_c = EntitySelectorConfig(from_sources=["brenda", "stringdb"])
+        result_c = self.executor.select_entities(selector_c)
+        # 预期: 201 (来自brenda), P01 (来自stringdb), P02 (来自brenda)
+        self.assertSetEqual(result_c, {201, "P01", "P02"})
+        print("  ✅ Passed (c): Correctly selects by from_sources.")
+
+        # 场景d: 组合筛选
+        selector_d = EntitySelectorConfig(
+            entity_types=["protein"], from_sources=["bindingdb"]
+        )
+        result_d = self.executor.select_entities(selector_d)
+        # 预期: 只有 P01 既是 protein 又来自 bindingdb
+        self.assertSetEqual(result_d, {"P01"})
+        print("  ✅ Passed (d): Correctly handles combined selectors.")
+
+        # 场景e: 空选择器，应返回所有
+        selector_e = EntitySelectorConfig()
+        result_e = self.executor.select_entities(selector_e)
+        # 预期: 所有实体 (包括 999，因为严格模式只在有要求时才过滤)
+        self.assertSetEqual(result_e, set(self.mock_id_mapper.get_all_final_ids()))
+        print("  ✅ Passed (e): Correctly returns all entities for an empty selector.")
 
 
 if __name__ == "__main__":
