@@ -4,8 +4,8 @@ import hydra
 from omegaconf import OmegaConf
 
 # 导入我们的注册函数
-from nasnet.configs.register_schemas import register_all_schemas
-from nasnet.typing import AppConfig
+from helixpipe.configs.register_schemas import register_all_schemas
+from helixpipe.typing import AppConfig
 
 # 在所有Hydra操作之前，执行注册
 try:

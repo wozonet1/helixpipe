@@ -1,108 +1,175 @@
+# tests/data_processing/services/test_id_mapper.py
+
+import unittest
+
 import pandas as pd
-from hydra import compose, initialize
+from omegaconf import OmegaConf
 
-# 导入我们要测试的类
-from nasnet.data_processing import IDMapper
+# 导入我们需要测试的类和相关的dataclass
+from helixpipe.data_processing.services.id_mapper import IDMapper
 
-# --- 准备测试数据 ---
-# 我们可以创建一些小型的、人造的DataFrame来模拟真实数据
-# 覆盖各种边缘情况
-MOCK_DF_1 = pd.DataFrame(
+# --- 模拟 (Mock) 配置 ---
+MOCK_CONFIG = OmegaConf.create(
     {
-        "PubChem_CID": [101, 102, 103],
-        "UniProt_ID": ["P1", "P2", "P1"],
-        "SMILES": ["C", "CC", "CCC"],
-        "Sequence": ["MA", "MV", "MAA"],
-        "Label": [1, 1, 1],
+        "runtime": {"verbose": 2},
+        "knowledge_graph": {
+            "entity_meta": {
+                "drug": {"metatype": "molecule", "priority": 0},
+                "ligand": {"metatype": "molecule", "priority": 1},
+                "protein": {"metatype": "protein", "priority": 10},
+                "gene": {"metatype": "protein", "priority": 11},
+            }
+        },
+        "data_structure": {
+            "schema": {
+                "internal": {
+                    "canonical_interaction": {
+                        "source_id": "source_id",
+                        "source_type": "source_type",
+                        "target_id": "target_id",
+                        "target_type": "target_type",
+                    }
+                }
+            }
+        },
     }
 )
 
-MOCK_DF_2 = pd.DataFrame(
-    {
-        "PubChem_CID": [102, 104],  # 包含一个重复的CID (102)
-        "UniProt_ID": ["P3", "P2"],  # 包含一个重复的PID (P2)
-        "SMILES": ["CCO", "CN"],
-        "Sequence": ["MS", "MVC"],
-        "Label": [1, 1],
-    }
-)
 
-# --- 开始编写测试函数 ---
+class TestIDMapperV5(unittest.TestCase):
+    def test_initialization_and_metadata_aggregation(self):
+        print("\n--- Running Test: V5 Initialization and Metadata Aggregation ---")
+        processor_outputs = {
+            "bindingdb": pd.DataFrame(
+                {
+                    "source_id": [101],
+                    "source_type": ["drug"],
+                    "target_id": ["P01"],
+                    "target_type": ["protein"],
+                }
+            ),
+            "brenda": pd.DataFrame(
+                {
+                    "source_id": [101],
+                    "source_type": ["ligand"],
+                    "target_id": ["P02"],
+                    "target_type": ["protein"],
+                }
+            ),
+        }
+        mapper = IDMapper(processor_outputs, MOCK_CONFIG)
+        collected = mapper._collected_entities
 
+        # 唯一实体: 101, P01, P02
+        self.assertEqual(len(collected), 3)
+        self.assertSetEqual(collected[101]["types"], {"drug", "ligand"})
+        self.assertSetEqual(collected[101]["sources"], {"bindingdb", "brenda"})
+        self.assertSetEqual(collected["P01"]["sources"], {"bindingdb"})
+        print("  ✅ Passed.")
 
-def test_initialization():
-    """测试IDMapper是否能被正确初始化。"""
-    with initialize(config_path="../conf", job_name="test_id_mapper"):
-        cfg = compose(config_name="config")  # 加载默认配置
+    def test_finalization_with_type_merging_and_ids(self):
+        print("\n--- Running Test: V5 Finalization with Type Merging ---")
+        processor_outputs = {
+            "source1": pd.DataFrame(
+                {
+                    "source_id": [101, 102],
+                    "source_type": ["ligand", "ligand"],  # 【修复】102现在是ligand
+                    "target_id": ["P01", "P01"],
+                    "target_type": ["protein", "protein"],
+                }
+            ),
+            "source2": pd.DataFrame(
+                {
+                    "source_id": [101],
+                    "source_type": ["drug"],
+                    "target_id": ["P02"],
+                    "target_type": ["protein"],
+                }
+            ),
+        }
+        mapper = IDMapper(processor_outputs, MOCK_CONFIG)
+        mapper.finalize_with_valid_entities({101, 102, "P01", "P02"})
+        meta_101 = mapper.get_meta_by_auth_id(101)
+        self.assertEqual(meta_101["type"], "drug")
 
-    mapper = IDMapper([MOCK_DF_1], cfg)
+        self.assertEqual(mapper.get_num_entities("drug"), 1)
+        self.assertEqual(mapper.get_num_entities("protein"), 2)
+        self.assertEqual(mapper.num_total_entities, 4)
 
-    assert mapper.num_molecules == 3
-    assert mapper.num_proteins == 2
-    assert mapper.num_total_entities == 5
-    print("\n✅ test_initialization: PASSED")
+        self.assertEqual(mapper.auth_id_to_logic_id_map[101], 0)
+        self.assertIn(mapper.auth_id_to_logic_id_map["P01"], {1, 2})
+        print("  ✅ Passed.")
 
+    def test_finalization_raises_error_on_mixed_id_formats(self):
+        print("\n--- Running Test: V5 Finalization handles mixed ID types ---")
+        processor_outputs = {
+            "source1": pd.DataFrame(
+                {
+                    "source_id": ["P01", 102],
+                    "source_type": ["protein", "protein"],
+                    "target_id": ["P02", "P02"],
+                    "target_type": ["protein", "protein"],
+                }
+            ),
+        }
+        mapper = IDMapper(processor_outputs, MOCK_CONFIG)
+        with self.assertRaisesRegex(
+            ValueError, "ID format mismatch detected for entity type 'protein'"
+        ):
+            mapper.finalize_with_valid_entities({"P01", 102, "P02"})
+        print("  ✅ Passed.")
 
-def test_merging_logic():
-    """测试IDMapper是否能正确合并来自多个DataFrame的实体。"""
-    with initialize(config_path="../conf", job_name="test_id_mapper"):
-        cfg = compose(config_name="config")
+    def test_query_apis(self):
+        print("\n--- Running Test: V5 Query APIs ---")
+        mapper = self._create_complex_finalized_mapper()
 
-    mapper = IDMapper([MOCK_DF_1, MOCK_DF_2], cfg)
+        # a. get_entity_meta
+        meta_p01 = mapper.get_meta_by_logic_id(mapper.auth_id_to_logic_id_map["P01"])
+        self.assertEqual(meta_p01["type"], "protein")
+        self.assertSetEqual(meta_p01["sources"], {"bindingdb", "stringdb"})
 
-    # 预期结果：
-    # CIDs: {101, 102, 103, 104} -> 4个分子
-    # PIDs: {P1, P2, P3} -> 3个蛋白
-    assert mapper.num_molecules == 4
-    assert mapper.num_proteins == 3
-    assert mapper.num_total_entities == 7
-    print("✅ test_merging_logic: PASSED")
+        # b. get_ids_by_filter
+        stringdb_ids = mapper.get_ids_by_filter(
+            lambda meta: "stringdb" in meta["sources"]
+        )
+        # P01, P02, P03, P04 来自 stringdb -> 逻辑ID 1, 2, 3, 4
+        self.assertCountEqual(stringdb_ids, [1, 2, 3, 4])
 
+        drug_ids = mapper.get_ids_by_filter(lambda meta: meta["type"] == "drug")
+        self.assertCountEqual(drug_ids, [0])
+        print("  ✅ Passed.")
 
-def test_id_ranges_and_consistency():
-    """测试逻辑ID的分配是否正确（连续、分区）。"""
-    with initialize(config_path="../conf", job_name="test_id_mapper"):
-        cfg = compose(config_name="config")
-
-    mapper = IDMapper([MOCK_DF_1], cfg)
-
-    # 分子ID应该从0开始，连续
-    assert sorted(mapper.cid_to_id.values()) == [0, 1, 2]
-    # 蛋白质ID应该从分子的数量之后开始，连续
-    assert sorted(mapper.uniprot_to_id.values()) == [3, 4]
-
-    # 检查反向映射
-    assert len(mapper.id_to_cid) == 3
-    assert len(mapper.id_to_uniprot) == 2
-    print("✅ test_id_ranges_and_consistency: PASSED")
-
-
-def test_ordered_list_generation():
-    """测试 get_ordered_... 方法返回的列表顺序是否正确。"""
-    with initialize(config_path="../conf", job_name="test_id_mapper"):
-        cfg = compose(config_name="config")
-
-    mapper = IDMapper([MOCK_DF_1], cfg)
-
-    # 获取排序后的CID: [101, 102, 103]
-    sorted_cids = mapper._sorted_cids
-
-    # 获取SMILES列表
-    ordered_smiles = mapper.get_ordered_smiles()
-
-    # 验证列表中的SMILES顺序是否与排序后的CID顺序一致
-    expected_smiles = [
-        MOCK_DF_1[MOCK_DF_1.PubChem_CID == cid].SMILES.iloc[0] for cid in sorted_cids
-    ]
-    assert ordered_smiles == expected_smiles
-    print("✅ test_ordered_list_generation: PASSED")
+    def _create_complex_finalized_mapper(self) -> IDMapper:
+        processor_outputs = {
+            "bindingdb": pd.DataFrame(
+                {
+                    "source_id": [101, "P01"],
+                    "source_type": ["drug", "protein"],
+                    "target_id": ["P01", "P02"],
+                    "target_type": ["protein", "protein"],
+                }
+            ),
+            "stringdb": pd.DataFrame(
+                {
+                    "source_id": ["P01", "P02"],
+                    "source_type": ["protein", "protein"],
+                    "target_id": ["P03", "P04"],
+                    "target_type": ["protein", "protein"],
+                }
+            ),
+            "brenda": pd.DataFrame(
+                {
+                    "source_id": [101],
+                    "source_type": ["ligand"],
+                    "target_id": ["P02"],
+                    "target_type": ["protein"],
+                }
+            ),
+        }
+        mapper = IDMapper(processor_outputs, MOCK_CONFIG)
+        mapper.finalize_with_valid_entities({101, "P01", "P02", "P03", "P04"})
+        return mapper
 
 
 if __name__ == "__main__":
-    # 允许我们像普通脚本一样运行这个测试文件
-    print("--- Running IDMapper Tests ---")
-    test_initialization()
-    test_merging_logic()
-    test_id_ranges_and_consistency()
-    test_ordered_list_generation()
-    print("\n--- All tests completed. ---")
+    unittest.main(verbosity=2)

@@ -4,7 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 
-# --- 动态设置Python路径，以确保可以找到 nasnet 和 research_template ---
+# --- 动态设置Python路径，以确保可以找到 helixpipe 和 research_template ---
 # 这是一个独立的脚本，需要手动配置路径
 try:
     # 假设脚本在 tests/live_api/ 下，项目根目录向上三级
@@ -27,10 +27,10 @@ import hydra
 import research_template as rt
 from omegaconf import OmegaConf
 
-from nasnet.data_processing.services.id_validation_service import (
+from helixpipe.data_processing.services.id_validation_service import (
     get_human_uniprot_whitelist,
 )
-from nasnet.utils import register_hydra_resolvers
+from helixpipe.utils import register_hydra_resolvers
 
 
 class TestLiveUniProtAPI(unittest.TestCase):

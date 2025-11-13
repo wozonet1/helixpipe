@@ -1,132 +1,286 @@
-# 文件: tests/data_processing/services/test_interaction_store.py (全新)
-
+import logging
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import patch
 
 import pandas as pd
 from omegaconf import OmegaConf
 
-# 假设您的项目结构允许这样导入
-from nasnet.data_processing.services.id_mapper import IDMapper
-from nasnet.data_processing.services.interaction_store import InteractionStore
+# 导入重命名后的包
+from helixpipe.configs import (
+    AppConfig,
+    EntitySelectorConfig,
+    InteractionSelectorConfig,
+    register_all_schemas,
+)
+from helixpipe.configs.data_params import (
+    DownstreamSamplingConfig,
+    StratifiedSamplingConfig,
+    StratumConfig,
+    UniformSamplingConfig,
+)
+from helixpipe.data_processing.services import InteractionStore, SelectorExecutor
 
-# --- 准备测试数据和模拟对象 ---
+logging.basicConfig(level=logging.DEBUG, format="[%(levelname)s] %(message)s")
 
-# 模拟一个最小化的Config，只包含必要的schema
-MOCK_CONFIG = OmegaConf.create(
+
+class MockIDMapper:
+    """
+    一个为 SelectorExecutor 提供元数据支持的 Mock IDMapper。
+    它的实现必须足够精确，以支持真实的 Executor 运行。
+    """
+
+    def get_meta_by_auth_id(self, auth_id):
+        # 根据ID的范围和类型，返回模拟的元数据
+        if isinstance(auth_id, int):
+            if 0 <= auth_id < 10:
+                return {"type": "drug"}
+            if 10 <= auth_id < 15:
+                return {"type": "ligand"}
+        if isinstance(auth_id, str) and auth_id.startswith("P"):
+            return {"type": "protein"}
+        return None
+
+    def is_molecule(self, entity_type):
+        return entity_type in ["drug", "ligand"]
+
+    def is_protein(self, entity_type):
+        return entity_type == "protein"
+
+
+register_all_schemas()
+MOCK_CONFIG: AppConfig = OmegaConf.create(
     {
+        "runtime": {"verbose": 2},
+        "knowledge_graph": {
+            "entity_meta": {
+                "drug": {"metatype": "molecule", "priority": 0},
+                "ligand": {"metatype": "molecule", "priority": 1},
+                "protein": {"metatype": "protein", "priority": 10},
+            }
+        },
         "data_structure": {
             "schema": {
                 "internal": {
-                    "authoritative_dti": {
-                        "molecule_id": "PubChem_CID",
-                        "protein_id": "UniProt_ID",
-                        "label": "Label",
+                    "canonical_interaction": {
+                        "source_id": "s_id",
+                        "source_type": "s_type",
+                        "target_id": "t_id",
+                        "target_type": "t_type",
+                        "relation_type": "rel_type",
                     }
                 }
             }
-        }
-    }
-)
-
-# 模拟来自不同Processor的交互DataFrame
-DF1 = pd.DataFrame(
-    {"PubChem_CID": [101, 102], "UniProt_ID": ["P01", "P02"], "Label": [1, 1]}
-)
-
-DF2 = pd.DataFrame(
-    {
-        "PubChem_CID": [103, 104],  # 包含一个将被过滤掉的ID
-        "UniProt_ID": ["P01", "P03"],  # 包含一个将被过滤掉的ID
-        "Label": [1, 0],  # 包含一个负样本
+        },
     }
 )
 
 
 class TestInteractionStore(unittest.TestCase):
-    def setUp(self):
-        """为每个测试创建一个新的InteractionStore实例。"""
-        self.interaction_store = InteractionStore([DF1, DF2], MOCK_CONFIG)
+    def test_canonicalization_on_init(self):
+        """测试点1: 初始化时是否正确执行了交互规范化排序。"""
+        print("\n--- Running Test: Canonicalization on Initialization ---")
+        processor_outputs = {
+            "test": pd.DataFrame(
+                {
+                    "s_id": ["P02", "P03", 102],
+                    "s_type": ["protein", "protein", "drug"],
+                    "t_id": [101, "P01", "P01"],
+                    "t_type": ["drug", "protein", "protein"],
+                    "rel_type": ["needs_swap", "id_swap", "no_swap"],
+                }
+            )
+        }
 
-    def test_initialization(self):
-        """测试: InteractionStore是否能被正确初始化并合并数据。"""
-        print("\n--- Running Test: InteractionStore Initialization ---")
+        store = InteractionStore(processor_outputs, MOCK_CONFIG)
+        df = store.dataframe.set_index("rel_type")
 
-        # 初始应包含 DF1 和 DF2 的所有行 (2 + 2 = 4)
-        self.assertEqual(len(self.interaction_store._interactions_df), 4)
-        print("  ✅ Correctly initialized with 4 total interactions.")
+        # 验证优先级交换
+        row_swapped = df.loc["needs_swap"]
+        self.assertEqual(row_swapped.s_id, 101)
+        self.assertEqual(row_swapped.t_id, "P02")
+
+        # 验证同质ID交换
+        row_id_swapped = df.loc["id_swap"]
+        self.assertEqual(row_id_swapped.s_id, "P01")
+        self.assertEqual(row_id_swapped.t_id, "P03")
+
+        # 验证无需交换
+        row_no_swap = df.loc["no_swap"]
+        self.assertEqual(row_no_swap.s_id, 102)
+        self.assertEqual(row_no_swap.t_id, "P01")
+        print("  ✅ Passed.")
 
     def test_filter_by_entities(self):
-        """测试: filter_by_entities 方法是否能精确过滤交互。"""
-        print("\n--- Running Test: InteractionStore filter_by_entities ---")
+        """测试点2: filter_by_entities 功能。"""
+        print("\n--- Running Test: Filter by Entities ---")
+        store = InteractionStore(
+            {
+                "test": pd.DataFrame(
+                    {
+                        "s_id": [1, 99],
+                        "t_id": [2, 1],
+                        "rel_type": ["a", "b"],
+                        "s_type": ["d", "d"],
+                        "t_type": ["p", "d"],
+                    }
+                )
+            },
+            MOCK_CONFIG,
+        )
+        pure_store = store.filter_by_entities({1, 2})
+        self.assertEqual(len(pure_store), 1)
+        # 经过规范化排序后，(2,1)会变成(1,2)
+        self.assertEqual(pure_store.dataframe.s_id.iloc[0], 1)
+        self.assertEqual(pure_store.dataframe.t_id.iloc[0], 2)
+        print("  ✅ Passed.")
 
-        # 定义一个“纯净”的实体ID集合
-        valid_cids = {101, 102, 103}  # CID 104 是无效的
-        valid_pids = {"P01", "P02"}  # PID P03 是无效的
+    # 使用 @patch 来模拟 SelectorExecutor
+    @patch("helixpipe.data_processing.services.interaction_store.SelectorExecutor")
+    def test_query_delegates_to_executor(self, MockSelectorExecutor):
+        """测试点3: query方法是否正确地委托给SelectorExecutor。"""
+        print("\n--- Running Test: Query Delegation ---")
 
-        self.interaction_store.filter_by_entities(valid_cids, valid_pids)
+        mock_executor_instance = MockSelectorExecutor.return_value
+        mock_return_mask = pd.Series([True, False], index=[0, 1])
+        mock_executor_instance.get_interaction_match_mask.return_value = (
+            mock_return_mask
+        )
 
-        filtered_df = self.interaction_store.get_all_interactions_df()
+        store = InteractionStore(
+            {
+                "test": pd.DataFrame(
+                    {
+                        "s_id": [1, 2],
+                        "t_id": [3, 4],
+                        "rel_type": ["a", "b"],
+                        "s_type": ["d", "d"],
+                        "t_type": ["p", "p"],
+                    }
+                )
+            },
+            MOCK_CONFIG,
+        )
+        selector = InteractionSelectorConfig()
+        mock_id_mapper = MockIDMapper()
 
-        # 预期结果:
-        # (101, P01) -> 保留
-        # (102, P02) -> 保留
-        # (103, P01) -> 保留
-        # (104, P03) -> 移除 (因为104和P03都不在有效集合中)
+        result_store = store.query(selector, mock_id_mapper)
+
+        MockSelectorExecutor.assert_called_once_with(mock_id_mapper, verbose=True)
+        mock_executor_instance.get_interaction_match_mask.assert_called_once()
+
+        self.assertEqual(len(result_store), 1)
+        self.assertEqual(result_store.dataframe.s_id.iloc[0], 1)
+        print("  ✅ Passed.")
+
+    # 【新增的测试方法】
+
+    def test_apply_sampling_strategy(self):
+        """测试点: apply_sampling_strategy 方法的完整编排逻辑。"""
+        print("\n" + "=" * 80)
+        print("--- Running Test: apply_sampling_strategy ---")
+
+        # --- 1. 准备输入数据 ---
+        # 10条drug交互, 5条ligand交互, 3条ppi交互
+        processor_outputs = {
+            "source1": pd.DataFrame(
+                {
+                    "s_id": list(range(10)),
+                    "s_type": ["drug"] * 10,
+                    "t_id": [f"P{i}" for i in range(10)],
+                    "t_type": ["protein"] * 10,
+                    "rel_type": ["dti"] * 10,
+                }
+            ),
+            "source2": pd.DataFrame(
+                {
+                    "s_id": list(range(10, 15)),
+                    "s_type": ["ligand"] * 5,
+                    "t_id": [f"P{i}" for i in range(10, 15)],
+                    "t_type": ["protein"] * 5,
+                    "rel_type": ["lti"] * 5,
+                }
+            ),
+            "source_ppi": pd.DataFrame(
+                {
+                    "s_id": [f"P{i}" for i in range(20, 23)],
+                    "s_type": ["protein"] * 3,
+                    "t_id": [f"P{i}" for i in range(30, 33)],
+                    "t_type": ["protein"] * 3,
+                    "rel_type": ["ppi"] * 3,
+                }
+            ),
+        }
+        store = InteractionStore(processor_outputs, MOCK_CONFIG)
+        mock_id_mapper = MockIDMapper()
+
+        # 【核心变化】创建一个真实的 Executor 实例
+        executor = SelectorExecutor(mock_id_mapper)
+        # --- 2. 定义一个复杂的采样配置 ---
+        sampling_config = DownstreamSamplingConfig(
+            enabled=True,
+            stratified_sampling=StratifiedSamplingConfig(
+                enabled=True,
+                strata=[
+                    StratumConfig(
+                        name="ligands_anchor",
+                        selector=InteractionSelectorConfig(
+                            source_selector=EntitySelectorConfig(
+                                entity_types=["ligand"]
+                            )
+                        ),
+                        fraction=1.0,
+                    ),
+                    StratumConfig(
+                        name="drugs_target",
+                        selector=InteractionSelectorConfig(
+                            source_selector=EntitySelectorConfig(entity_types=["drug"])
+                        ),
+                        fraction=None,
+                        ratio_to="ligands_anchor",
+                        ratio=0.4,
+                    ),
+                    StratumConfig(
+                        name="ppi_fraction",
+                        selector=InteractionSelectorConfig(relation_types=["ppi"]),
+                        fraction=1 / 3,
+                    ),
+                ],
+            ),
+            uniform_sampling=UniformSamplingConfig(enabled=True, fraction=0.5),
+        )
+        # 将这个配置更新到我们的 MOCK_CONFIG 中
+        test_config = MOCK_CONFIG.copy()
+        OmegaConf.update(test_config, "data_params.sampling", sampling_config)
+
+        # --- 4. 调用被测方法 ---
+        sampled_store = store.apply_sampling_strategy(
+            config=test_config, executor=executor, seed=42
+        )
+
+        # --- 5. 断言结果 ---
+
+        # a. 验证分层采样的中间结果
+        # ligand: 5 * 1.0 = 5 条
+        # drug: 5 (anchor_count) * 0.4 = 2 条
+        # ppi: 3 * 1/3 = 1 条
+        # unclassified: 0 条
+        # 分层采样后总数: 5 + 2 + 1 = 8 条
+
+        # b. 验证统一采样的最终结果
+        # 8 * 0.5 = 4 条
         self.assertEqual(
-            len(filtered_df), 3, "Incorrect number of interactions after filtering."
+            len(sampled_store), 4, "Final count after uniform sampling is incorrect."
         )
 
-        # 进一步检查留下的交互是否正确
-        remaining_pairs = set(
-            zip(filtered_df["PubChem_CID"], filtered_df["UniProt_ID"])
-        )
-        expected_pairs = {(101, "P01"), (102, "P02"), (103, "P01")}
-        self.assertSetEqual(remaining_pairs, expected_pairs)
-        print("  ✅ Correctly filtered interactions based on valid entity sets.")
+        # c. 验证最终结果的内容构成是否大致符合预期
+        # 由于采样是随机的，我们不能精确断言内容，但可以检查类型的构成
+        # 预期最终结果中：ligand 约 5*0.5=2.5条, drug 约 2*0.5=1条, ppi 约 1*0.5=0.5条
+        # 这是一个概率问题，我们可以检查类型的存在性
 
-    def test_get_mapped_positive_pairs(self):
-        """测试: 能否正确地将正样本交互映射为逻辑ID。"""
-        print("\n--- Running Test: InteractionStore get_mapped_positive_pairs ---")
+        # ppi 数量少，可能被采样掉，不做强断言
+        # self.assertIn("protein", type_counts)
 
-        # 1. 创建一个模拟的、已经“最终化”的IDMapper
-        mock_id_mapper = MagicMock(spec=IDMapper)
-        mock_id_mapper.is_finalized = True
-        mock_id_mapper.cid_to_id = {101: 0, 102: 1, 103: 2}  # 模拟逻辑ID映射
-        mock_id_mapper.uniprot_to_id = {"P01": 10, "P02": 11}
-
-        # 2. 调用被测方法
-        # 内部的df包含4条记录：(101,P01,1), (102,P02,1), (103,P01,1), (104,P03,0)
-        # 只有前3条是正样本
-        pairs_list, pairs_set = self.interaction_store.get_mapped_positive_pairs(
-            mock_id_mapper
-        )
-
-        # 3. 断言结果
-        self.assertEqual(len(pairs_list), 3)
-        self.assertEqual(len(pairs_set), 3)
-
-        # 检查转换后的逻辑ID对是否正确
-        expected_pairs = {
-            (0, 10),
-            (1, 11),
-            (2, 10),
-        }  # (101,P01)->(0,10), (102,P02)->(1,11), (103,P01)->(2,10)
-        self.assertSetEqual(pairs_set, expected_pairs)
-        print("  ✅ Correctly mapped positive interaction pairs to logic IDs.")
-
-    def test_get_mapped_positive_pairs_unfinalized_mapper(self):
-        """测试: 当传入一个未最终化的IDMapper时，是否会按预期抛出异常。"""
-        print("\n--- Running Test: InteractionStore handles unfinalized mapper ---")
-
-        unfinalized_mapper = MagicMock(spec=IDMapper)
-        unfinalized_mapper.is_finalized = False
-
-        # 使用 assertRaises 来捕获并验证预期的异常
-        with self.assertRaises(RuntimeError):
-            self.interaction_store.get_mapped_positive_pairs(unfinalized_mapper)
-
-        print("  ✅ Correctly raised RuntimeError for unfinalized IDMapper.")
+        print("  ✅ Passed.")
 
 
 if __name__ == "__main__":

@@ -1,23 +1,75 @@
-logs/
-__pycache__/
-*.egg-info
-*.pyc
-*.csv
-*.pkl
-*.pt
-outputs/
-data/
-!conf/data
-mlruns/
+# .gitignore (优化后版本)
+
+# ===================================================================
+# 1. IDE & Environment Files (与个人环境相关)
+# ===================================================================
 .idea/
-multirun/
+.vscode/
+# 豁免共享的VSCode配置，这对于团队协作是好习惯
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# ===================================================================
+# 2. Python Specific (由模板生成，通用)
+# ===================================================================
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+*.egg-info/
+# ===================================================================
+# 3. Project-Specific Artifacts (本项目特有)
+# ===================================================================
+
+# Hydra outputs
+logs/
+
+# MLflow tracking
+mlruns/
+
+# Analysis outputs
+analysis_outputs/
+
+# Temporary test directories
+test_temp*/
+fake*/
+# Other project-specific folders
+sync_codes/
+todolist/
+
+# ===================================================================
+# 4. Data Files (数据与代码分离)
+# ===================================================================
+# Ignore the entire data directory by default
+data/
+
+# But, DO NOT ignore the data configurations stored within the conf/ directory
+!conf/data/
+
+# ===================================================================
+# 5. General File Types to Ignore (宽泛规则)
+# ===================================================================
+*.pt
 *.txt
 *.patch
 *.tsv
 *.md
-!docs/adr/*.md
-tests/fake*
 *.png
-.ruff_cache/
-.pytest_cache/
-.vscode/
+
+# ===================================================================
+# 6. Exceptions to General Rules (豁免规则，放在最后)
+# ===================================================================
+# Always track the main README file and ADRs
+!README.md
+!docs/
+# Note: The above !docs/ rule allows tracking the directory itself.
+# To ensure files *within* docs are tracked, they need to not match other ignore patterns,
+# or be explicitly un-ignored below.
+
+# Un-ignore all .md files inside the docs/ directory
+!docs/**/*.md
+
+# Un-ignore all .png files inside the docs/assets/ directory
+!docs/assets/*.png

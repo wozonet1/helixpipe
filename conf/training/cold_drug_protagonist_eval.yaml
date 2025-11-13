@@ -1,0 +1,40 @@
+# 文件名: conf/training/cold_drug_protagonist_eval.yaml
+
+# 1. 这是一个训练配置文件，所以没有 defaults
+#    它将在主 config.yaml 中被引用
+name: "cold_drug_protagonist_eval"
+
+defaults:
+  - _base
+  - _self_
+# 2. 【核心】定义冷启动和评估策略
+coldstart:
+  # a. 明确模式为冷启动
+  mode: "cold"
+
+  # b. 定义冷启动划分的实体池：只在'drug'类型的实体上进行划分
+  pool_scope:
+    entity_types: [drug]
+    # (我们也可以用 meta_types: [molecule]，但 entity_types 更精确)
+
+  # c. 定义最终评估的范围：只关心“主角DTI”
+  evaluation_scope:
+    # 源节点：必须是 'drug' 类型，并且来自主数据集 'bindingdb'
+    source_selector:
+      entity_types: [drug]
+      from_sources: [bindingdb]
+    # 目标节点：必须是 'protein' 类型，并且也来自主数据集 'bindingdb'
+    target_selector:
+      entity_types: [protein]
+      from_sources: [bindingdb]
+
+  # d. 其他冷启动参数
+  test_fraction: 0.2
+  strictness: "strict" # 采用严格模式，防止任何信息泄露
+
+# 3. 其他训练参数 (可以根据需要调整)
+k_folds: 5
+epochs: 200
+learning_rate: 0.001
+batch_size: 512
+# ...
