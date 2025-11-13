@@ -1,207 +1,231 @@
-# 使用前向引用来避免循环导入
+import logging
 from typing import TYPE_CHECKING, List, Set, Tuple
 
 import numpy as np
 import pandas as pd
 import research_template as rt
-from tqdm import tqdm
 
 from helixpipe.configs import AppConfig
+from helixpipe.utils import get_path
 
 if TYPE_CHECKING:
-    from helixpipe.data_processing import IDMapper
+    from .id_mapper import IDMapper
+    from .interaction_store import InteractionStore
+    from .selector_executor import SelectorExecutor
+
+logger = logging.getLogger(__name__)
 
 
 class SupervisionFileManager:
     """
-    【V2 - 全局空间版】
-    一个专门负责为一个Fold生成并持久化所有模型监督文件的服务类。
-    它现在直接接收和处理【全局ID】对，并能为任意目标边类型生成负样本。
+    【V4 - 逻辑与I/O分离版】
+    为一个Fold生成并持久化所有模型监督文件的服务。
+    核心逻辑被封装在返回DataFrame的私有方法中，以便于独立测试。
     """
 
     def __init__(
         self,
         fold_idx: int,
         config: AppConfig,
-        global_id_mapper: "IDMapper",
-        global_positive_pairs_set: Set[Tuple[int, int]],
-        seed: int,
+        id_mapper: "IDMapper",
+        executor: "SelectorExecutor",
+        global_positive_set: Set[Tuple[int, int]],
     ):
         """
-        在构造时，接收所有需要的全局信息。
+        在构造时，接收所有需要的服务和全局状态。
         """
         self.fold_idx = fold_idx
         self.config = config
-        self.global_id_mapper = global_id_mapper
-        self.global_positive_pairs_set = global_positive_pairs_set
-        self.verbose = config.runtime.verbose
-        self.rng = np.random.default_rng(seed)
+        self.id_mapper = id_mapper
+        self.executor = executor
+        self.global_positive_set = global_positive_set
+        self.rng = np.random.default_rng(config.runtime.seed + fold_idx)
 
         self.labels_schema = config.data_structure.schema.internal.labeled_edges_output
-        self.labels_path_factory = rt.get_path(
+        self.labels_path_factory = get_path(
             config, "processed.specific.labels_template"
         )
+        self.verbose = config.runtime.verbose
 
     def generate_and_save(
         self,
-        train_pairs_global: List[Tuple[int, int, str]],
-        test_pairs_global: List[Tuple[int, int, str]],
+        train_labels_store: "InteractionStore",
+        test_store: "InteractionStore",
     ):
         """
-        一个高层次的公共方法，编排所有生成和保存的步骤。
+        【编排器】调用核心逻辑方法创建DataFrame，并执行文件I/O操作。
         """
         if self.verbose > 0:
-            print(f"    -> Generating label files for Fold {self.fold_idx}...")
+            logger.info(
+                f"--- [SupervisionManager Fold {self.fold_idx}] Generating label files... ---"
+            )
 
-        self._save_train_labels(train_pairs_global)
-        self._save_test_labels(test_pairs_global)
+        # 1. 调用逻辑方法生成DataFrame
+        train_df = self._prepare_train_df(train_labels_store)
+        test_df = self._prepare_test_df(test_store)
 
-    def _save_train_labels(self, train_pairs_global: List[Tuple[int, int, str]]):
-        """处理训练标签文件 (仅正样本)，直接使用全局ID。"""
-
+        # 2. 执行文件写入
         train_labels_path = self.labels_path_factory(
             prefix=f"fold_{self.fold_idx}", suffix="train"
         )
-
-        # 直接使用全局ID对创建DataFrame
-        train_pairs_global_df = pd.DataFrame(
-            [(u, v) for u, v, _ in train_pairs_global],
-            columns=[self.labels_schema.source_node, self.labels_schema.target_node],
-        )
-
         rt.ensure_path_exists(train_labels_path)
-        train_pairs_global_df.to_csv(train_labels_path, index=False)
-
+        train_df.to_csv(train_labels_path, index=False)
         if self.verbose > 0:
-            print(
-                f"      - Saved {len(train_pairs_global_df)} positive training pairs to '{train_labels_path.name}'."
+            logger.info(
+                f"  - Saved {len(train_df)} positive training labels to '{train_labels_path.name}'."
             )
-
-    def _save_test_labels(self, test_pairs_global: List[Tuple[int, int, str]]):
-        """处理测试标签文件 (正样本 + 负样本)，使用类型感知的负采样。"""
 
         test_labels_path = self.labels_path_factory(
             prefix=f"fold_{self.fold_idx}", suffix="test"
         )
+        rt.ensure_path_exists(test_labels_path)
+        test_df.to_csv(test_labels_path, index=False)
+        if self.verbose > 0:
+            pos_count = (test_df["label"] == 1).sum() if "label" in test_df else 0
+            neg_count = len(test_df) - pos_count
+            ratio = neg_count / pos_count if pos_count > 0 else 0
+            logger.info(
+                f"  - Saved {len(test_df)} labeled test pairs (1:{ratio:.1f} ratio) to '{test_labels_path.name}'."
+            )
 
-        test_pairs_for_eval_global = [(u, v) for u, v, _ in test_pairs_global]
+    def _prepare_train_df(self, train_labels_store: "InteractionStore") -> pd.DataFrame:
+        """
+        【核心逻辑】创建训练DataFrame (纯内存操作)。
+        """
+        logger.debug("--- [_prepare_train_df] START ---")
+        if train_labels_store is None or train_labels_store.dataframe.empty:
+            logger.warning(
+                "Input 'train_labels_store' is empty. Creating an empty train DataFrame."
+            )
+            return pd.DataFrame(
+                columns=[self.labels_schema.source_node, self.labels_schema.target_node]
+            )
 
-        if not test_pairs_for_eval_global:
-            if self.verbose > 0:
-                print(
-                    "      - WARNING: No positive pairs for the test set. Saving an empty label file."
-                )
-            pd.DataFrame(
+        train_pairs_logic = train_labels_store.get_mapped_positive_pairs(self.id_mapper)
+        logger.debug(
+            f"Mapped to {len(train_pairs_logic)} logic ID pairs: {train_pairs_logic}"
+        )
+
+        train_df = pd.DataFrame(
+            [(u, v) for u, v, _ in train_pairs_logic],
+            columns=[self.labels_schema.source_node, self.labels_schema.target_node],
+        )
+        logger.debug(f"Prepared train DataFrame with shape: {train_df.shape}")
+        logger.debug("--- [_prepare_train_df] END ---")
+        return train_df
+
+    def _prepare_test_df(self, test_store: "InteractionStore") -> pd.DataFrame:
+        """
+        【核心逻辑】创建测试DataFrame，包含负采样 (纯内存操作)。
+        """
+        logger.debug("--- [_prepare_test_df] START ---")
+        if test_store is None or test_store.dataframe.empty:
+            logger.warning(
+                f"Test store for fold {self.fold_idx} is empty. Creating an empty test DataFrame."
+            )
+            return pd.DataFrame(
                 columns=[
                     self.labels_schema.source_node,
                     self.labels_schema.target_node,
                     self.labels_schema.label,
                 ]
-            ).to_csv(test_labels_path, index=False)
-            return
-
-        # 从配置中获取目标边类型
-        edge_cfg = self.config.training.target_edge
-        target_edge_type = (
-            edge_cfg.source_type,
-            edge_cfg.relation_type,
-            edge_cfg.target_type,
-        )
-
-        # 调用新的、类型感知的负采样方法
-        negative_pairs_global = self._perform_negative_sampling(
-            num_to_sample=len(test_pairs_for_eval_global),
-            target_edge_type=target_edge_type,
-        )
-
-        # 组合正负样本 (所有操作都在全局ID空间)
-        test_pos_global_df = pd.DataFrame(
-            test_pairs_for_eval_global,
-            columns=[self.labels_schema.source_node, self.labels_schema.target_node],
-        )
-        test_pos_global_df[self.labels_schema.label] = 1
-
-        neg_df_global = pd.DataFrame(
-            negative_pairs_global,
-            columns=[self.labels_schema.source_node, self.labels_schema.target_node],
-        )
-        neg_df_global[self.labels_schema.label] = 0
-
-        labeled_df_global = (
-            pd.concat([test_pos_global_df, neg_df_global], ignore_index=True)
-            .sample(frac=1, random_state=self.rng)
-            .reset_index(drop=True)
-        )
-
-        rt.ensure_path_exists(test_labels_path)
-        labeled_df_global.to_csv(test_labels_path, index=False)
-
-        if self.verbose > 0:
-            ratio = (
-                len(neg_df_global) / len(test_pos_global_df)
-                if len(test_pos_global_df) > 0
-                else 0
-            )
-            print(
-                f"      - Saved {len(labeled_df_global)} labeled test pairs (1:{ratio:.0f} pos/neg ratio) to '{test_labels_path.name}'."
             )
 
-    def _perform_negative_sampling(
-        self, num_to_sample: int, target_edge_type: Tuple[str, str, str]
-    ) -> List[Tuple[int, int]]:
+        schema = self.config.data_structure.schema.internal.canonical_interaction
+        positive_pairs_auth = [
+            (row[schema.source_id], row[schema.target_id])
+            for _, row in test_store.dataframe.iterrows()
+        ]
+        logger.debug(
+            f"Extracted {len(positive_pairs_auth)} positive pairs (auth IDs): {positive_pairs_auth}"
+        )
+
+        negative_pairs_auth = self._perform_negative_sampling(len(positive_pairs_auth))
+
+        pos_df = pd.DataFrame(positive_pairs_auth, columns=["s_id", "t_id"])
+        pos_df["label"] = 1
+        neg_df = pd.DataFrame(negative_pairs_auth, columns=["s_id", "t_id"])
+        neg_df["label"] = 0
+        logger.debug(
+            f"Positive samples DF shape: {pos_df.shape}, Negative samples DF shape: {neg_df.shape}"
+        )
+
+        labeled_df_auth = pd.concat([pos_df, neg_df])
+
+        labeled_df_auth["source"] = labeled_df_auth["s_id"].map(
+            self.id_mapper.auth_id_to_logic_id_map
+        )
+        labeled_df_auth["target"] = labeled_df_auth["t_id"].map(
+            self.id_mapper.auth_id_to_logic_id_map
+        )
+
+        final_df = labeled_df_auth[["source", "target", "label"]].dropna().astype(int)
+        logger.debug(
+            f"Final DataFrame after mapping and cleaning (shape: {final_df.shape})"
+        )
+
+        if final_df.empty:
+            logger.warning("Final test DataFrame is empty after mapping and cleaning.")
+            return final_df
+
+        final_df_shuffled = final_df.sample(frac=1, random_state=self.rng).reset_index(
+            drop=True
+        )
+        logger.debug(f"Prepared test DataFrame with shape {final_df_shuffled.shape}")
+        logger.debug("--- [_prepare_test_df] END ---")
+        return final_df_shuffled
+
+    def _perform_negative_sampling(self, num_to_sample: int) -> List[Tuple]:
         """
-        【V2 - 类型感知版】
-        在全局ID空间，为指定的目标边类型，执行随机负采样。
+        (私有) 执行配置驱动的负采样，返回权威ID对列表。
         """
-        if self.verbose > 1:
-            print(
-                f"      - Performing negative sampling for edge type: {target_edge_type}"
-            )
+        # ... (此方法的代码与我们之前确定的版本完全一致，无需修改) ...
+        # (为了完整性，这里粘贴一份)
+        if num_to_sample == 0:
+            return []
 
-        negative_pairs_global = []
+        logger.debug("  - Performing negative sampling for test set...")
 
-        source_type, _, target_type = target_edge_type
+        neg_sampling_scope = self.config.training.coldstart.evaluation_scope
 
-        # 动态地从 IDMapper 获取源和目标实体的“采样池”
-        try:
-            # 依赖于 IDMapper V4 的 entities_by_type 属性
-            source_pool = self.global_id_mapper.entities_by_type[source_type]
-            target_pool = self.global_id_mapper.entities_by_type[target_type]
-        except KeyError as e:
-            print(
-                f"    - WARNING: Cannot perform negative sampling. Entity type '{e.args[0]}' not found in IDMapper."
+        source_pool_auth = self.executor.select_entities(
+            neg_sampling_scope.source_selector
+        )
+        target_pool_auth = self.executor.select_entities(
+            neg_sampling_scope.target_selector
+        )
+
+        if not source_pool_auth or not target_pool_auth:
+            logger.warning(
+                "Negative sampling pools are empty. Cannot generate negative samples."
             )
             return []
 
-        if not source_pool or not target_pool:
-            print(
-                "      - WARNING: Not enough entities in source/target pool to generate negative samples."
+        negative_pairs_auth = []
+        source_list = list(source_pool_auth)
+        target_list = list(target_pool_auth)
+
+        max_tries = num_to_sample * 100
+        tries = 0
+        while len(negative_pairs_auth) < num_to_sample and tries < max_tries:
+            source_id = self.rng.choice(source_list)
+            target_id = self.rng.choice(target_list)
+
+            # 使用全局正样本集合进行碰撞检查 (需要检查两个方向，因为集合是无向的)
+            if (source_id, target_id) not in self.global_positive_set and (
+                target_id,
+                source_id,
+            ) not in self.global_positive_set:
+                negative_pairs_auth.append((source_id, target_id))
+
+            tries += 1
+
+        if len(negative_pairs_auth) < num_to_sample:
+            logger.warning(
+                f"Could only generate {len(negative_pairs_auth)} / {num_to_sample} negative samples after {max_tries} tries."
             )
-            return []
 
-        # 通用的采样循环
-        sampling_strategy = self.config.data_params.negative_sampling_strategy
-        disable_tqdm = self.verbose == 0
-        with tqdm(
-            total=num_to_sample,
-            desc=f"      - Neg Sampling for Test ({sampling_strategy})",
-            disable=disable_tqdm,
-        ) as pbar:
-            while len(negative_pairs_global) < num_to_sample:
-                source_id_global = self.rng.choice(source_pool)
-                target_id_global = self.rng.choice(target_pool)
-
-                if (
-                    source_id_global,
-                    target_id_global,
-                ) not in self.global_positive_pairs_set:
-                    # 额外检查：对于同质边(如PPI)，确保 u != v
-                    if (
-                        source_type == target_type
-                        and source_id_global == target_id_global
-                    ):
-                        continue
-                    negative_pairs_global.append((source_id_global, target_id_global))
-                    pbar.update(1)
-
-        return negative_pairs_global
+        logger.debug(
+            f"    - Successfully generated {len(negative_pairs_auth)} negative samples."
+        )
+        return negative_pairs_auth

@@ -1,202 +1,173 @@
-# tests/data_processing/services/test_label_generator.py
-
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 from omegaconf import OmegaConf
 
-from helixpipe.configs.training import ColdstartConfig, EntitySelectorConfig
-
-# 导入我们需要测试的类和相关的dataclass
+# 导入所有需要的模块
+from helixpipe.configs import AppConfig, register_all_schemas
 from helixpipe.data_processing.services.label_generator import SupervisionFileManager
 
+# --- 模拟依赖 (Mocks) ---
 
-# --- 模拟 (Mock) 的 IDMapper ---
+
+class MockInteractionStore:
+    def __init__(self, df):
+        self.dataframe = df
+        # 模拟schema访问，以便被测代码可以访问 self.store._schema.source_id
+        schema_mock = MagicMock()
+        schema_mock.source_id = "s_id"
+        schema_mock.target_id = "t_id"
+        self._schema = schema_mock
+
+    def get_mapped_positive_pairs(self, id_mapper):
+        df_mapped = self.dataframe.copy()
+        df_mapped["s_id"] = df_mapped["s_id"].map(id_mapper.auth_id_to_logic_id_map)
+        df_mapped["t_id"] = df_mapped["t_id"].map(id_mapper.auth_id_to_logic_id_map)
+        # 返回一个包含关系类型的元组列表
+        return [(row.s_id, row.t_id, "rel") for row in df_mapped.itertuples()]
+
+
 class MockIDMapper:
     def __init__(self):
-        # 这个 get_meta_by_logic_id 将在每个测试中被 mock，所以这里的实现不重要
-        self.get_meta_by_logic_id = MagicMock()
-        # get_ids_by_selector 也将被 mock
-        self.get_ids_by_selector = MagicMock()
+        self.auth_id_to_logic_id_map = {
+            "d1": 0,
+            "d2": 1,
+            "d3": 2,
+            "p1": 10,
+            "p2": 11,
+            "p3": 12,
+        }
+
+
+class MockSelectorExecutor:
+    def __init__(self, id_mapper):
+        self.id_mapper = id_mapper
+
+    def select_entities(self, selector):
+        if selector and selector.entity_types == ["drug"]:
+            return {"d1", "d2", "d3"}
+        if selector and selector.entity_types == ["protein"]:
+            return {"p1", "p2", "p3"}
+        return set()
+
+
+register_all_schemas()
+MOCK_CONFIG: AppConfig = OmegaConf.create(
+    {
+        "runtime": {"verbose": 0, "seed": 42},
+        "training": {
+            "coldstart": {
+                "evaluation_scope": {
+                    "source_selector": {"entity_types": ["drug"]},
+                    "target_selector": {"entity_types": ["protein"]},
+                }
+            }
+        },
+        "data_structure": {
+            "schema": {
+                "internal": {
+                    "labeled_edges_output": {
+                        "source_node": "source",
+                        "target_node": "target",
+                        "label": "label",
+                    },
+                    "canonical_interaction": {"source_id": "s_id", "target_id": "t_id"},
+                }
+            }
+        },
+    }
+)
 
 
 class TestSupervisionFileManager(unittest.TestCase):
-    def setUp(self):
-        """准备一个通用的测试环境。"""
-        self.mock_id_mapper = MockIDMapper()
-        self.seed = 42
-        self.fold_idx = 1
-        # 一个简单的正样本集合，用于负采样时的碰撞检查
-        self.global_pos_set = {(0, 100), (1, 101)}
-
-        # 准备一个包含多种交互类型的、划分好的测试集
-        self.test_pairs_global = [
-            (
-                0,
-                100,
-                "rel_protagonist_dti",
-            ),  # 主角DTI (drug from bindingdb -> protein from bindingdb)
-            (
-                1,
-                200,
-                "rel_mixed_dti",
-            ),  # 混合DTI (drug from bindingdb -> protein from stringdb)
-            (10, 101, "rel_lpi"),  # LPI (ligand -> protein)
-            (100, 101, "rel_ppi"),  # PPI (protein -> protein)
-        ]
-
-        # Mock get_meta_by_logic_id 的行为
-        def meta_side_effect(logic_id):
-            meta_map = {
-                0: {"type": "drug", "sources": {"bindingdb"}},
-                1: {"type": "drug", "sources": {"bindingdb"}},
-                10: {"type": "ligand", "sources": {"gtopdb"}},
-                100: {"type": "protein", "sources": {"bindingdb"}},
-                101: {"type": "protein", "sources": {"bindingdb"}},
-                200: {"type": "protein", "sources": {"stringdb"}},  # 这是一个配角蛋白
-            }
-            return meta_map.get(logic_id)
-
-        self.mock_id_mapper.get_meta_by_logic_id.side_effect = meta_side_effect
-
-    # 我们需要mock get_path 和 DataFrame.to_csv，因为我们不想在测试中真正写入文件
     @patch("helixpipe.data_processing.services.label_generator.get_path")
-    @patch("pandas.DataFrame.to_csv")
-    def test_evaluation_scope_filtering(self, mock_to_csv, mock_get_path):
-        """
-        测试场景1: 验证 _save_test_labels 是否能根据 evaluation_scope 正确过滤正样本。
-        """
-        print("\n--- Running Test: Evaluation Scope Filtering ---")
-
-        # 1. 配置: 只评估主角DTI
-        source_selector = EntitySelectorConfig(
-            entity_types=["drug"], from_sources=["bindingdb"]
-        )
-        target_selector = EntitySelectorConfig(
-            meta_types=["protein"], from_sources=["bindingdb"]
-        )
-        coldstart_cfg = ColdstartConfig(
-            evaluation_scope=(source_selector, target_selector)
-        )
-        config = OmegaConf.create(
-            {
-                "training": {"coldstart": coldstart_cfg},
-                "runtime": {"verbose": 1},
-                "knowledge_graph": {
-                    "entity_meta": {"protein": {"metatype": "protein"}}
-                },  # 提供 meta_types 需要的元信息
-                "data_structure": {
-                    "schema": {
-                        "internal": {
-                            "labeled_edges_output": {
-                                "source_node": "s",
-                                "target_node": "t",
-                                "label": "l",
-                            }
-                        }
-                    }
-                },
-            }
+    def setUp(self, mock_get_path):
+        """为所有测试准备一个通用的 manager 实例。"""
+        print("\n" + "=" * 80)
+        self.mock_id_mapper = MockIDMapper()
+        self.mock_executor = MockSelectorExecutor(self.mock_id_mapper)
+        self.global_positive_set = {("d1", "p1"), ("d2", "p2")}
+        mock_path_factory = MagicMock()
+        mock_path_factory.return_value = MagicMock(name="fake_path_object")
+        mock_get_path.return_value = mock_path_factory
+        # 创建一个 manager 实例，它将在多个测试中被使用
+        self.manager = SupervisionFileManager(
+            fold_idx=1,
+            config=MOCK_CONFIG,
+            id_mapper=self.mock_id_mapper,
+            executor=self.mock_executor,
+            global_positive_set=self.global_positive_set,
         )
 
-        # 2. Mock 依赖
-        # 负采样部分我们暂时不关心，返回空列表
-        self.mock_id_mapper.get_ids_by_selector.return_value = []
-        mock_get_path.return_value = MagicMock()  # 让 get_path 返回一个模拟对象
+    def test_prepare_train_df(self):
+        """测试点1: _prepare_train_df 能否创建正确的训练DataFrame。"""
+        print("--- Running Test: _prepare_train_df ---")
 
-        # 3. 初始化和运行
-        manager = SupervisionFileManager(
-            self.fold_idx, config, self.mock_id_mapper, self.global_pos_set, self.seed
-        )
-        manager._save_test_labels(self.test_pairs_global)
-
-        # 4. 断言
-        # a. 检查传递给 to_csv 的DataFrame的内容
-        self.assertTrue(mock_to_csv.called, "DataFrame.to_csv should have been called.")
-
-        # 获取 to_csv 被调用时的第一个参数 (即 self, 也就是那个DataFrame)
-        saved_df = mock_to_csv.call_args[0][0]
-
-        # 预期只有 (0, 100) 这个主角DTI被保留为正样本
-        self.assertEqual(
-            len(saved_df[saved_df["l"] == 1]),
-            1,
-            "Only one positive pair should pass the filter.",
+        # 准备输入
+        train_store = MockInteractionStore(
+            pd.DataFrame({"s_id": ["d1"], "t_id": ["p1"]})
         )
 
-        saved_pos_pair = saved_df[saved_df["l"] == 1]
-        self.assertEqual(saved_pos_pair["s"].iloc[0], 0)
-        self.assertEqual(saved_pos_pair["t"].iloc[0], 100)
+        # 直接调用核心逻辑方法
+        train_df = self.manager._prepare_train_df(train_store)
 
+        # 直接断言返回值
+        self.assertIsInstance(train_df, pd.DataFrame)
+        self.assertEqual(train_df.shape, (1, 2))
+        self.assertNotIn("label", train_df.columns)
+
+        # 验证ID映射
+        self.assertEqual(train_df["source"].iloc[0], 0)  # d1 -> 0
+        self.assertEqual(train_df["target"].iloc[0], 10)  # p1 -> 10
         print("  ✅ Passed.")
 
-    @patch("helixpipe.data_processing.services.label_generator.get_path")
-    @patch("pandas.DataFrame.to_csv")
-    def test_selector_driven_negative_sampling(self, mock_to_csv, mock_get_path):
-        """
-        测试场景2: 验证 _perform_negative_sampling 是否使用 selector 来构建正确的采样池。
-        """
-        print("\n--- Running Test: Selector-Driven Negative Sampling ---")
+    def test_prepare_test_df(self):
+        """测试点2: _prepare_test_df 能否创建正确的、包含负样本的测试DataFrame。"""
+        print("--- Running Test: _prepare_test_df ---")
 
-        # 1. 配置: 同上，负采样池也应该由主角DTI的 selector 决定
-        source_selector = EntitySelectorConfig(
-            entity_types=["drug"], from_sources=["bindingdb"]
-        )
-        target_selector = EntitySelectorConfig(
-            meta_types=["protein"], from_sources=["bindingdb"]
-        )
-        coldstart_cfg = ColdstartConfig(
-            evaluation_scope=(source_selector, target_selector)
-        )
-        config = OmegaConf.create(
-            {
-                "training": {"coldstart": coldstart_cfg},
-                "runtime": {"verbose": 1},
-                # ... (其他与上一个测试相同的配置)
-            }
+        # 准备输入
+        test_store = MockInteractionStore(
+            pd.DataFrame({"s_id": ["d2"], "t_id": ["p2"]})
         )
 
-        # 2. Mock 依赖
-        # 【核心】命令 get_ids_by_selector 返回我们预设的主角实体池
-        def selector_side_effect(selector):
-            if selector.entity_types == ["drug"]:
-                return [0, 1]  # 主角药物
-            if selector.meta_types == ["protein"]:
-                return [100, 101]  # 主角蛋白
-            return []
+        # 直接调用核心逻辑方法
+        test_df = self.manager._prepare_test_df(test_store)
 
-        self.mock_id_mapper.get_ids_by_selector.side_effect = selector_side_effect
-        mock_get_path.return_value = MagicMock()
+        # 断言返回值
+        self.assertIsInstance(test_df, pd.DataFrame)
+        self.assertEqual(test_df.shape, (2, 3))  # 1个正样本 + 1个负样本
+        self.assertIn("label", test_df.columns)
+        self.assertEqual(test_df["label"].sum(), 1)  # 应该只有一个标签为1的行
 
-        # 3. 初始化和运行
-        manager = SupervisionFileManager(
-            self.fold_idx, config, self.mock_id_mapper, self.global_pos_set, self.seed
-        )
+        # 验证正样本内容
+        pos_sample = test_df[test_df["label"] == 1].iloc[0]
+        self.assertEqual(pos_sample["source"], 1)  # d2 -> 1
+        self.assertEqual(pos_sample["target"], 11)  # p2 -> 11
 
-        # a. 只保留一个正样本，以请求一个负样本
-        one_pos_pair = [(0, 100, "rel")]
-        manager._save_test_labels(one_pos_pair)
+        # 验证负样本内容
+        neg_sample = test_df[test_df["label"] == 0].iloc[0]
+        self.assertIn(neg_sample["source"], [0, 1, 2])  # 逻辑ID for d1, d2, d3
+        self.assertIn(neg_sample["target"], [10, 11, 12])  # 逻辑ID for p1, p2, p3
+        print("  ✅ Passed.")
 
-        # b. 获取保存的DataFrame
-        saved_df = mock_to_csv.call_args[0][0]
-        neg_pairs_df = saved_df[saved_df["l"] == 0]
+    def test_prepare_df_with_empty_store(self):
+        """测试点3: 验证当输入store为空时，方法能否健壮地返回空DataFrame。"""
+        print("--- Running Test: Handling Empty Stores ---")
 
-        # 4. 断言
-        self.assertEqual(len(neg_pairs_df), 1, "Should generate one negative pair.")
+        empty_store = MockInteractionStore(pd.DataFrame())
 
-        neg_source = neg_pairs_df["s"].iloc[0]
-        neg_target = neg_pairs_df["t"].iloc[0]
+        # 测试训练方法
+        train_df_empty = self.manager._prepare_train_df(empty_store)
+        self.assertIsInstance(train_df_empty, pd.DataFrame)
+        self.assertTrue(train_df_empty.empty)
+        self.assertIn("source", train_df_empty.columns)  # 检查表头是否正确
 
-        # 验证生成的负样本的源和目标，都来自于我们预设的主角池
-        self.assertIn(
-            neg_source, [0, 1], "Negative sample source must be a protagonist drug."
-        )
-        self.assertIn(
-            neg_target,
-            [100, 101],
-            "Negative sample target must be a protagonist protein.",
-        )
-
+        # 测试测试方法
+        test_df_empty = self.manager._prepare_test_df(empty_store)
+        self.assertIsInstance(test_df_empty, pd.DataFrame)
+        self.assertTrue(test_df_empty.empty)
+        self.assertIn("label", test_df_empty.columns)  # 检查表头是否正确
         print("  ✅ Passed.")
 
 
