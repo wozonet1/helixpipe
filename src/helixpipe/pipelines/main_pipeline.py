@@ -1,3 +1,4 @@
+import logging
 from typing import Dict, Tuple
 
 import numpy as np
@@ -11,15 +12,18 @@ from helixpipe.data_processing import (
     DataSplitter,
     GraphBuildContext,
     GraphDirector,
+    HeteroGraphBuilder,
     IDMapper,
+    InteractionStore,
+    SelectorExecutor,
     StructureProvider,
     SupervisionFileManager,
-    sample_interactions,
     validate_and_filter_entities,
 )
-from helixpipe.data_processing.services.graph_builder import HeteroGraphBuilder
 from helixpipe.features import extract_features
 from helixpipe.utils import get_path
+
+logger = logging.getLogger(__name__)
 
 
 def process_data(config: AppConfig, processor_outputs: Dict[str, pd.DataFrame]):
@@ -36,29 +40,37 @@ def process_data(config: AppConfig, processor_outputs: Dict[str, pd.DataFrame]):
 
     # === STAGE 1: 数据聚合 (Aggregation) ===
     id_mapper = IDMapper(processor_outputs=processor_outputs, config=config)
-
+    interaction_store = InteractionStore(
+        processor_outputs=processor_outputs, config=config
+    )
     # === STAGE 2: 实体清单构建 (Entity Manifest Construction) ===
     # 【调用新版函数】
     raw_entities_df = id_mapper.build_entity_manifest()
     if raw_entities_df.empty:
-        print("\n⚠️  No entities found after aggregation. Halting pipeline.")
+        logger.warning("\n⚠️  No entities found after aggregation. Halting pipeline.")
         return
 
     # === STAGE 3: 实体丰富化 ===
     enriched_entities_df = _stage3_enrich_entities(raw_entities_df, config, provider)
 
     # === STAGE 4: 中心化校验 ===
-    valid_entities_df = _stage4_validate_entities(enriched_entities_df, config)
+    valid_entities_df = validate_and_filter_entities(enriched_entities_df, config)
     if valid_entities_df.empty:
-        print("\n⚠️  No entities passed validation. Halting pipeline.")
+        logger.warning("\n⚠️  No entities passed validation. Halting pipeline.")
         return
 
     # === STAGE 5: 最终交互过滤 ===
-    pure_interactions_df = _stage5_finalize_and_filter(
-        id_mapper, valid_entities_df, processor_outputs, config
-    )
-    if pure_interactions_df.empty:
-        print("\n⚠️  No interactions remained after filtering. Halting pipeline.")
+    valid_entity_ids = set(valid_entities_df["entity_id"])
+
+    # a. IDMapper 最终化
+    id_mapper.finalize_with_valid_entities(valid_entity_ids)
+    id_mapper.save_maps_to_csv(valid_entities_df)
+
+    # b. InteractionStore 最终化 (过滤)
+    pure_interaction_store = interaction_store.filter_by_entities(valid_entity_ids)
+
+    if len(pure_interaction_store) == 0:
+        logger.warning("No interactions remained after filtering. Halting pipeline.")
         return
 
     molecule_embeddings, protein_embeddings = _stage6_generate_features(
@@ -68,177 +80,91 @@ def process_data(config: AppConfig, processor_outputs: Dict[str, pd.DataFrame]):
         restart_flag=config.runtime.force_restart,
     )
 
-    # === STAGE 8: 最终产物生成 (图 & 标签) ===
+    # === STAGE 7: 最终产物生成 (图 & 标签) ===
     # 启动包含采样、划分、图构建的最终下游流水线。
     _stage7_split_and_build_graphs(
         config=config,
         id_mapper=id_mapper,
-        pure_interactions_df=pure_interactions_df,
+        pure_interaction_store=pure_interaction_store,  # <--- 传递 store 对象
         molecule_embeddings=molecule_embeddings,
         protein_embeddings=protein_embeddings,
     )
 
-    print("\n✅ All data processing stages (up to dispatching) completed successfully!")
-
-
-def _stage2_build_entity_manifest(
-    all_interactions_df: pd.DataFrame, config: AppConfig
-) -> pd.DataFrame:
-    """
-    【新 - Stage 2】从所有交互记录中，构建一个纯粹的、无结构的“实体清单”。
-
-    这个函数执行一个简单的“提取”和“去重”操作。
-    """
-    if config.runtime.verbose > 0:
-        print(
-            "\n--- [Pipeline Stage 2] Building a unified (structureless) entity manifest... ---"
-        )
-
-    if all_interactions_df.empty:
-        if config.runtime.verbose > 0:
-            print(
-                "  - Input interactions are empty. Returning an empty entity manifest."
-            )
-        return pd.DataFrame()
-
-    schema = config.data_structure.schema.internal.canonical_interaction
-
-    # 1. 从 source 列提取 (id, type) 对
-    source_entities = all_interactions_df[
-        [schema.source_id, schema.source_type]
-    ].rename(columns={schema.source_id: "entity_id", schema.source_type: "entity_type"})
-
-    # 2. 从 target 列提取 (id, type) 对
-    target_entities = all_interactions_df[
-        [schema.target_id, schema.target_type]
-    ].rename(columns={schema.target_id: "entity_id", schema.target_type: "entity_type"})
-
-    # 3. 合并并去除完全重复的行
-    unique_entities_df = (
-        pd.concat([source_entities, target_entities])
-        .drop_duplicates()
-        .reset_index(drop=True)
+    logger.info(
+        "\n✅ All data processing stages (up to dispatching) completed successfully!"
     )
-
-    if config.runtime.verbose > 0:
-        print(
-            f"  - Found {len(unique_entities_df)} unique (id, type) pairs across all data sources."
-        )
-
-    return unique_entities_df
 
 
 def _stage3_enrich_entities(
     raw_entities_df: pd.DataFrame, config: AppConfig, provider: StructureProvider
 ) -> pd.DataFrame:
-    """
-    【新】Stage 3: 对缺少结构信息的实体，统一调用 StructureProvider 进行在线丰富化。
-    """
-    if config.runtime.verbose > 0:
-        print(
-            "\n--- [Pipeline Stage 3] Enriching entities with missing structures... ---"
-        )
-
+    logger.info(
+        "\n--- [Pipeline Stage 3] Enriching entities with missing structures... ---"
+    )
     enriched_df = raw_entities_df.copy()
-    entities_to_enrich = enriched_df[enriched_df["structure"].isna()]
 
-    if entities_to_enrich.empty:
-        if config.runtime.verbose > 0:
-            print("  - No missing structures to enrich. Skipping.")
+    # 筛选出需要丰富化的实体 (structure 列为空)
+    to_enrich_mask = enriched_df["structure"].isna()
+    if not to_enrich_mask.any():
+        logger.info("No missing structures to enrich. Skipping.")
         return enriched_df
 
-    if config.runtime.verbose > 0:
-        print(
-            f"  - Found {len(entities_to_enrich)} entities requiring structure enrichment."
-        )
+    entities_to_enrich = enriched_df[to_enrich_mask]
+    logger.info(
+        f"Found {len(entities_to_enrich)} entities requiring structure enrichment."
+    )
 
-    entity_types = config.knowledge_graph.entity_types
     restart_flag = config.runtime.force_restart
 
     # --- 丰富化分子 (SMILES) ---
-    molecules_to_enrich = entities_to_enrich[
-        entities_to_enrich["entity_type"] == entity_types.molecule
-    ]
-    if not molecules_to_enrich.empty:
-        cids_to_fetch = molecules_to_enrich["entity_id"].tolist()
-        smiles_map = provider.get_smiles(cids_to_fetch, force_restart=restart_flag)
-        if smiles_map:
-            enriched_df["structure"].fillna(
-                enriched_df["entity_id"].map(smiles_map), inplace=True
-            )
+    mol_mask = entities_to_enrich["entity_type"].str.contains(
+        "molecule|drug|ligand", na=False
+    )
+    if mol_mask.any():
+        # 【核心修正】在这里进行类型转换和清洗
+        cids_series = entities_to_enrich.loc[mol_mask, "entity_id"]
+
+        # 1. 使用 pd.to_numeric 将其转换为数值类型，无法转换的变为 NaN
+        cids_numeric = pd.to_numeric(cids_series, errors="coerce")
+
+        # 2. 丢弃所有 NaN
+        cids_cleaned = cids_numeric.dropna()
+
+        # 3. 转换为整数，并去除重复
+        cids_to_fetch = [int(cid) for cid in cids_cleaned.unique()]
+
+        logger.debug(f"Found {len(cids_to_fetch)} unique, valid integer CIDs to fetch.")
+
+        if cids_to_fetch:
+            smiles_map = provider.get_smiles(cids_to_fetch, force_restart=restart_flag)
+            if smiles_map:
+                mapped_smiles = enriched_df.loc[to_enrich_mask, "entity_id"].map(
+                    smiles_map
+                )
+                # 使用 .fillna() 将新获取的SMILES填充到原有的structure列中
+                enriched_df["structure"].fillna(mapped_smiles, inplace=True)
 
     # --- 丰富化蛋白质 (Sequences) ---
-    proteins_to_enrich = entities_to_enrich[
-        entities_to_enrich["entity_type"] == entity_types.protein
-    ]
-    if not proteins_to_enrich.empty:
-        pids_to_fetch = proteins_to_enrich["entity_id"].tolist()
-        sequence_map = provider.get_sequences(pids_to_fetch, force_restart=restart_flag)
-        if sequence_map:
-            enriched_df["structure"].fillna(
-                enriched_df["entity_id"].map(sequence_map), inplace=True
+    prot_mask = entities_to_enrich["entity_type"] == "protein"
+    if prot_mask.any():
+        pids_to_fetch = (
+            entities_to_enrich.loc[prot_mask, "entity_id"].dropna().unique().tolist()
+        )
+        if pids_to_fetch:
+            sequence_map = provider.get_sequences(
+                pids_to_fetch, force_restart=restart_flag
             )
+            if sequence_map:
+                mapped_sequences = enriched_df.loc[to_enrich_mask, "entity_id"].map(
+                    sequence_map
+                )
+                enriched_df["structure"].fillna(mapped_sequences, inplace=True)
 
-    if config.runtime.verbose > 0:
-        final_with_structure = enriched_df["structure"].notna().sum()
-        print(
-            f"  - Enrichment complete. {final_with_structure} entities now have structures."
-        )
-
+    final_with_structure = enriched_df["structure"].notna().sum()
+    logger.info(
+        f"Enrichment complete. {final_with_structure} / {len(enriched_df)} entities now have structures."
+    )
     return enriched_df
-
-
-def _stage4_validate_entities(
-    enriched_entities_df: pd.DataFrame, config: AppConfig
-) -> pd.DataFrame:
-    """
-    【新】Stage 4: 将完整的实体清单送入中心化校验服务。
-    """
-    if config.runtime.verbose > 0:
-        print(
-            "\n--- [Pipeline Stage 4] Performing centralized entity validation... ---"
-        )
-
-    return validate_and_filter_entities(enriched_entities_df, config)
-
-
-def _stage5_finalize_and_filter(
-    id_mapper: IDMapper,
-    valid_entities_df: pd.DataFrame,
-    processor_outputs: Dict[str, pd.DataFrame],
-    config: AppConfig,
-) -> pd.DataFrame:
-    """
-    【新】Stage 5: 封装了IDMapper最终化和交互过滤两个紧密相关的步骤。
-    """
-    if config.runtime.verbose > 0:
-        print(
-            "\n--- [Pipeline Stage 5] Finalizing IDMapper and filtering interactions... ---"
-        )
-
-    # a. 使用纯净实体ID集合，来最终化IDMapper的状态
-    valid_entity_ids = set(valid_entities_df["entity_id"])
-    id_mapper.finalize_with_valid_entities(valid_entity_ids)
-
-    # b. 保存包含所有元信息的 nodes.csv
-    id_mapper.save_maps_to_csv(valid_entities_df)
-
-    # c. 过滤原始的交互列表
-    all_interactions_df = pd.concat(list(processor_outputs.values()), ignore_index=True)
-
-    schema = config.data_structure.schema.internal.canonical_interaction
-
-    source_is_valid = all_interactions_df[schema.source_id].isin(valid_entity_ids)
-    target_is_valid = all_interactions_df[schema.target_id].isin(valid_entity_ids)
-
-    pure_interactions_df = all_interactions_df[source_is_valid & target_is_valid]
-
-    if config.runtime.verbose > 0:
-        print(
-            f"  - Filtering complete. {len(pure_interactions_df)} / {len(all_interactions_df)} interactions remain."
-        )
-
-    return pure_interactions_df.reset_index(drop=True)
 
 
 def _stage6_generate_features(
@@ -252,7 +178,7 @@ def _stage6_generate_features(
 
     该函数通过动态查询IDMapper来处理任意数量的分子和蛋白质亚型。
     """
-    print(
+    logger.info(
         "\n--- [Pipeline Stage 7] Generating or loading node features for all subtypes... ---"
     )
 
@@ -260,23 +186,23 @@ def _stage6_generate_features(
 
     # --- 缓存检查 (逻辑不变) ---
     if final_features_path.exists() and not restart_flag:
-        print(
+        logger.info(
             f"--> [Cache Hit] Loading final aggregated features from '{final_features_path.name}'."
         )
         features_np = np.load(final_features_path)
 
         if len(features_np) != id_mapper.num_total_entities:
-            print(
+            logger.warning(
                 f"    - ⚠️ WARNING: Cached feature file size ({len(features_np)}) does not match IDMapper count ({id_mapper.num_total_entities}). Regenerating."
             )
         else:
             num_molecules = id_mapper.num_molecules
             molecule_embeddings = torch.from_numpy(features_np[:num_molecules])
             protein_embeddings = torch.from_numpy(features_np[num_molecules:])
-            print("--> Features loaded successfully.")
+            logger.info("--> Features loaded successfully.")
             return molecule_embeddings, protein_embeddings
 
-    print("--> [Cache Miss/Regenerate] Starting feature calculation process...")
+    logger.info("--> [Cache Miss/Regenerate] Starting feature calculation process...")
 
     # --- 1. “分类打包”工作流 ---
 
@@ -359,7 +285,9 @@ def _stage6_generate_features(
         and protein_embeddings.numel() > 0
         and molecule_embeddings.shape[1] != protein_embeddings.shape[1]
     ):
-        print("    - WARNING: Embedding dimensions differ. Applying linear projection.")
+        logger.warning(
+            "    - WARNING: Embedding dimensions differ. Applying linear projection."
+        )
         proj = torch.nn.Linear(
             molecule_embeddings.shape[1], protein_embeddings.shape[1]
         ).to(device)
@@ -374,7 +302,7 @@ def _stage6_generate_features(
     )
     rt.ensure_path_exists(final_features_path)
     np.save(final_features_path, all_feature_embeddings)
-    print(
+    logger.info(
         f"--> Final aggregated features saved to: '{final_features_path.name}'. Shape: {all_feature_embeddings.shape}"
     )
 
@@ -383,120 +311,129 @@ def _stage6_generate_features(
 
 def _stage7_split_and_build_graphs(
     config: AppConfig,
-    id_mapper: IDMapper,  # 这是一个已经最终化的、纯净的IDMapper
-    pure_interactions_df: pd.DataFrame,  # 这是一个纯净的、使用【权威ID】的交互列表
+    id_mapper: IDMapper,
+    pure_interaction_store: InteractionStore,
     molecule_embeddings: torch.Tensor,
     protein_embeddings: torch.Tensor,
 ):
     """
-    【V9 - 最终版】
+    【V11 - 最终集成版】
     负责数据采样、划分、图构建和标签生成的总指挥。
+    完全基于 InteractionStore 和 Executor-driven 服务进行编排。
     """
-    print(
-        "\n--- [Pipeline Stage 8] Orchestrating sampling, splitting, and graph/label generation... ---"
+    logger.info(
+        "--- [Pipeline Stage 7] Orchestrating Sampling, Splitting, and Graph/Label Generation... ---"
     )
+    stage7_rng = np.random.default_rng(config.runtime.seed)
 
-    stage8_rng = np.random.default_rng(config.runtime.seed)
-    schema = config.data_structure.schema.internal.canonical_interaction
+    # 1. 在所有下游任务开始前，一次性实例化 SelectorExecutor
+    executor = SelectorExecutor(id_mapper, verbose=config.runtime.verbose > 1)
 
-    # --- 1. [NEW] 将权威ID交互对，转换为逻辑ID交互对 ---
-    # 我们直接在这里，一次性地完成映射
-    # IDMapper 现在有一个 auth_id -> logic_id 的全局映射
-    source_logic_ids = pure_interactions_df[schema.source_id].map(
-        id_mapper.auth_id_to_logic_id_map
+    # 2. 对纯净的交互数据执行采样策略
+    sampled_store = pure_interaction_store.apply_sampling_strategy(
+        config=config, executor=executor, seed=int(stage7_rng.integers(1_000_000))
     )
-    target_logic_ids = pure_interactions_df[schema.target_id].map(
-        id_mapper.auth_id_to_logic_id_map
-    )
-    if source_logic_ids.isna().any() or target_logic_ids.isna().any():
-        raise ValueError(
-            "Failed to map some authoritative IDs to logic IDs. Check for inconsistencies."
-        )
-    # 组合成 (u, v, rel_type) 的元组列表
-    all_positive_pairs_with_type = list(
-        zip(
-            source_logic_ids,
-            target_logic_ids,
-            pure_interactions_df[schema.relation_type],
-        )
-    )
-
-    # --- 2. 采样 (现在输入的是【逻辑ID】对) ---
-    sampled_pairs_with_type, sampled_pairs_set_global = sample_interactions(
-        all_positive_pairs=all_positive_pairs_with_type,
-        id_mapper=id_mapper,  # Sampler 仍然需要 id_mapper 来判断类型
-        config=config,
-        seed=stage8_rng.integers(1_000_000),
-    )
-    if not sampled_pairs_with_type:
-        print(
-            "⚠️  WARNING: Sampling resulted in an empty dataset. Halting graph building."
+    if len(sampled_store) == 0:
+        logger.warning(
+            "Sampling resulted in an empty dataset. Halting downstream tasks."
         )
         return
 
-    # --- 3. 实例化分裂器和指挥者 (逻辑不变) ---
+    # 3. 实例化数据划分器
     data_splitter = DataSplitter(
         config=config,
-        positive_pairs=sampled_pairs_with_type,
+        store=sampled_store,
         id_mapper=id_mapper,
-        seed=stage8_rng.integers(1_000_000),
-    )
-    director = GraphDirector(config)
-    graph_output_path_template = get_path(
-        config, "processed.specific.graph_template", suffix="train"
+        executor=executor,
+        seed=int(stage7_rng.integers(1_000_000)),
     )
 
-    # 4. 循环每个Fold进行图构建
-    for fold_idx, global_train_pairs, global_test_pairs in data_splitter:
-        print(
+    # 4. 准备 Director 和文件路径工厂
+    director = GraphDirector(config)
+    graph_output_path_factory = get_path(config, "processed.specific.graph_template")
+
+    # 5. 获取【采样后】的全局正样本集合，用于所有fold的负采样碰撞检查
+    #    这个集合包含的是【权威ID】对
+    global_positive_pairs_auth = {
+        (row[sampled_store._schema.source_id], row[sampled_store._schema.target_id])
+        for _, row in sampled_store.dataframe.iterrows()
+    }
+
+    # 6. 循环每个Fold，执行图构建和标签生成
+    for (
+        fold_idx,
+        train_graph_store,
+        train_labels_store,
+        test_store,
+        cold_start_entity_ids_logic,
+    ) in data_splitter:
+        logger.info(
             f"\n{'=' * 30} PROCESSING FOLD {fold_idx} / {config.training.k_folds} {'=' * 30}"
         )
 
-        # a. 定义此Fold的相关实体（仅基于训练集）
-        relevant_mol_ids = set()
-        relevant_prot_ids = set()
-        logic_id_to_type = id_mapper.logic_id_to_type_map
+        # a. 实例化 SupervisionFileManager
+        label_manager = SupervisionFileManager(
+            fold_idx=fold_idx,
+            config=config,
+            id_mapper=id_mapper,
+            executor=executor,
+            global_positive_set=global_positive_pairs_auth,  # <--- 传入权威ID集合
+        )
 
-        for u, v, _ in global_train_pairs:
-            # 检查源节点
-            u_type = logic_id_to_type.get(u)
-            if u_type:
-                if id_mapper.is_molecule(u_type):
-                    relevant_mol_ids.add(u)
-                elif id_mapper.is_protein(u_type):
-                    relevant_prot_ids.add(u)
+        # b. 【先行】生成标签文件
+        #    这一步现在非常干净，只负责I/O
+        label_manager.generate_and_save(
+            train_labels_store=train_labels_store,
+            test_store=test_store,
+        )
 
-            # 检查目标节点
-            v_type = logic_id_to_type.get(v)
-            if v_type:
-                if id_mapper.is_molecule(v_type):
-                    relevant_mol_ids.add(v)
-                elif id_mapper.is_protein(v_type):
-                    relevant_prot_ids.add(v)
+        # c. 为图构建准备上下文 (GraphBuildContext)
+        #    从 train_graph_store 中提取所有相关的实体ID（权威ID）
+        relevant_auth_ids = train_graph_store.get_all_entity_auth_ids()
+        relevant_logic_ids = {
+            id_mapper.auth_id_to_logic_id_map[auth_id] for auth_id in relevant_auth_ids
+        }
 
-        # b. 创建局部上下文
+        # 将逻辑ID按分子/蛋白质分类
+        relevant_mol_ids_logic = {
+            lid
+            for lid in relevant_logic_ids
+            if id_mapper.is_molecule(id_mapper.logic_id_to_type_map.get(lid))
+        }
+        relevant_prot_ids_logic = {
+            lid
+            for lid in relevant_logic_ids
+            if id_mapper.is_protein(id_mapper.logic_id_to_type_map.get(lid))
+        }
+
         context = GraphBuildContext(
             fold_idx=fold_idx,
             global_id_mapper=id_mapper,
             global_mol_embeddings=molecule_embeddings,
             global_prot_embeddings=protein_embeddings,
-            relevant_mol_ids=relevant_mol_ids,
-            relevant_prot_ids=relevant_prot_ids,
+            relevant_mol_ids=relevant_mol_ids_logic,
+            relevant_prot_ids=relevant_prot_ids_logic,
             config=config,
         )
-        local_train_pairs = context.convert_pairs_to_local(global_train_pairs)
 
-        # c. 实例化Builder并构建图
+        # d. 将权威ID的训练图交互，转换为局部ID
+        train_graph_pairs_logic = train_graph_store.get_mapped_positive_pairs(id_mapper)
+        local_train_pairs = context.convert_pairs_to_local(train_graph_pairs_logic)
+
+        # e. 实例化Builder并构建图
         builder = HeteroGraphBuilder(
             config=config,
             context=context,
             molecule_embeddings=context.local_mol_embeddings,
             protein_embeddings=context.local_prot_embeddings,
+            cold_start_entity_ids_local=context.convert_ids_to_local(
+                cold_start_entity_ids_logic
+            ),
         )
         director.construct(builder, local_train_pairs)
         local_graph_df = builder.get_graph()
 
-        # d. 将图转换回全局ID空间并保存
+        # f. 将图转换回全局ID空间并保存
         graph_schema = config.data_structure.schema.internal.graph_output
         global_graph_df = context.convert_dataframe_to_global(
             local_graph_df,
@@ -504,22 +441,12 @@ def _stage7_split_and_build_graphs(
             target_col=graph_schema.target_node,
         )
 
-        # 【补完】获取路径并保存文件
-        graph_output_path = graph_output_path_template(prefix=f"fold_{fold_idx}")
+        graph_output_path = graph_output_path_factory(
+            prefix=f"fold_{fold_idx}", suffix="train"
+        )
         rt.ensure_path_exists(graph_output_path)
         global_graph_df.to_csv(graph_output_path, index=False)
 
-        if config.runtime.verbose > 0:
-            print(
-                f"--> Graph for Fold {fold_idx} saved to '{graph_output_path.name}' with {len(global_graph_df)} edges."
-            )
-
-        # e. 生成监督文件
-        label_manager = SupervisionFileManager(
-            fold_idx=fold_idx,
-            config=config,
-            global_id_mapper=id_mapper,
-            global_positive_pairs_set=sampled_pairs_set_global,
-            seed=config.runtime.seed,
+        logger.info(
+            f"--> Graph for Fold {fold_idx} saved to '{graph_output_path.name}' with {len(global_graph_df)} edges."
         )
-        label_manager.generate_and_save(global_train_pairs, global_test_pairs)

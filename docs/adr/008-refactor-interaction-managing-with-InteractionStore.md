@@ -1,6 +1,6 @@
 # ADR-008: 将交互处理重构为以 `InteractionStore` 为中心的统一关系管理模型
 
-- **状态：** 已接受 (Accepted)
+- **状态：** 已实施 (Implemented)
 - **日期：** 2025-11-10
 
 ## 背景 (Context)

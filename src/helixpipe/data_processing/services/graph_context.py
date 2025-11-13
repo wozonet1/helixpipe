@@ -104,7 +104,7 @@ class GraphBuildContext:
         logger.debug("  --- Step 3: Building Local ID to Type Map ---")
         self.local_id_to_type_map: Dict[int, str] = {}
         for local_id, global_id in enumerate(self.local_to_global_id_list):
-            node_type = global_id_mapper.get_node_type(global_id)
+            node_type = global_id_mapper.get_meta_by_logic_id(global_id)["type"]
             self.local_id_to_type_map[local_id] = node_type
             logger.debug(
                 f"      - Local ID {local_id} (Global {global_id}) -> Type '{node_type}'"

@@ -245,8 +245,9 @@ class IDMapper:
         nodes_df[nodes_schema.structure] = nodes_df[nodes_schema.authoritative_id].map(
             structure_map
         )
-        nodes_df[nodes_schema.structure].fillna("", inplace=True)  # 确保没有NaN
-
+        nodes_df.loc[:, nodes_schema.structure] = nodes_df[
+            nodes_schema.structure
+        ].fillna("")
         output_path = get_path(self._config, "processed.common.nodes_metadata")
         rt.ensure_path_exists(output_path)
         nodes_df.to_csv(output_path, index=False)
