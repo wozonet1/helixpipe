@@ -1,7 +1,9 @@
 from __future__ import annotations  # 允许类方法返回自身的类型提示
 
+import math
 from typing import TYPE_CHECKING, Any, Dict, List, Set, Tuple
 
+import numpy as np
 import pandas as pd
 
 from .selector_executor import SelectorExecutor
@@ -10,6 +12,9 @@ if TYPE_CHECKING:
     from helixpipe.configs import AppConfig, InteractionSelectorConfig
 
     from .id_mapper import IDMapper
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class InteractionStore:
@@ -41,15 +46,13 @@ class InteractionStore:
 
         if not all_dfs:
             self._df = pd.DataFrame()
-            if self._verbose > 0:
-                print("--- [InteractionStore] Initialized with an empty DataFrame.")
+            logger.error("--- [InteractionStore] Initialized with an empty DataFrame.")
             return
 
         aggregated_df = pd.concat(all_dfs, ignore_index=True)
-        if self._verbose > 0:
-            print(
-                f"--- [InteractionStore] Initialized with {len(aggregated_df)} total raw interactions."
-            )
+        logger.info(
+            f"--- [InteractionStore] Initialized with {len(aggregated_df)} total raw interactions."
+        )
 
         # 2. 【核心新增】调用规范化方法
         self._df = self._canonicalize_interactions(aggregated_df)
@@ -61,8 +64,7 @@ class InteractionStore:
         1. 异质交互：priority 低的在 source, priority 高的在 target。
         2. 同质交互：ID 字典序小的在 source, 字典序大的在 target。
         """
-        if self._verbose > 0:
-            print("    - Canonicalizing interaction pairs...")
+        logger.info("    - Canonicalizing interaction pairs...")
         if df.empty:
             return df
 
@@ -91,10 +93,9 @@ class InteractionStore:
         )
 
         num_to_swap = should_swap_mask.sum()
-        if self._verbose > 0:
-            print(
-                f"      - Found {num_to_swap} / {len(df)} interactions to be swapped."
-            )
+        logger.info(
+            f"      - Found {num_to_swap} / {len(df)} interactions to be swapped."
+        )
 
         if num_to_swap == 0:
             return df
@@ -111,8 +112,7 @@ class InteractionStore:
         df_swapped.loc[should_swap_mask, [s_id_col, s_type_col]] = target_to_swap
         df_swapped.loc[should_swap_mask, [t_id_col, t_type_col]] = source_to_swap
 
-        if self._verbose > 0:
-            print("    - Canonicalization complete.")
+        logger.info("    - Canonicalization complete.")
         return df_swapped
 
     @classmethod
@@ -158,38 +158,44 @@ class InteractionStore:
         return cls._from_dataframe(concatenated_df, config)
 
     def sample(
-        self, fraction: float = 1.0, n: int | None = None, seed: int | None = None
+        self,
+        fraction: float | None = None,
+        n: int | None = None,
+        seed: int | None = None,
     ) -> InteractionStore:
         """
-        【不可变操作】
+        【V2 - 修正版】
         对内部的交互进行随机采样，并返回一个新的、经过采样的InteractionStore实例。
 
-        支持按比例(fraction)或按绝对数量(n)进行采样。如果同时提供，n优先。
-
-        Args:
-            fraction (float): 要采样的比例 (0.0 to 1.0)。默认为 1.0 (不采样)。
-            n (int | None): 要采样的绝对数量。如果提供，则忽略fraction。
-            seed (int | None): 用于采样的随机种子，以保证可复现性。
-
-        Returns:
-            InteractionStore: 一个只包含采样后交互的新实例。
+        智能处理 n 和 fraction 参数，n 优先。
         """
         if self._df.empty:
             return self
 
-        # 如果采样比例为1.0且没有指定n，则无需采样，直接返回自身拷贝
-        if n is None and fraction >= 1.0:
+        # --- 【核心修正】智能参数选择逻辑 ---
+
+        # 1. 确定采样模式和参数
+        if n is not None:
+            # 如果 n 被指定，则忽略 fraction
+            sample_kwargs = {"n": n}
+        elif fraction is not None:
+            # 如果只指定了 fraction
+            if fraction >= 1.0:
+                # fraction >= 1.0 意味着不进行采样，直接返回拷贝
+                return self._from_dataframe(self._df.copy(), self._config)
+            sample_kwargs = {"frac": fraction}
+        else:
+            # 如果 n 和 fraction 都未指定，则不进行采样
             return self._from_dataframe(self._df.copy(), self._config)
 
-        # 使用pandas内置的高效 .sample() 方法
+        # 2. 调用 pandas 的 sample 方法
         sampled_df = self._df.sample(
-            n=n, frac=fraction, random_state=seed, replace=False, ignore_index=True
+            **sample_kwargs, random_state=seed, replace=False, ignore_index=True
         )
 
-        if self._verbose > 1:
-            print(
-                f"    - [InteractionStore.sample] Sampled {len(sampled_df)} interactions from {len(self._df)}."
-            )
+        logger.info(
+            f"    - [InteractionStore.sample] Sampled {len(sampled_df)} interactions from {len(self._df)}."
+        )
 
         return self._from_dataframe(sampled_df, self._config)
 
@@ -254,10 +260,9 @@ class InteractionStore:
 
         pure_df = self._df[source_is_valid & target_is_valid].copy()
 
-        if self._verbose > 0:
-            print(
-                f"    - [InteractionStore] Filtered by entities. {len(pure_df)} / {len(self._df)} interactions remain."
-            )
+        logger.info(
+            f"    - [InteractionStore] Filtered by entities. {len(pure_df)} / {len(self._df)} interactions remain."
+        )
 
         return self._from_dataframe(pure_df, self._config)
 
@@ -307,12 +312,10 @@ class InteractionStore:
         此方法现在将所有复杂的匹配逻辑完全委托给 SelectorExecutor 服务。
         """
         if self._df.empty:
-            if self._verbose > 0:
-                print("    - [Store.query] Store is empty, returning self.")
+            logger.warning("    - [Store.query] Store is empty, returning self.")
             return self
         if selector is None:
-            if self._verbose > 0:
-                print("    - [Store.query] Selector is None, returning self.")
+            logger.warning("    - [Store.query] Selector is None, returning self.")
             return self
 
         # 1. 实例化执行器
@@ -329,10 +332,9 @@ class InteractionStore:
             relation_col=self._schema.relation_type,
         )
 
-        if self._verbose > 0:
-            print(
-                f"    - [Store.query] Executed selector, {final_mask.sum()} / {len(self._df)} interactions matched."
-            )
+        logger.info(
+            f"    - [Store.query] Executed selector, {final_mask.sum()} / {len(self._df)} interactions matched."
+        )
 
         # 3. 使用最终掩码筛选 DataFrame，并创建新实例
         filtered_df = self._df.loc[final_mask]
@@ -346,3 +348,179 @@ class InteractionStore:
     def dataframe(self) -> pd.DataFrame:
         """提供对内部DataFrame的只读访问。"""
         return self._df.copy()
+
+    def apply_sampling_strategy(
+        self, config: AppConfig, executor: SelectorExecutor, seed: int
+    ) -> InteractionStore:
+        """
+        【便利层API - 极限调试版】
+        根据配置，以流水线方式对Store中的交互执行一个完整的采样策略，
+        并返回一个新的、经过采样的InteractionStore实例。
+
+        执行顺序:
+        1. (如果启用) 分层采样 (Stratified Sampling)。
+        2. (如果启用) 在第一步的结果上，进行统一采样 (Uniform Sampling)。
+        """
+        sampling_cfg = config.data_params.sampling
+        rng = np.random.default_rng(seed)
+        logger.debug("--- [apply_sampling_strategy] START ---")
+        logger.debug(f"Initial store size: {len(self._df)}")
+
+        if not sampling_cfg.enabled or self._df.empty:
+            logger.debug("Sampling disabled or store is empty. Returning self.")
+            return self
+
+        working_store = self
+
+        # --- 阶段1: 分层采样 ---
+        if sampling_cfg.stratified_sampling.enabled:
+            working_store = self._apply_stratified_sampling(
+                working_store, sampling_cfg.stratified_sampling, executor, rng
+            )
+            logger.debug(f"Store size after stratified sampling: {len(working_store)}")
+
+        # --- 阶段2: 统一采样 ---
+        if sampling_cfg.uniform_sampling.enabled:
+            uniform_cfg = sampling_cfg.uniform_sampling
+            if uniform_cfg.fraction < 1.0:
+                logger.debug(
+                    f"Applying Uniform Sampling with fraction: {uniform_cfg.fraction}"
+                )
+
+                len_before_uniform = len(working_store)
+                # 检查以避免在空DataFrame上采样
+                if len_before_uniform > 0:
+                    raw_num_to_sample = len_before_uniform * uniform_cfg.fraction
+                    num_to_sample = math.ceil(raw_num_to_sample)
+                    logger.debug(
+                        f"Calculation for uniform sampling: ceil({len_before_uniform} * {uniform_cfg.fraction}) = ceil({raw_num_to_sample}) = {num_to_sample}"
+                    )
+
+                    working_store = working_store.sample(
+                        n=num_to_sample, seed=int(rng.integers(1_000_000))
+                    )
+                    logger.debug(
+                        f"Store size after uniform sampling: {len(working_store)}"
+                    )
+                else:
+                    logger.debug(
+                        "Working store is empty before uniform sampling. Skipping."
+                    )
+
+        logger.debug(
+            f"--- [apply_sampling_strategy] END --- Final size: {len(working_store)}"
+        )
+        return working_store
+
+    def _apply_stratified_sampling(
+        self,
+        store: InteractionStore,
+        stratified_cfg,
+        executor: SelectorExecutor,
+        rng: np.random.Generator,
+    ) -> InteractionStore:
+        logger.debug("  --- [_apply_stratified_sampling] START ---")
+
+        # 1. 分层与归属
+        strata_dfs = {}
+        strata_counts = {}
+        unclassified_mask = pd.Series(True, index=store.dataframe.index)
+
+        for stratum_cfg in stratified_cfg.strata:
+            mask = executor.get_interaction_match_mask(
+                df=store.dataframe,
+                selector=stratum_cfg.selector,
+                source_col=self._schema.source_id,
+                target_col=self._schema.target_id,
+                relation_col=self._schema.relation_type,
+            )
+            # 确保一个交互只属于第一个匹配到的stratum
+            mask &= unclassified_mask
+
+            strata_dfs[stratum_cfg.name] = store.dataframe[mask]
+            strata_counts[stratum_cfg.name] = mask.sum()
+            unclassified_mask &= ~mask
+
+        logger.debug(f"  Initial strata counts: {strata_counts}")
+
+        final_sampled_dfs = []
+
+        # 2. 第一轮循环：处理所有使用 fraction 的层 (包括锚点层)
+        logger.debug("  --- First Pass: Fraction-based strata ---")
+        for stratum_cfg in stratified_cfg.strata:
+            if stratum_cfg.ratio_to is None:
+                stratum_df = strata_dfs[stratum_cfg.name]
+                if not stratum_df.empty:
+                    len_before = len(stratum_df)
+                    frac = (
+                        stratum_cfg.fraction
+                        if stratum_cfg.fraction is not None
+                        else 1.0
+                    )
+                    raw_num = len_before * frac
+                    num_to_sample = math.ceil(raw_num)
+
+                    sampled_df = stratum_df.sample(n=num_to_sample, random_state=rng)
+                    final_sampled_dfs.append(sampled_df)
+                    # 更新计数值，为第二轮做准备
+                    strata_counts[stratum_cfg.name] = len(sampled_df)
+                    logger.debug(
+                        f"    - Stratum '{stratum_cfg.name}': ceil({len_before} * {frac}) = ceil({raw_num}) = {num_to_sample}. Sampled {len(sampled_df)}."
+                    )
+                else:
+                    logger.debug(
+                        f"    - Stratum '{stratum_cfg.name}': Empty, nothing to sample."
+                    )
+
+        # 3. 第二轮循环：处理所有使用 ratio_to 的层
+        logger.debug("  --- Second Pass: Ratio-based strata ---")
+        logger.debug(f"  Strata counts before second pass: {strata_counts}")
+        for stratum_cfg in stratified_cfg.strata:
+            if stratum_cfg.ratio_to is not None:
+                anchor_name = stratum_cfg.ratio_to
+                if anchor_name not in strata_counts:
+                    raise ValueError(
+                        f"Anchor stratum '{anchor_name}' not found or was processed out of order."
+                    )
+
+                anchor_count = strata_counts[anchor_name]
+                stratum_df = strata_dfs[stratum_cfg.name]
+
+                if not stratum_df.empty:
+                    len_before = len(stratum_df)
+                    ratio = stratum_cfg.ratio if stratum_cfg.ratio is not None else 1.0
+                    raw_num = anchor_count * ratio
+                    num_to_sample = math.ceil(raw_num)
+                    num_to_sample = min(num_to_sample, len_before)  # 不能超过上限
+
+                    sampled_df = stratum_df.sample(n=num_to_sample, random_state=rng)
+                    final_sampled_dfs.append(sampled_df)
+                    logger.debug(
+                        f"    - Stratum '{stratum_cfg.name}': ceil({anchor_count} * {ratio}) = ceil({raw_num}) = {num_to_sample}. Sampled {len(sampled_df)}."
+                    )
+                else:
+                    logger.debug(
+                        f"    - Stratum '{stratum_cfg.name}': Empty, nothing to sample."
+                    )
+
+        # 4. 收尾工作
+        unclassified_df = store.dataframe[unclassified_mask]
+        if not unclassified_df.empty:
+            final_sampled_dfs.append(unclassified_df)
+            logger.debug(f"  - Kept {len(unclassified_df)} unclassified interactions.")
+
+        if not final_sampled_dfs:
+            logger.debug(
+                "  No data left after all sampling strata. Returning empty store."
+            )
+            return self._from_dataframe(pd.DataFrame(), self._config)
+
+        final_df = pd.concat(final_sampled_dfs, ignore_index=True)
+        logger.debug(f"  Total size after concatenating all strata: {len(final_df)}")
+
+        # 使用 frac=1 打乱顺序
+        final_df_shuffled = final_df.sample(frac=1, random_state=rng).reset_index(
+            drop=True
+        )
+        logger.debug("  --- [_apply_stratified_sampling] END ---")
+        return self._from_dataframe(final_df_shuffled, self._config)

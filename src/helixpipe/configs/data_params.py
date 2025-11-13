@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from .training import EntitySelectorConfig
+from .training import InteractionSelectorConfig
 
 # --------------------------------------------------------------------------
 # 嵌套的 Dataclasses (这部分保持不变)
@@ -15,7 +15,7 @@ class StratumConfig:
     """定义一个采样层的配置规则。"""
 
     name: str  # 每个层的唯一名称，用于被其他层引用
-    selector: EntitySelectorConfig  # 定义该层包含哪些交互 (通过源实体来判断)
+    selector: InteractionSelectorConfig
     fraction: Optional[float] = 1.0  # 采样比例 (与 ratio_to 互斥)
     ratio_to: Optional[str] = None  # (可选) 引用另一个层的 name
     ratio: Optional[float] = 1.0  # 与 ratio_to 配合使用，定义采样比例

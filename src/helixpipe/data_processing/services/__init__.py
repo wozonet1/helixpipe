@@ -12,7 +12,6 @@ from .id_validation_service import get_human_uniprot_whitelist, get_valid_pubche
 from .interaction_store import InteractionStore
 from .label_generator import SupervisionFileManager
 from .purifiers import validate_protein_structure, validate_smiles_structure
-from .sampler import sample_interactions
 from .selector_executor import SelectorExecutor
 from .splitter import DataSplitter
 from .structure_provider import StructureProvider
@@ -36,7 +35,6 @@ __all__ = [
     # 常用轻量级函数
     get_human_uniprot_whitelist,
     get_valid_pubchem_cids,
-    sample_interactions,
     validate_smiles_structure,
     validate_protein_structure,
 ]
