@@ -49,9 +49,8 @@ class AppConfig:
     dataset_collection: DatasetCollectionConfig = field(
         default_factory=DatasetCollectionConfig
     )
-
-    # --- 明确列出所有顶层字段 ---
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    # --- 明确列出所有顶层字段 ---
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     global_paths: GlobalPathsConfig = field(default_factory=GlobalPathsConfig)
@@ -83,6 +82,7 @@ def register_all_schemas():
             "analysis": AnalysisConfig,
             "validators": ValidatorsConfig,
             "dataset_collection": DatasetCollectionConfig,
+            "training": TrainingConfig,
             # 注意：training, runtime等顶层节点没有“组”的概念，所以不在这里注册
         }
 

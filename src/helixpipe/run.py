@@ -7,7 +7,7 @@ from helixpipe.pipelines import process_data
 
 # from helixpipe.train import train  # noqa: F401
 # <--- 导入我们的新策略函数
-from helixpipe.utils import register_hydra_resolvers
+from helixpipe.utils import register_hydra_resolvers, setup_logging
 
 register_all_schemas()
 register_hydra_resolvers()
@@ -21,6 +21,7 @@ def run_experiment(cfg: AppConfig):
     """
     项目主实验流程的顶层入口。
     """
+    setup_logging(cfg)
     # --- 阶段 1: 调用策略函数加载数据 ---
     # 这一行代码取代了所有之前的数据加载逻辑
     processor_outputs = load_datasets(cfg)

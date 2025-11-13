@@ -37,6 +37,7 @@ class TrainingConfig:
     【结构化配置】定义所有与模型训练和评估相关的参数。
     """
 
+    name: str = "default"
     learning_rate: float = 0.0005
     epochs: int = 200
     negative_sampling_ratio: float = 1.0

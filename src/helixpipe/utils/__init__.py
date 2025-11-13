@@ -28,6 +28,9 @@ from .hydra_setup import register_hydra_resolvers
 # 从 log.py 中提升装饰器
 from .log import log_step
 
+# log_setup.py
+from .log_setup import setup_logging
+
 # 从 pathing.py 中提升核心路径获取函数
 from .pathing import get_path
 
@@ -47,4 +50,6 @@ __all__ = [
     log_step,
     # pathing.py
     get_path,
+    # log_setup.py
+    setup_logging,
 ]
