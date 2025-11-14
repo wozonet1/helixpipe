@@ -1,5 +1,6 @@
 # src/helixpipe/data_processing/datasets/string_processor.py
 # src/helixpipe/data_processing/datasets/string_processor.py
+import logging
 from typing import Dict
 
 import pandas as pd
@@ -9,6 +10,8 @@ from helixpipe.configs import AppConfig, register_all_schemas
 from helixpipe.utils import get_path, register_hydra_resolvers
 
 from .base_processor import BaseProcessor
+
+logger = logging.getLogger(__name__)
 
 
 class StringProcessor(BaseProcessor):
@@ -36,7 +39,7 @@ class StringProcessor(BaseProcessor):
             )
 
         if self.verbose > 0:
-            print(
+            logger.info(
                 f"  - [StringProcessor Pre-computation] Building ID map from '{aliases_path.name}'..."
             )
 
@@ -67,7 +70,9 @@ class StringProcessor(BaseProcessor):
         ).to_dict()
 
         if self.verbose > 0:
-            print(f"    - Map created with {len(id_map)} unique STRING ID entries.")
+            logger.info(
+                f"    - Map created with {len(id_map)} unique STRING ID entries."
+            )
 
         return id_map
 
@@ -113,7 +118,7 @@ class StringProcessor(BaseProcessor):
         步骤3: 将DataFrame重塑为“规范化交互格式”。
         """
         if self.verbose > 0:
-            print("  - Reshaping DataFrame to canonical interaction format...")
+            logger.info("  - Reshaping DataFrame to canonical interaction format...")
 
         final_df = pd.DataFrame()
         entity_names = self.config.knowledge_graph.entity_types
@@ -138,7 +143,7 @@ class StringProcessor(BaseProcessor):
         - 通用校验（如ID白名单）将在下游的 EntityValidator 中统一进行。
         """
         if self.verbose > 0:
-            print("  - No domain-specific filters to apply for StringProcessor.")
+            logger.info("  - No domain-specific filters to apply for StringProcessor.")
 
         return df
 
@@ -171,17 +176,17 @@ if __name__ == "__main__":
     ):
         cfg: "AppConfig" = compose(config_name="config", overrides=final_overrides)
 
-    print("\n" + "~" * 80)
-    print(" " * 25 + "HYDRA COMPOSED CONFIGURATION")
-    print(OmegaConf.to_yaml(cfg))
-    print("~" * 80 + "\n")
+    logger.info("\n" + "~" * 80)
+    logger.info(" " * 25 + "HYDRA COMPOSED CONFIGURATION")
+    logger.info(OmegaConf.to_yaml(cfg))
+    logger.info("~" * 80 + "\n")
 
     processor = StringProcessor(config=cfg)
     final_df = processor.process()
 
     if final_df is not None and not final_df.empty:
-        print(
+        logger.info(
             f"\n✅ String processing complete. Generated {len(final_df)} final interactions."
         )
     else:
-        print("\n⚠️  String processing resulted in an empty dataset.")
+        logger.warning("\n⚠️  String processing resulted in an empty dataset.")

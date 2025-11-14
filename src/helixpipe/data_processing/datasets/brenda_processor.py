@@ -1,6 +1,7 @@
 # 文件: src/helixpipe/data_processing/datasets/brenda_processor.py (生产就绪最终版)
 
 import json
+import logging
 import pickle as pkl
 import re
 from typing import Any, Dict, List, Union
@@ -19,6 +20,8 @@ from helixpipe.utils import (
 )
 
 from .base_processor import BaseProcessor
+
+logger = logging.getLogger(__name__)
 
 
 class BrendaProcessor(BaseProcessor):
@@ -45,7 +48,7 @@ class BrendaProcessor(BaseProcessor):
                 "Please run the 'build_name_cid_map.py' script first."
             )
         if self.verbose > 0:
-            print(
+            logger.info(
                 f"  - [BrendaProcessor Pre-computation] Loading name-to-CID map from '{map_path.name}'..."
             )
 
@@ -53,7 +56,7 @@ class BrendaProcessor(BaseProcessor):
             name_map = pkl.load(f)
 
         if self.verbose > 0:
-            print(f"    - Map loaded with {len(name_map)} unique name entries.")
+            logger.info(f"    - Map loaded with {len(name_map)} unique name entries.")
         return name_map
 
     def _load_raw_data(self) -> Dict[str, Any]:
@@ -167,7 +170,7 @@ class BrendaProcessor(BaseProcessor):
             return df
 
         if self.verbose > 0:
-            print(
+            logger.info(
                 "  - Applying domain-specific filters: Relation-Type based Thresholds..."
             )
 
@@ -196,7 +199,7 @@ class BrendaProcessor(BaseProcessor):
         df_filtered = df[pass_mask]
 
         if self.verbose > 0:
-            print(
+            logger.info(
                 f"    - {len(df_filtered)} / {len(df)} records passed relation-type based filters."
             )
 
@@ -266,17 +269,17 @@ if __name__ == "__main__":
     ):
         cfg: AppConfig = compose(config_name="config", overrides=final_overrides)
 
-    print("\n" + "~" * 80)
-    print(" " * 25 + "HYDRA COMPOSED CONFIGURATION")
-    print(OmegaConf.to_yaml(cfg))
-    print("~" * 80 + "\n")
+    logger.info("\n" + "~" * 80)
+    logger.info(" " * 25 + "HYDRA COMPOSED CONFIGURATION")
+    logger.info(OmegaConf.to_yaml(cfg))
+    logger.info("~" * 80 + "\n")
 
     processor = BrendaProcessor(config=cfg)
     final_df = processor.process()
 
     if final_df is not None and not final_df.empty:
-        print(
+        logger.info(
             f"\n✅ BRENDA processing complete. Generated {len(final_df)} final interactions."
         )
     else:
-        print("\n⚠️ BRENDA processing resulted in an empty dataset.")
+        logger.warning("\n⚠️ BRENDA processing resulted in an empty dataset.")

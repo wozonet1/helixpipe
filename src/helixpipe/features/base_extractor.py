@@ -1,5 +1,6 @@
 # 文件: src/helixpipe/features/base_extractor.py (全新)
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List
 
@@ -9,6 +10,8 @@ from tqdm import tqdm
 
 from helixpipe.configs import AppConfig
 from helixpipe.utils import get_path
+
+logger = logging.getLogger(__name__)
 
 
 class BaseFeatureExtractor(ABC):
@@ -47,7 +50,7 @@ class BaseFeatureExtractor(ABC):
         sequences_or_smiles: List[str],
         force_regenerate: bool = False,
     ) -> Dict[Any, torch.Tensor]:
-        print(
+        logger.info(
             f"\n--> [Generic Extractor] Processing {len(authoritative_ids)} {self.entity_type}s using model '{self.model_name}'..."
         )
 
@@ -68,11 +71,11 @@ class BaseFeatureExtractor(ABC):
             missed_ids = authoritative_ids
             missed_data = sequences_or_smiles
 
-        print(f"    - Cache hits: {len(results_dict)} / {len(authoritative_ids)}")
+        logger.info(f"    - Cache hits: {len(results_dict)} / {len(authoritative_ids)}")
 
         # --- 2. 缓存未命中阶段 ---
         if missed_ids:
-            print(
+            logger.info(
                 f"    - Cache misses: {len(missed_ids)}. Starting online extraction..."
             )
 
@@ -107,7 +110,9 @@ class BaseFeatureExtractor(ABC):
                     rt.ensure_path_exists(cache_path)
                     torch.save(embedding, cache_path)
 
-        print(f"--> [{self.entity_type.capitalize()} Extractor] Processing complete.")
+        logger.info(
+            f"--> [{self.entity_type.capitalize()} Extractor] Processing complete."
+        )
         return results_dict
 
     # --- 抽象方法 (子类必须实现的“策略”) ---

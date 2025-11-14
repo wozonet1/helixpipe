@@ -1,3 +1,5 @@
+import logging
+
 import hydra
 import research_template as rt
 
@@ -14,6 +16,7 @@ register_hydra_resolvers()
 
 project_root = rt.get_project_root()
 config_path = f"{project_root}/conf"
+logger = logging.getLogger(__name__)
 
 
 @hydra.main(config_path=f"{config_path}", config_name="config", version_base=None)
@@ -26,16 +29,13 @@ def run_experiment(cfg: AppConfig):
     # 这一行代码取代了所有之前的数据加载逻辑
     processor_outputs = load_datasets(cfg)
 
-    # --- 阶段 2: 验证配置与加载的数据是否逻辑一致 ---
-    # if not validate_config_with_data(cfg, base_df, extra_dfs):
-    #     print("❌ Halting execution due to configuration inconsistency.")
-    #     return
-
     # --- 阶段 3: 运行下游数据处理流水线 (图构建等) ---
     if not cfg.runtime.skip_data_proc:
         process_data(cfg, processor_outputs)
     else:
-        print("\n⚠️  Skipping data processing as per 'runtime.skip_data_proc' flag.")
+        logger.warning(
+            "\n⚠️  Skipping data processing as per 'runtime.skip_data_proc' flag."
+        )
 
     # --- 阶段 4: 运行模型训练 ---
     # train(cfg)

@@ -1,3 +1,4 @@
+import logging
 from collections import defaultdict
 from typing import Any, Callable, Dict, List, Optional, Set
 
@@ -10,6 +11,8 @@ from helixpipe.configs.knowledge_graph import EntityMetaConfig
 from helixpipe.utils import get_path
 
 from .selector_executor import SelectorExecutor
+
+logger = logging.getLogger(__name__)
 
 
 class IDMapper:
@@ -24,7 +27,7 @@ class IDMapper:
         构造函数从 Processor 的输出字典中，聚合所有实体的元信息，
         并预处理实体类型的元数据。
         """
-        print(
+        logger.info(
             "--- [IDMapper V5.1] Initializing with metadata-aware entity aggregation..."
         )
         self._config = config
@@ -46,10 +49,10 @@ class IDMapper:
                 self._protein_subtypes.add(entity_type)
 
         if self._config.runtime.verbose > 1:
-            print(
+            logger.debug(
                 f"    - [DEBUG] Identified molecule subtypes: {self._molecule_subtypes}"
             )
-            print(
+            logger.debug(
                 f"    - [DEBUG] Identified protein subtypes: {self._protein_subtypes}"
             )
 
@@ -72,7 +75,7 @@ class IDMapper:
                 self._collected_entities[entity_id]["sources"].add(source_dataset)
 
         if self._config.runtime.verbose > 0:
-            print(
+            logger.info(
                 f"--> Collected metadata for {len(self._collected_entities)} unique entities across all sources."
             )
 
@@ -90,10 +93,10 @@ class IDMapper:
         """
         verbose = self._config.runtime.verbose
         if self.is_finalized:
-            print("--> [IDMapper V5.1] Mappings already finalized. Skipping.")
+            logger.warning("--> [IDMapper V5.1] Mappings already finalized. Skipping.")
             return
 
-        print(
+        logger.info(
             "\n--- [IDMapper V5.1] Finalizing mappings for valid entities only... ---"
         )
 
@@ -118,7 +121,7 @@ class IDMapper:
                     "sources": meta["sources"],
                 }
                 if verbose > 1:
-                    print(
+                    logger.debug(
                         f"      - ID: {entity_id:<10} | Types: {str(entity_types):<30} | Final Type: {final_type}"
                     )
         # 2. 按最终确定的类型对实体进行分组
@@ -127,14 +130,14 @@ class IDMapper:
             self.entities_by_type[final_type].append(entity_id)
         if verbose > 1:
             for t, ents in self.entities_by_type.items():
-                print(
+                logger.debug(
                     f"      - Type: {t:<10} | Count: {len(ents)} | Sample IDs: {ents[:3]}"
                 )
         # 3. 分配连续的逻辑ID
         current_id = 0
         sorted_types = sorted(self.entities_by_type.keys())
         if verbose > 1:
-            print(f"      - ID assignment order: {sorted_types}")
+            logger.debug(f"      - ID assignment order: {sorted_types}")
         for entity_type in sorted_types:
             try:
                 # 尝试进行排序。如果类型混合，这里会失败。
@@ -161,7 +164,7 @@ class IDMapper:
                 )
             self.entities_by_type[entity_type] = sorted_entities
             if verbose > 1:
-                print(
+                logger.debug(
                     f"        - Assigning IDs for type '{entity_type}' (starts at {current_id})..."
                 )
             for logic_id, auth_id in enumerate(sorted_entities, start=current_id):
@@ -173,21 +176,21 @@ class IDMapper:
             current_id += len(sorted_entities)
 
         self.is_finalized = True
-        print("--- [IDMapper V5.1] Finalization complete. Final counts: ---")
+        logger.info("--- [IDMapper V5.1] Finalization complete. Final counts: ---")
         for entity_type in sorted_types:
-            print(
+            logger.info(
                 f"  - Found {self.get_num_entities(entity_type)} unique '{entity_type}' entities."
             )
-        print(f"  - Total entities: {self.num_total_entities}")
+        logger.info(f"  - Total entities: {self.num_total_entities}")
         if verbose > 1:
-            print(self._auth_id_to_logic_id_map)
-            print(self._logic_id_to_auth_id_map)
+            logger.debug(self._auth_id_to_logic_id_map)
+            logger.debug(self._logic_id_to_auth_id_map)
 
     def build_entity_manifest(self) -> pd.DataFrame:
         """
         根据收集到的原始实体信息，构建一个用于下游丰富化和校验的“实体清单”DataFrame。
         """
-        print("--- [IDMapper V5.1] Building initial entity manifest...")
+        logger.info("--- [IDMapper V5.1] Building initial entity manifest...")
         manifest_data = []
         entity_meta_config = self._config.knowledge_graph.entity_meta
 
@@ -214,12 +217,14 @@ class IDMapper:
         将IDMapper内部的所有核心映射关系，结合外部提供的结构信息，保存到'nodes.csv'。
         """
         if not self.is_finalized:
-            print(
+            logger.warning(
                 "--> [IDMapper] Warning: Mappings not finalized. Skipping saving debug maps."
             )
             return
 
-        print("\n--- [IDMapper V5.1] Saving final nodes metadata ('nodes.csv')... ---")
+        logger.into(
+            "\n--- [IDMapper V5.1] Saving final nodes metadata ('nodes.csv')... ---"
+        )
 
         nodes_schema = self._config.data_structure.schema.internal.nodes_output
         node_data = []
@@ -236,7 +241,7 @@ class IDMapper:
             )
 
         if not node_data:
-            print("--> No finalized data to save for debugging.")
+            logger.warning("--> No finalized data to save for debugging.")
             return
 
         nodes_df = pd.DataFrame(node_data).sort_values(by=nodes_schema.global_id)
@@ -251,7 +256,7 @@ class IDMapper:
         output_path = get_path(self._config, "processed.common.nodes_metadata")
         rt.ensure_path_exists(output_path)
         nodes_df.to_csv(output_path, index=False)
-        print(f"--> Core metadata file 'nodes.csv' saved to: {output_path}")
+        logger.info(f"--> Core metadata file 'nodes.csv' saved to: {output_path}")
 
     # --- 公共 Getter 和查询 API ---
     def get_meta_by_auth_id(self, auth_id: Any) -> Optional[Dict[str, Any]]:

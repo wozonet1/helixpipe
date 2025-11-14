@@ -1,3 +1,5 @@
+import logging
+
 import torch
 import torch_geometric.transforms as T
 from torch_geometric.data import HeteroData
@@ -11,6 +13,8 @@ from .loaders import (
     load_graph_structure_from_files,
     load_supervision_labels_for_fold,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def prepare_e2e_data(config: AppConfig, fold_idx: int) -> tuple:

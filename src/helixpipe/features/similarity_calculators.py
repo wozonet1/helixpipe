@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +11,8 @@ from rdkit.Chem import AllChem
 from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
 from sklearn.metrics.pairwise import cosine_similarity
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_drug_fingerprint_similarity(drug_list):
@@ -78,8 +81,8 @@ def align_pair(seq1: str, seq2: str, aligner_config: dict) -> float:
         aligner = Align.PairwiseAligner(**aligner_config)
         return aligner.score(seq1.upper(), seq2.upper())
     except Exception as e:
-        print(f"Sequences: {seq1}\n{seq2}")  ##测试为什么用新的align算法会失败
-        print(f"Error aligning sequences: {e}")
+        logger.error(f"Sequences: {seq1}\n{seq2}")  ##测试为什么用新的align算法会失败
+        logger.error(f"Error aligning sequences: {e}")
         return 0.0
 
 
@@ -116,7 +119,7 @@ def calculate_protein_align_similarity(sequence_list, cpus: int):
         "extend_gap_score": -0.5,
     }
     num_sequences = len(sequence_list)
-    print("--> Pre-calculating self-alignment scores for normalization...")
+    logger.info("--> Pre-calculating self-alignment scores for normalization...")
     self_scores = Parallel(n_jobs=cpus)(
         delayed(align_pair)(seq, seq, aligner_config)
         for seq in tqdm(
@@ -135,7 +138,7 @@ def calculate_protein_align_similarity(sequence_list, cpus: int):
             # 我们只计算上三角部分，包括对角线
             tasks.append((i, j))
 
-    print("--> Calculating pairwise raw alignment scores...")
+    logger.info("--> Calculating pairwise raw alignment scores...")
     raw_pairwise_scores = Parallel(n_jobs=cpus)(
         delayed(align_pair)(sequence_list[i], sequence_list[j], aligner_config)
         for i, j in tqdm(tasks, desc="Pairwise Alignment", leave=False)
@@ -144,7 +147,7 @@ def calculate_protein_align_similarity(sequence_list, cpus: int):
     # =========================================================================
     # 4. [归一化与填充阶段] 使用预计算的分数进行归一化并构建矩阵
     # =========================================================================
-    print("--> Populating similarity matrix with normalized scores...")
+    logger.info("--> Populating similarity matrix with normalized scores...")
     similarity_matrix = np.zeros((num_sequences, num_sequences), dtype=np.float32)
 
     for (i, j), raw_score in zip(

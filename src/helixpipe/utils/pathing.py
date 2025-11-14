@@ -1,3 +1,4 @@
+import logging
 import shutil
 from collections import defaultdict
 from functools import partial
@@ -12,6 +13,8 @@ from omegaconf.errors import (
 )
 from research_template import check_paths_exist as generic_check_paths_exist
 from research_template.errors import ConfigPathError
+
+logger = logging.getLogger(__name__)
 
 
 def _walk_config(
@@ -44,7 +47,7 @@ def setup_dataset_directories(config: DictConfig) -> None:
     【V3 重构版】根据配置，创建所有必需的目录，并按需清理旧的实验产物。
     此函数现在是“声明式”的：它遍历配置中定义的所有路径，并确保它们存在。
     """
-    print("\n--- [Setup] Verifying and setting up dataset directories... ---")
+    logger.info("\n--- [Setup] Verifying and setting up dataset directories... ---")
 
     try:
         # --- 1. 按需清理 (更智能的清理) ---
@@ -60,14 +63,14 @@ def setup_dataset_directories(config: DictConfig) -> None:
             if dir_to_clean.exists():
                 variant_name = config.data_params.name
                 experiment_name = dir_to_clean.name
-                print(
+                logger.warning(
                     f"!!! WARNING: `force_restart` is True for variant '{variant_name}' and experiment '{experiment_name}'."
                 )
-                print(f"    Deleting directory: {dir_to_clean}")
+                logger.into(f"    Deleting directory: {dir_to_clean}")
                 shutil.rmtree(dir_to_clean)
 
         # --- 2. 声明式地创建所有需要的目录 ---
-        print("--> Ensuring all necessary directories exist...")
+        logger.into("--> Ensuring all necessary directories exist...")
 
         # a. 遍历 `paths` 配置块中的所有叶子节点 (路径模板)
         #    OmegaConf.select_leaves 会返回一个生成器，包含 (key, value)
@@ -86,7 +89,7 @@ def setup_dataset_directories(config: DictConfig) -> None:
                 paths_to_ensure.append(path)
             except (KeyError, ValueError):
                 # 忽略那些无法在当前上下文中解析的路径 (例如，gtopdb的专属路径在bindingdb运行时)
-                # print(f"    - Skipping path key '{full_key}' (cannot be resolved in current context: {e})")
+                # logger.into(f"    - Skipping path key '{full_key}' (cannot be resolved in current context: {e})")
                 pass
 
         # c. 确保每个解析出的路径的父目录都存在
@@ -98,16 +101,18 @@ def setup_dataset_directories(config: DictConfig) -> None:
                 created_count += 1
 
         if created_count > 0:
-            print(f"--> Successfully created {created_count} new directories.")
+            logger.into(f"--> Successfully created {created_count} new directories.")
         else:
-            print("-> All necessary directories already exist.")
+            logger.into("-> All necessary directories already exist.")
 
         # --- 3. (可选) 检查原始文件目录是否为空 ---
         raw_dir_path = get_path(config, "raw.dummy_file_to_get_dir").parent
         if not any(raw_dir_path.iterdir()):
-            print(f"-> ⚠️  WARNING: The 'raw' directory is empty: {raw_dir_path}")
+            logger.warning(
+                f"-> ⚠️  WARNING: The 'raw' directory is empty: {raw_dir_path}"
+            )
 
-        print("--- [Setup] Directory setup complete. ---")
+        logger.info("--- [Setup] Directory setup complete. ---")
 
     except (rt.ConfigKeyError, KeyError) as e:
         # 使用我们之前设计的自定义异常来提供清晰的错误报告
@@ -176,7 +181,7 @@ def get_path(
             final_str = resolved_path_str.format_map(defaultdict(str, factory_kwargs))
             if "{" in final_str:
                 # 检查格式化后是否还有未填充的占位符
-                print(
+                logger.warning(
                     f"Warning: Path template for key '{short_key}' may be incompletely formatted: {final_str}"
                 )
             return project_root / final_str
@@ -193,7 +198,7 @@ def get_path(
         # 3. 如果是静态路径，直接返回最终的 Path 对象
         #    如果此时传入了 kwargs，它们将被忽略，可以打印一个警告
         if kwargs:
-            print(
+            logger.warning(
                 f"Warning: kwargs {kwargs} were provided for a static path key '{short_key}' and will be ignored."
             )
         return project_root / resolved_path_str

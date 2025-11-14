@@ -1,3 +1,4 @@
+import logging
 import pickle as pkl
 import time
 from pathlib import Path
@@ -7,6 +8,8 @@ import pubchempy as pcp
 import requests
 from rdkit import Chem
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
 
 
 def canonicalize_smiles(smiles):
@@ -31,11 +34,13 @@ def canonicalize_smiles_to_cid(
     采用逐个查询的方式，以最大限度地提高成功率和错误隔离。
     """
     if cache_path and cache_path.exists() and not force_regenerate:
-        print(f"--> [Canonicalizer] Loading cached SMILES->CID map from: {cache_path}")
+        logger.info(
+            f"--> [Canonicalizer] Loading cached SMILES->CID map from: {cache_path}"
+        )
         with open(cache_path, "rb") as f:
             return pkl.load(f)
 
-    print(
+    logger.info(
         "--> [Canonicalizer] Starting SMILES to CID conversion (robust, one-by-one mode)..."
     )
 
@@ -64,7 +69,7 @@ def canonicalize_smiles_to_cid(
                     time.sleep(1 * (attempt + 1))  # 稍作等待再重试
                 else:
                     # 记录多次重试后仍然失败的错误
-                    print(
+                    logger.warning(
                         f"\n   - WARNING: API error for SMILES '{smiles}' after {max_retries} attempts: {e}"
                     )
 
@@ -76,10 +81,10 @@ def canonicalize_smiles_to_cid(
         # [修改] 每次查询后都稍作延时，避免过于频繁
         time.sleep(0.05)  # 50毫秒
 
-    print("--> [Canonicalizer] Conversion finished.")
-    print(f"    - Successfully converted: {len(smiles_to_cid_map)} SMILES")
+    logger.info("--> [Canonicalizer] Conversion finished.")
+    logger.info(f"    - Successfully converted: {len(smiles_to_cid_map)} SMILES")
     if not_found_smiles:
-        print(f"    - Could not find CID for: {len(not_found_smiles)} SMILES")
+        logger.warning(f"    - Could not find CID for: {len(not_found_smiles)} SMILES")
         # (可选) 可以将not_found_smiles列表写入一个日志文件，以供后续分析
         # with open("not_found_smiles.log", "a") as f:
         #     for smiles in not_found_smiles:
@@ -87,7 +92,9 @@ def canonicalize_smiles_to_cid(
 
     # --- 3. 保存到缓存 ---
     if cache_path:
-        print(f"--> [Canonicalizer] Saving new SMILES->CID map to cache: {cache_path}")
+        logger.info(
+            f"--> [Canonicalizer] Saving new SMILES->CID map to cache: {cache_path}"
+        )
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         with open(cache_path, "wb") as f:
             pkl.dump(smiles_to_cid_map, f)

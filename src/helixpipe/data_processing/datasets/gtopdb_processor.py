@@ -16,7 +16,11 @@ if TYPE_CHECKING:
     from helixpipe.configs import AppConfig
 
 
+import logging
+
 from helixpipe.configs import AppConfig
+
+logger = logging.getLogger(__name__)
 
 
 class GtopdbProcessor(BaseProcessor):
@@ -74,7 +78,7 @@ class GtopdbProcessor(BaseProcessor):
         将原始DataFrame重塑为“规范化交互格式”，并附带所有用于下游校验的辅助列。
         """
         if self.verbose > 0:
-            print(
+            logger.info(
                 "  - Reshaping DataFrame to canonical format with auxiliary columns..."
             )
 
@@ -126,7 +130,7 @@ class GtopdbProcessor(BaseProcessor):
         根据确凿的数据证据，执行正确的领域筛选。
         """
         if self.verbose > 0:
-            print(
+            logger.info(
                 "  - Applying domain-specific filters: Non-Endogenous & Affinity Threshold..."
             )
 
@@ -145,7 +149,7 @@ class GtopdbProcessor(BaseProcessor):
         ].copy()
 
         if self.verbose > 0:
-            print(
+            logger.info(
                 f"    - {len(df_filtered)} / {initial_count_after_endo} records passed affinity filter."
             )
 
@@ -181,17 +185,17 @@ if __name__ == "__main__":
     ):
         cfg: "AppConfig" = compose(config_name="config", overrides=final_overrides)
 
-    print("\n" + "~" * 80)
-    print(" " * 25 + "HYDRA COMPOSED CONFIGURATION")
-    print(OmegaConf.to_yaml(cfg))
-    print("~" * 80 + "\n")
+    logger.info("\n" + "~" * 80)
+    logger.info(" " * 25 + "HYDRA COMPOSED CONFIGURATION")
+    logger.info(OmegaConf.to_yaml(cfg))
+    logger.info("~" * 80 + "\n")
 
     processor = GtopdbProcessor(config=cfg)
     final_df = processor.process()
 
     if final_df is not None and not final_df.empty:
-        print(
+        logger.info(
             f"\n✅ GtoPdb processing complete. Generated {len(final_df)} final interactions."
         )
     else:
-        print("\n⚠️  GtoPdb processing resulted in an empty dataset.")
+        logger.warning("\n⚠️  GtoPdb processing resulted in an empty dataset.")

@@ -1,6 +1,7 @@
 # 文件: src/helixpipe/data_processing/services/structure_provider.py (全新)
 
 import json
+import logging
 import re
 import time
 from typing import Dict, List, Optional
@@ -13,6 +14,8 @@ from tqdm import tqdm
 
 from helixpipe.configs import AppConfig
 from helixpipe.utils import get_path
+
+logger = logging.getLogger(__name__)
 
 
 class StructureProvider:
@@ -29,7 +32,7 @@ class StructureProvider:
         self.config = config
         self.proxies = proxies
         self._session = self._create_session()
-        print("--- [StructureProvider] Initialized. ---")
+        logger.info("--- [StructureProvider] Initialized. ---")
 
     def _create_session(self) -> requests.Session:
         """创建一个带有自动重试机制的requests Session。"""
@@ -85,7 +88,7 @@ class StructureProvider:
         if not valid_ids:
             return {}
 
-        print(
+        logger.info(
             f"--> [UniProt Fetcher] Fetching sequences for {len(valid_ids)} valid UniProt IDs..."
         )
         sequences_map: Dict[str, str] = {}
@@ -151,7 +154,7 @@ class StructureProvider:
                             chunk_results[uid_match.group(1)] = seq
                     except (IndexError, KeyError):
                         if len(header) < 100:
-                            print(
+                            logger.warning(
                                 f"\n    - Warning: Could not parse UniProt ID from header: '{header}'"
                             )
                         continue
@@ -164,19 +167,19 @@ class StructureProvider:
                     missing_ids = requested_ids_set - returned_ids_set
 
                     if missing_ids:
-                        print(
+                        logger.warning(
                             f"\n    - DEBUG (UniProt): For a batch of {len(chunk)} IDs, "
                             f"server did not return sequences for {len(missing_ids)} IDs."
                         )
                         # 为了避免刷屏，只打印少量样本
-                        print(
+                        logger.warning(
                             f"      - Sample of missing IDs: {sorted(list(missing_ids))[:10]}"
                         )
                 sequences_map.update(chunk_results)
 
             except (requests.exceptions.RequestException, ValueError) as e:
                 # --- 步骤 2b: 如果GET请求失败 (网络错误、超时、4xx/5xx、或URL过长)，则降级 ---
-                print(
+                logger.warning(
                     f"\n    - ⚠️ WARNING: Batch GET request failed: {e}. "
                     f"Falling back to one-by-one query for this batch ({len(chunk)} IDs)..."
                 )
@@ -185,7 +188,7 @@ class StructureProvider:
                 sequences_map.update(chunk_results_fallback)
 
             time.sleep(0.5)
-        print(
+        logger.info(
             f"--> [UniProt Fetcher] Fetched {len(sequences_map)} / {len(valid_ids)} sequences."
         )
         return sequences_map
@@ -199,7 +202,9 @@ class StructureProvider:
             try:
                 response = self._session.get(url, proxies=self.proxies, timeout=20)
                 if response.status_code == 404:
-                    print(f"\n       - INFO: UniProt ID '{pid}' not found (404).")
+                    logger.warning(
+                        f"\n       - INFO: UniProt ID '{pid}' not found (404)."
+                    )
                     continue
                 response.raise_for_status()
 
@@ -209,7 +214,7 @@ class StructureProvider:
                     if seq:
                         results[pid] = seq
             except requests.exceptions.RequestException as e:
-                print(
+                logger.error(
                     f"\n       - ❌ ERROR: Failed to fetch sequence for single UniProt ID '{pid}': {e}"
                 )
 
@@ -221,7 +226,9 @@ class StructureProvider:
         if not ids_to_fetch:
             return {}
 
-        print(f"--> [PubChem Fetcher] Querying SMILES for {len(ids_to_fetch)} CIDs...")
+        logger.info(
+            f"--> [PubChem Fetcher] Querying SMILES for {len(ids_to_fetch)} CIDs..."
+        )
 
         cid_to_smiles_map: Dict[int, str] = {}
 
@@ -252,12 +259,12 @@ class StructureProvider:
                         )
 
             except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-                print(f"\n    - ❌ NETWORK/JSON/PROXY ERROR for batch: {e}")
+                logger.error(f"\n    - ❌ NETWORK/JSON/PROXY ERROR for batch: {e}")
                 continue
 
             time.sleep(0.25)
 
-        print(
+        logger.info(
             f"--> [PubChem Fetcher] Fetched SMILES for {len(cid_to_smiles_map)} / {len(ids_to_fetch)} CIDs."
         )
         return cid_to_smiles_map

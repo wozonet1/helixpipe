@@ -1,5 +1,6 @@
 # 文件: src/helixpipe/data_processing/datasets/base_processor.py (最终流水线编排版)
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, List
 
@@ -8,6 +9,8 @@ import research_template as rt
 
 from helixpipe.configs import AppConfig
 from helixpipe.utils import get_path
+
+logger = logging.getLogger(__name__)
 
 
 class BaseProcessor(ABC):
@@ -19,7 +22,7 @@ class BaseProcessor(ABC):
         self.config = config
         self.verbose = config.runtime.verbose
         self.schema = self.config.data_structure.schema.internal.canonical_interaction
-        print(
+        logger.info(
             f"--- [{self.__class__.__name__}] Initialized (Verbose Level: {self.verbose}). ---"
         )
 
@@ -32,7 +35,7 @@ class BaseProcessor(ABC):
         output_target = get_path(self.config, "raw.authoritative_dti")
         if output_target.exists() and not self.config.runtime.force_restart:
             if self.verbose > 0:
-                print(
+                logger.info(
                     f"--> [Cache Hit] Loading processed data from: '{output_target.name}'"
                 )
             return pd.read_csv(output_target)
@@ -53,11 +56,11 @@ class BaseProcessor(ABC):
 
         for step_name, step_func in pipeline:
             if self.verbose > 0:
-                print(f"\n-> Entering Step: '{step_name}'...")
+                logger.info(f"\n-> Entering Step: '{step_name}'...")
                 if self.verbose > 1 and isinstance(
                     data, (pd.DataFrame, dict, list, set)
                 ):
-                    print(f"  - Input size: {len(data)} items")
+                    logger.info(f"  - Input size: {len(data)} items")
 
             # 执行步骤
             data = step_func(data) if data is not None else step_func()
@@ -65,14 +68,14 @@ class BaseProcessor(ABC):
             # 记录输出并检查是否为空
             if isinstance(data, pd.DataFrame):
                 if self.verbose > 0:
-                    print(f"  - Output size: {len(data)} items")
+                    logger.info(f"  - Output size: {len(data)} items")
                 if data.empty:
-                    print(
+                    logger.error(
                         f"  - Pipeline halted after step '{step_name}' because DataFrame became empty."
                     )
                     return pd.DataFrame()
             elif data is None or (isinstance(data, (dict, list, set)) and not data):
-                print(
+                logger.error(
                     f"  - Pipeline halted after step '{step_name}' because data became empty."
                 )
                 return pd.DataFrame()
@@ -86,14 +89,14 @@ class BaseProcessor(ABC):
         final_df = data
 
         # --- 保存与验证 ---
-        print(
+        logger.info(
             f"\n--> [{self.__class__.__name__}] Saving processed data to cache: '{output_target.name}'..."
         )
         rt.ensure_path_exists(output_target)
         final_df.to_csv(output_target, index=False)
 
         if self.verbose > 0:
-            print(
+            logger.info(
                 f"--- [{self.__class__.__name__}] Final authoritative file is ready. ---"
             )
             expected_cols_subset = {

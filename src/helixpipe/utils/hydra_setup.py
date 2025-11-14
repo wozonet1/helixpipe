@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import hydra
@@ -5,6 +6,8 @@ import pandas as pd
 from omegaconf import DictConfig, OmegaConf
 
 from .pathing import get_path
+
+logger = logging.getLogger(__name__)
 
 
 def path_resolver(key: str, *, _root_: DictConfig) -> str:
@@ -108,7 +111,9 @@ def register_hydra_resolvers():
             resolver=path_resolver,
             use_cache=False,  # 路径可能会根据上下文变化，通常不建议缓存
         )
-        print(f"--> Custom Hydra resolver '{resolver_name}' registered successfully.")
+        logger.info(
+            f"--> Custom Hydra resolver '{resolver_name}' registered successfully."
+        )
 
 
 def load_auxiliary_dataset(
@@ -128,7 +133,7 @@ def load_auxiliary_dataset(
     Returns:
         pd.DataFrame | None: 如果成功加载，则返回DataFrame；否则返回None。
     """
-    print(f"--> Attempting to load AUXILIARY dataset: '{dataset_name}'")
+    logger.info(f"--> Attempting to load AUXILIARY dataset: '{dataset_name}'")
 
     try:
         # 1. 获取主配置的 config_path，以便 initialize_config_dir 知道去哪里找
@@ -146,25 +151,25 @@ def load_auxiliary_dataset(
         # 3. 使用这个临时配置和 get_path 来获取路径
         aux_dti_path = get_path(aux_cfg, "raw.authoritative_dti")
         if not aux_dti_path.exists():
-            print(
+            logger.error(
                 f"    - ❌ ERROR: Authoritative file for '{dataset_name}' not found at '{aux_dti_path}'. Skipping."
             )
             return None  # 或者直接 raise FileNotFoundError
         # 4. 加载数据
         aux_df = pd.read_csv(aux_dti_path)
-        print(
+        logger.info(
             f"    - Success: Loaded {len(aux_df)} interactions from '{dataset_name}'."
         )
         return aux_df
 
     except FileNotFoundError:
-        print(
+        logger.warning(
             f"    - ⚠️ WARNING: Authoritative file for '{dataset_name}' not found at '{aux_dti_path}'. Skipping."
         )
         return None
     except Exception as e:
         # 捕获其他可能的错误，如配置缺失、compose失败等
-        print(
+        logger.error(
             f"    - ❌ ERROR: Failed to load auxiliary dataset '{dataset_name}'. Skipping. Reason: {e}"
         )
         return None

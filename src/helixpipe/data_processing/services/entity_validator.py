@@ -1,5 +1,7 @@
 # src/helixpipe/data_processing/services/entity_validator.py
 
+import logging
+
 import pandas as pd
 
 from helixpipe.configs import AppConfig
@@ -11,6 +13,8 @@ from .purifiers import (
     validate_protein_structure,
     validate_smiles_structure,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _validate_molecules(
@@ -88,7 +92,7 @@ def validate_and_filter_entities(
     在调用蛋白质校验器前后增加超详细的日志。
     """
     if config.runtime.verbose > 0:
-        print(
+        logger.info(
             "\n--- [Entity Validator] Starting unified entity validation service... ---"
         )
 
@@ -102,7 +106,7 @@ def validate_and_filter_entities(
     molecule_mask = entities_df["entity_type"] == entity_types.molecule
     if molecule_mask.any():
         if config.runtime.verbose > 0:
-            print(
+            logger.info(
                 f"  -> Validating {molecule_mask.sum()} '{entity_types.molecule}' entities..."
             )
         molecule_df = entities_df[molecule_mask]
@@ -119,7 +123,7 @@ def validate_and_filter_entities(
     protein_mask = entities_df["entity_type"] == entity_types.protein
     if protein_mask.any():
         if config.runtime.verbose > 0:
-            print(
+            logger.info(
                 f"  -> Validating {protein_mask.sum()} '{entity_types.protein}' entities..."
             )
 
@@ -140,7 +144,7 @@ def validate_and_filter_entities(
     final_df = entities_df.loc[validated_indices].copy()
 
     if config.runtime.verbose > 0:
-        print(
+        logger.info(
             f"--- [Entity Validator] Complete. {len(final_df)} / {len(entities_df)} entities passed validation. ---"
         )
 

@@ -1,8 +1,11 @@
 # src/helixpipe/data_processing/services/purifiers.py
 
+import logging
+
 import pandas as pd
 from rdkit import Chem, RDLogger
 
+logger = logging.getLogger(__name__)
 # --- 全局设置 ---
 RDLogger.logger().setLevel(RDLogger.CRITICAL)
 

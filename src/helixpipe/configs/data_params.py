@@ -116,6 +116,24 @@ class FilteringConfig:
     sa_score: Optional[MaxValueFilterConfig] = None
 
 
+@dataclass
+class BindingdbParams:
+    affinity_threshold_nM: int = 10000
+    filtering: Optional[FilteringConfig] = None
+
+
+@dataclass
+class BrendaParams:
+    km_threshold_nM: int = 10000
+    filtering: Optional[FilteringConfig] = None
+
+
+@dataclass
+class GtopdbParams:
+    affinity_threshold_nM: int = 10000
+    filtering: Optional[FilteringConfig] = None
+
+
 # --------------------------------------------------------------------------
 # 主 Dataclass (核心修正与补全)
 # --------------------------------------------------------------------------
@@ -148,10 +166,6 @@ class DataParamsConfig:
     # 负采样策略
     negative_sampling_strategy: str = "popular"
 
-    # 【修正】通用亲和力阈值，默认值与 baseline.yaml 一致
-    affinity_threshold_nM: int = 10000
-    km_threshold_nM: int = 10000  # 为 Brenda 数据集预留
-
     # 特征提取器配置 (字典形式)
     # 我们可以在这里为 feature_extractors 提供一个更完整的默认结构
     feature_extractors: Dict[str, FeatureExtractorConfig] = field(
@@ -168,7 +182,9 @@ class DataParamsConfig:
             ),
         }
     )
-
+    bindingdb: BindingdbParams = field(default_factory=BindingdbParams)
+    brenda: BrendaParams = field(default_factory=BrendaParams)
+    gtopdb: GtopdbParams = field(default_factory=GtopdbParams)
     # 分子属性过滤配置 (默认是关闭的)
     filtering: FilteringConfig = field(default_factory=FilteringConfig)
 

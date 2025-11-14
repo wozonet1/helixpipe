@@ -1,5 +1,6 @@
 # 文件: src/helixpipe/data_processing/datasets/bindingdb_processor.py (最终模板方法版)
 
+import logging
 import sys
 
 import argcomplete
@@ -13,6 +14,8 @@ from helixpipe.configs import AppConfig, register_all_schemas
 from helixpipe.utils import get_path, register_hydra_resolvers
 
 from .base_processor import BaseProcessor
+
+logger = logging.getLogger(__name__)
 
 
 class BindingdbProcessor(BaseProcessor):
@@ -89,7 +92,7 @@ class BindingdbProcessor(BaseProcessor):
         步骤3: 将原始DataFrame重塑为“规范化交互格式”，并附带所有用于下游校验的辅助列。
         """
         if self.verbose > 0:
-            print(
+            logger.info(
                 "  - Reshaping DataFrame to canonical format with auxiliary columns..."
             )
 
@@ -125,7 +128,7 @@ class BindingdbProcessor(BaseProcessor):
         步骤4: 【职责纯化】只执行BindingDB领域专属的“亲和力”过滤。
         """
         if self.verbose > 0:
-            print("  - Applying domain-specific filter: Affinity Threshold...")
+            logger.info("  - Applying domain-specific filter: Affinity Threshold...")
 
         # 1. 计算统一的亲和力值
         for aff_type in [
@@ -154,7 +157,7 @@ class BindingdbProcessor(BaseProcessor):
         df_filtered = df[df["affinity_nM"] <= affinity_threshold].copy()
 
         if self.verbose > 0:
-            print(
+            logger.info(
                 f"    - {len(df_filtered)} / {len(df)} records passed affinity filter."
             )
 
@@ -203,7 +206,7 @@ if __name__ == "__main__":
         project_root = rt.get_project_root()
         config_dir = str(project_root / "conf")
     except Exception as e:
-        print(f"❌ 无法确定项目根目录或配置路径。错误: {e}")
+        logger.error(f"❌ 无法确定项目根目录或配置路径。错误: {e}")
         sys.exit(1)  # 明确退出
 
     with initialize_config_dir(
@@ -212,11 +215,11 @@ if __name__ == "__main__":
         cfg: AppConfig = compose(config_name="config", overrides=final_overrides)
 
     # c. 打印最终配置以供调试
-    print("\n" + "~" * 80)
-    print(" " * 25 + "HYDRA COMPOSED CONFIGURATION")
-    print("~" * 80)
-    print(OmegaConf.to_yaml(cfg))
-    print("~" * 80 + "\n")
+    logger.info("\n" + "~" * 80)
+    logger.info(" " * 25 + "HYDRA COMPOSED CONFIGURATION")
+    logger.info("~" * 80)
+    logger.info(OmegaConf.to_yaml(cfg))
+    logger.info("~" * 80 + "\n")
 
     # === 阶段 3: 执行核心业务逻辑 ===
 
@@ -230,6 +233,8 @@ if __name__ == "__main__":
 
     # c. 打印最终总结
     if final_df is not None and not final_df.empty:
-        print("\n✅ BindingDB processing complete. Final authoritative file is ready.")
+        logger.info(
+            "\n✅ BindingDB processing complete. Final authoritative file is ready."
+        )
     else:
-        print("\n⚠️  BindingDB processing resulted in an empty dataset.")
+        logger.warning("\n⚠️  BindingDB processing resulted in an empty dataset.")

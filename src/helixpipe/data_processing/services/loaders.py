@@ -1,4 +1,6 @@
 # src/data_utils/loaders.py
+import logging
+
 import numpy as np
 import pandas as pd
 
@@ -9,6 +11,8 @@ from torch_geometric.data import HeteroData
 
 from helixpipe.typing import AppConfig
 from helixpipe.utils import get_path
+
+logger = logging.getLogger(__name__)
 
 
 def create_global_to_local_maps(config: AppConfig) -> dict:
@@ -85,7 +89,7 @@ def load_supervision_labels_for_fold(
     """
     为指定的Fold加载带标签的训练和测试边集。
     """
-    print(f"--- [Loader] Loading labeled edges for Fold {fold_idx}... ---")
+    logger.info(f"--- [Loader] Loading labeled edges for Fold {fold_idx}... ---")
 
     lp_labels_key = "processed.specific.labels_template"
 

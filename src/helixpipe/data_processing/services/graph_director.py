@@ -1,5 +1,6 @@
 # 文件: src/helixpipe/data_processing/services/graph_director.py (全新)
 
+import logging
 from typing import List, Tuple
 
 from helixpipe.configs import AppConfig
@@ -7,6 +8,8 @@ from helixpipe.configs import AppConfig
 # 我们需要从 graph_builder 模块导入 GraphBuilder 的抽象基类定义
 # (我们将在下一步创建它)
 from .graph_builder import GraphBuilder
+
+logger = logging.getLogger(__name__)
 
 
 class GraphDirector:
@@ -42,7 +45,9 @@ class GraphDirector:
                 这是构建交互边的必需“原料”。
         """
         if self.verbose > 0:
-            print("\n--- [GraphDirector] Starting graph construction process... ---")
+            logger.info(
+                "\n--- [GraphDirector] Starting graph construction process... ---"
+            )
 
         # 从配置中获取所有关系类型的开关
         flags = self.config.relations.flags
@@ -56,7 +61,7 @@ class GraphDirector:
         #    （另一种策略是检查 train_pairs 是否为空，但检查配置更符合设计）
         if train_pairs:  # 只要有交互数据，就尝试构建交互边
             if self.verbose > 0:
-                print("  -> Instructing builder to add interaction edges...")
+                logger.info("  -> Instructing builder to add interaction edges...")
             builder.add_interaction_edges(train_pairs)
 
         # 2. 构建分子-分子相似性边 (Drug-Drug, Ligand-Ligand, Drug-Ligand)
@@ -67,13 +72,17 @@ class GraphDirector:
             or flags.get("drug_ligand_similarity", False)
         ):
             if self.verbose > 0:
-                print("  -> Instructing builder to add molecule similarity edges...")
+                logger.info(
+                    "  -> Instructing builder to add molecule similarity edges..."
+                )
             builder.add_molecule_similarity_edges()
 
         # 3. 构建蛋白质-蛋白质相似性边 (Protein-Protein)
         if flags.get("protein_protein_similarity", False):
             if self.verbose > 0:
-                print("  -> Instructing builder to add protein similarity edges...")
+                logger.info(
+                    "  -> Instructing builder to add protein similarity edges..."
+                )
             builder.add_protein_similarity_edges()
 
         # 4. 【为未来扩展预留】构建蛋白质-蛋白质交互边 (PPI from STRING)
@@ -81,12 +90,14 @@ class GraphDirector:
             "associated_with", False
         ):  # 假设最终的PPI边类型是 'associated_with'
             if self.verbose > 0:
-                print("  -> Instructing builder to add PPI edges...")
+                logger.info("  -> Instructing builder to add PPI edges...")
             # builder.add_ppi_edges() # <-- 调用未来的方法
 
         if self.config.training.coldstart.strictness == "strict":
             if self.verbose > 0:
-                print("  -> Instructing builder to apply strict cold-start filter...")
+                logger.info(
+                    "  -> Instructing builder to apply strict cold-start filter..."
+                )
             builder.filter_background_edges_for_strict_mode()
         if self.verbose > 0:
-            print("--- [GraphDirector] Graph construction process finished. ---")
+            logger.info("--- [GraphDirector] Graph construction process finished. ---")

@@ -38,7 +38,7 @@ def _run_processor(name: str, config: AppConfig) -> pd.DataFrame:
         #    完整路径: "helixpipe.data_processing.datasets.bindingdb_processor"
         module_path = f"helixpipe.data_processing.datasets.{module_name}"
 
-        print(
+        logger.info(
             f"\n--- [Strategy] Attempting to run processor '{class_name}' from '{module_path}' ---"
         )
 
@@ -59,7 +59,7 @@ def _run_processor(name: str, config: AppConfig) -> pd.DataFrame:
         df = processor_instance.process()
 
         if df is None:
-            print(
+            logger.warning(
                 f"⚠️  Warning: Processor '{class_name}' returned None. Defaulting to empty DataFrame."
             )
             return pd.DataFrame()
@@ -67,17 +67,19 @@ def _run_processor(name: str, config: AppConfig) -> pd.DataFrame:
         return df
 
     except (ImportError, AttributeError) as e:
-        print(f"❌ FATAL: Could not find or load processor for '{name}'.")
-        print(f"   - Searched for class '{class_name}' in module '{module_path}'.")
-        print(
+        logger.error(f"❌ FATAL: Could not find or load processor for '{name}'.")
+        logger.error(
+            f"   - Searched for class '{class_name}' in module '{module_path}'."
+        )
+        logger.error(
             f"   - Please ensure the file 'src/helixpipe/data_processing/datasets/{name}_processor.py' exists "
             f"and contains the class '{class_name}'."
         )
-        print(f"   - Original error: {e}")
+        logger.error(f"   - Original error: {e}")
         sys.exit(1)
 
     except Exception:  # 将 Exception 放在最后，捕获所有其他异常
-        print(
+        logger.error(
             f"❌ FATAL: An unexpected error occurred while running processor for '{name}'."
         )
         import traceback

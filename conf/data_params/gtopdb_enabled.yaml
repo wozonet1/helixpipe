@@ -1,8 +1,0 @@
-name: gtopdb
-
-defaults:
-  - _base
-  - _self_
-
-auxiliary_datasets:
-  - gtopdb

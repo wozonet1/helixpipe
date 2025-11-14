@@ -1,5 +1,6 @@
 # 文件: src/helixpipe/data_processing/services/graph_builder.py (最终正确版 - 实时计算)
 
+import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import List, Set, Tuple, Union
@@ -14,6 +15,7 @@ from helixpipe.configs import AppConfig
 
 from .graph_context import GraphBuildContext
 
+logger = logging.getLogger(__name__)
 # ==============================================================================
 # 1. Builder 抽象基类 (接口) - 保持不变
 # ==============================================================================
@@ -77,7 +79,7 @@ class HeteroGraphBuilder(GraphBuilder):
         self._graph_schema = self.config.data_structure.schema.internal.graph_output
         self._cold_start_entity_ids = cold_start_entity_ids_local
         if self.verbose > 0:
-            print(
+            logger.info(
                 "--- [HeteroGraphBuilder] Initialized for on-the-fly similarity computation. ---"
             )
 
@@ -92,9 +94,9 @@ class HeteroGraphBuilder(GraphBuilder):
                 counts[final_edge_type] += 1
 
         if self.verbose > 0 and counts:
-            print("    - Added Interaction Edges:")
+            logger.info("    - Added Interaction Edges:")
             for edge_type, count in counts.items():
-                print(f"      - {count} '{edge_type}' edges.")
+                logger.info(f"      - {count} '{edge_type}' edges.")
 
     # [MODIFIED] 更新公共方法以读取新的 'similarity_top_k' 配置
     def add_molecule_similarity_edges(self):
@@ -128,7 +130,7 @@ class HeteroGraphBuilder(GraphBuilder):
         """
         # ... (方法上半部分的 faiss 索引构建和搜索逻辑保持不变) ...
         if not analysis_mode:
-            print(
+            logger.info(
                 f"\n    -> Calculating '{entity_type}' similarities using ANN (Faiss) for Top-{k} neighbors..."
             )
         num_embeddings = embeddings.shape[0]
@@ -151,10 +153,10 @@ class HeteroGraphBuilder(GraphBuilder):
         candidate_pairs_for_analysis = [] if analysis_mode else None
         edge_counts = defaultdict(int)
         if self.verbose > 1:
-            print(
+            logger.debug(
                 f"\n    --- [DEBUG] Inside _add_similarity_edges_ann for '{entity_type}' ---"
             )
-            print(
+            logger.debug(
                 f"    - Thresholds dictionary being used: {self.config.data_params.similarity_thresholds}"
             )
         for i in range(num_embeddings):
@@ -202,7 +204,7 @@ class HeteroGraphBuilder(GraphBuilder):
                         if self.verbose > 1:
                             # 只打印相似度较高的，避免刷屏
                             if similarity > 0.5:
-                                print(
+                                logger.debug(
                                     f"      - Candidate Edge: ({local_id_i}, {local_id_j}), "
                                     f"Type: {final_edge_type}, "
                                     f"RelationPrefix: '{relation_prefix}', "
@@ -213,9 +215,9 @@ class HeteroGraphBuilder(GraphBuilder):
 
         if not analysis_mode:
             if self.verbose > 0 and edge_counts:
-                print("    - Added ANN-based Similarity Edges:")
+                logger.info("    - Added ANN-based Similarity Edges:")
                 for edge_type, count in edge_counts.items():
-                    print(f"      - {count} '{edge_type}' edges.")
+                    logger.info(f"      - {count} '{edge_type}' edges.")
             return None  # 正常模式下无返回值
         else:
             return candidate_pairs_for_analysis  # 分析模式下返回收集的列表
@@ -223,7 +225,7 @@ class HeteroGraphBuilder(GraphBuilder):
     def get_graph(self) -> pd.DataFrame:
         """【实现】返回构建完成的图 DataFrame。"""
         if self.verbose > 0:
-            print(
+            logger.info(
                 f"--- [HeteroGraphBuilder] Finalizing graph with {len(self._edges)} total edges. ---"
             )
 
@@ -245,7 +247,7 @@ class HeteroGraphBuilder(GraphBuilder):
         这是一个 in-place 操作。
         """
         if self.config.runtime.verbose > 0:
-            print(
+            logger.info(
                 "    - [Builder] Applying 'strict' cold-start filter to background edges..."
             )
 
@@ -270,7 +272,7 @@ class HeteroGraphBuilder(GraphBuilder):
                 num_removed += 1
 
         if self.config.runtime.verbose > 0 and num_removed > 0:
-            print(
+            logger.info(
                 f"      - Removed {num_removed} background edges connected to cold-start entities."
             )
 
@@ -282,7 +284,7 @@ class HeteroGraphBuilder(GraphBuilder):
         """
         [NEW] 执行一个“仅分析”的相似度计算，返回所有候选相似度对的DataFrame。
         """
-        print(
+        logger.info(
             "\n--- [HeteroGraphBuilder] Running in ANALYSIS-ONLY mode for similarities..."
         )
 

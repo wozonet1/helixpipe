@@ -1,3 +1,4 @@
+import logging
 from typing import TYPE_CHECKING, Set, Tuple
 
 import pandas as pd
@@ -11,6 +12,9 @@ if TYPE_CHECKING:
 _local_human_uniprot_whitelist: Tuple[Set[str], None] = None
 
 
+logger = logging.getLogger(__name__)
+
+
 def _load_local_human_whitelist(config: "AppConfig") -> Set[str]:
     """
     【核心新函数】从本地下载的蛋白质组TSV文件中加载并筛选ID。
@@ -20,7 +24,7 @@ def _load_local_human_whitelist(config: "AppConfig") -> Set[str]:
     if _local_human_uniprot_whitelist is not None:
         return _local_human_uniprot_whitelist
 
-    print(
+    logger.info(
         "--> [ID Validator] Loading and filtering local human proteome TSV for the first time..."
     )
 
@@ -49,12 +53,12 @@ def _load_local_human_whitelist(config: "AppConfig") -> Set[str]:
         # c. 提取Entry列并转换为集合
         _local_human_uniprot_whitelist = set(df_reviewed_human["Entry"].unique())
 
-        print(
+        logger.info(
             f"--> Successfully loaded and filtered. Found {len(_local_human_uniprot_whitelist)} reviewed human UniProt IDs."
         )
 
     except Exception as e:
-        print(f"❌ ERROR: Failed to read or process the proteome TSV file: {e}")
+        logger.error(f"❌ ERROR: Failed to read or process the proteome TSV file: {e}")
         # 如果文件处理失败，返回一个空集合，避免整个程序崩溃
         _local_human_uniprot_whitelist = set()
 
@@ -78,8 +82,10 @@ def get_human_uniprot_whitelist(
     valid_ids = local_whitelist
 
     if config.runtime.verbose > 0:
-        print(f"    - Validated {len(ids_to_check)} input IDs against local list.")
-        print(f"    - Found {len(valid_ids)} valid reviewed human protein IDs.")
+        logger.info(
+            f"    - Validated {len(ids_to_check)} input IDs against local list."
+        )
+        logger.info(f"    - Found {len(valid_ids)} valid reviewed human protein IDs.")
 
     return valid_ids
 
@@ -89,7 +95,9 @@ def get_valid_pubchem_cids(cids_to_check: Set[any], config: AppConfig) -> Set[in
     【公共接口】获取一个经过本地验证的PubChem CID白名单。
     目前只进行格式和类型检查。
     """
-    print(f"    - Performing local validation for {len(cids_to_check)} PubChem CIDs...")
+    logger.info(
+        f"    - Performing local validation for {len(cids_to_check)} PubChem CIDs..."
+    )
 
     valid_cids = set()
     for cid in cids_to_check:
@@ -102,7 +110,7 @@ def get_valid_pubchem_cids(cids_to_check: Set[any], config: AppConfig) -> Set[in
         except (ValueError, TypeError):
             continue
 
-    print(
+    logger.info(
         f"    - Local validation complete. Found {len(valid_cids)} valid PubChem CIDs."
     )
     return valid_cids

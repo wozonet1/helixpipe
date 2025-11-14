@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
@@ -12,6 +14,7 @@ from tqdm import tqdm
 
 from helixpipe.typing import AppConfig
 
+logger = logging.getLogger(__name__)
 # --- 全局初始化 (在模块级别执行一次，避免在每个并行进程中重复加载) ---
 
 # a. 初始化PAINS过滤器
@@ -88,11 +91,11 @@ def filter_molecules_by_properties(
     verbose = config.runtime.verbose
     if not filter_cfg.enabled:
         if verbose > 0:
-            print("--> [Molecule Filter] Disabled by config. Skipping.")
+            logger.info("--> [Molecule Filter] Disabled by config. Skipping.")
         return pd.Series(True, index=smiles_series.index, dtype=bool)
 
     if verbose > 0:
-        print(
+        logger.info(
             "\n--- [Molecule Filter] Applying property filters to SMILES Series... ---"
         )
 
@@ -102,7 +105,7 @@ def filter_molecules_by_properties(
 
     # --- 1. 并行计算所有描述符 ---
     if verbose > 0:
-        print(
+        logger.info(
             f"    - Step 1: Calculating descriptors for {initial_count} unique molecules..."
         )
 
@@ -112,7 +115,7 @@ def filter_molecules_by_properties(
     smiles_to_process = smiles_series.dropna()
     if smiles_to_process.empty:
         if verbose > 0:
-            print(
+            logger.info(
                 "--- [Molecule Filter] Complete. 0 molecules passed (all inputs were NaN). ---"
             )
         return pd.Series(False, index=smiles_series.index, dtype=bool)
@@ -126,45 +129,51 @@ def filter_molecules_by_properties(
     descriptors_df = pd.concat([d for d in descriptor_dfs if not d.empty])
 
     if verbose > 1:
-        print("\n      - [DEBUG] Descriptors calculated. DataFrame sample:")
-        print(descriptors_df.to_string())
-        print(f"      - [DEBUG] Shape of descriptors_df: {descriptors_df.shape}")
+        logger.debug("\n      - [DEBUG] Descriptors calculated. DataFrame sample:")
+        logger.debug(descriptors_df.to_string())
+        logger.debug(f"      - [DEBUG] Shape of descriptors_df: {descriptors_df.shape}")
 
     descriptors_df.dropna(subset=["MW", "LogP", "QED", "SA_Score"], inplace=True)
 
     if verbose > 1:
-        print("\n      - [DEBUG] Descriptors after dropping NaN core properties:")
-        print(descriptors_df.to_string())
-        print(f"      - [DEBUG] Shape after dropna: {descriptors_df.shape}")
+        logger.debug(
+            "\n      - [DEBUG] Descriptors after dropping NaN core properties:"
+        )
+        logger.debug(descriptors_df.to_string())
+        logger.debug(f"      - [DEBUG] Shape after dropna: {descriptors_df.shape}")
 
     if descriptors_df.empty:
         if verbose > 0:
-            print(
+            logger.info(
                 "--- [Molecule Filter] Complete. 0 molecules passed (all failed descriptor calculation). ---"
             )
         return pd.Series(False, index=smiles_series.index, dtype=bool)
 
     # --- 2. 应用链式的过滤流水线 ---
     if verbose > 0:
-        print("    - Step 2: Applying filter pipeline to generate validity mask...")
+        logger.info(
+            "    - Step 2: Applying filter pipeline to generate validity mask..."
+        )
 
     mask = pd.Series(True, index=descriptors_df.index, dtype=bool)
     if verbose > 1:
-        print(f"\n        - [DEBUG] Initial mask count: {mask.sum()}")
+        logger.debug(f"\n        - [DEBUG] Initial mask count: {mask.sum()}")
 
     # a. PAINS 过滤
     if filter_cfg.apply_pains_filter:
         pains_mask = ~descriptors_df["is_pains"]
         if verbose > 1:
-            print("\n        - [DEBUG] PAINS Filter Details:")
-            print("          - `is_pains` column sample:")
-            print(descriptors_df["is_pains"].to_string())
-            print("          - `pains_mask` (~is_pains) sample:")
-            print(pains_mask.to_string())
+            logger.debug("\n        - [DEBUG] PAINS Filter Details:")
+            logger.debug("          - `is_pains` column sample:")
+            logger.debug(descriptors_df["is_pains"].to_string())
+            logger.debug("          - `pains_mask` (~is_pains) sample:")
+            logger.debug(pains_mask.to_string())
 
         mask &= pains_mask
         if verbose > 1:
-            print(f"        - [DEBUG] Mask count after PAINS filter: {mask.sum()}")
+            logger.debug(
+                f"        - [DEBUG] Mask count after PAINS filter: {mask.sum()}"
+            )
 
     # b. 分子量
     if (mw_cfg := filter_cfg.molecular_weight) is not None:
@@ -172,16 +181,16 @@ def filter_molecules_by_properties(
             mw_cfg.min or -np.inf, mw_cfg.max or np.inf
         )
         if verbose > 1:
-            print("\n        - [DEBUG] Molecular Weight Filter Details:")
-            print(f"          - Range: min={mw_cfg.min}, max={mw_cfg.max}")
-            print("          - `MW` column sample:")
-            print(descriptors_df["MW"].to_string())
-            print("          - `mw_mask` sample:")
-            print(mw_mask.to_string())
+            logger.debug("\n        - [DEBUG] Molecular Weight Filter Details:")
+            logger.debug(f"          - Range: min={mw_cfg.min}, max={mw_cfg.max}")
+            logger.debug("          - `MW` column sample:")
+            logger.debug(descriptors_df["MW"].to_string())
+            logger.debug("          - `mw_mask` sample:")
+            logger.debug(mw_mask.to_string())
 
         mask &= mw_mask
         if verbose > 1:
-            print(f"        - [DEBUG] Mask count after MW filter: {mask.sum()}")
+            logger.debug(f"        - [DEBUG] Mask count after MW filter: {mask.sum()}")
 
     # c. LogP
     if (logp_cfg := filter_cfg.logp) is not None:
@@ -189,81 +198,85 @@ def filter_molecules_by_properties(
             logp_cfg.min or -np.inf, logp_cfg.max or np.inf
         )
         if verbose > 1:
-            print("\n        - [DEBUG] LogP Filter Details:")
-            print(f"          - Range: min={logp_cfg.min}, max={logp_cfg.max}")
-            print("          - `LogP` column sample:")
-            print(descriptors_df["LogP"].to_string())
-            print("          - `logp_mask` sample:")
-            print(logp_mask.to_string())
+            logger.debug("\n        - [DEBUG] LogP Filter Details:")
+            logger.debug(f"          - Range: min={logp_cfg.min}, max={logp_cfg.max}")
+            logger.debug("          - `LogP` column sample:")
+            logger.debug(descriptors_df["LogP"].to_string())
+            logger.debug("          - `logp_mask` sample:")
+            logger.debug(logp_mask.to_string())
 
         mask &= logp_mask
         if verbose > 1:
-            print(f"        - [DEBUG] Mask count after LogP filter: {mask.sum()}")
+            logger.debug(
+                f"        - [DEBUG] Mask count after LogP filter: {mask.sum()}"
+            )
 
     # d. 氢键供体 (HBD)
     if (hbd_cfg := getattr(filter_cfg, "h_bond_donors", None)) is not None:
         hbd_mask = descriptors_df["HBD"] <= (hbd_cfg.max or np.inf)
         if verbose > 1:
-            print("\n        - [DEBUG] H-Bond Donors Filter Details:")
-            print(f"          - Range: max={hbd_cfg.max}")
-            print("          - `HBD` column sample:")
-            print(descriptors_df["HBD"].to_string())
-            print("          - `hbd_mask` sample:")
-            print(hbd_mask.to_string())
+            logger.debug("\n        - [DEBUG] H-Bond Donors Filter Details:")
+            logger.debug(f"          - Range: max={hbd_cfg.max}")
+            logger.debug("          - `HBD` column sample:")
+            logger.debug(descriptors_df["HBD"].to_string())
+            logger.debug("          - `hbd_mask` sample:")
+            logger.debug(hbd_mask.to_string())
         mask &= hbd_mask
         if verbose > 1:
-            print(f"        - [DEBUG] Mask count after HBD filter: {mask.sum()}")
+            logger.debug(f"        - [DEBUG] Mask count after HBD filter: {mask.sum()}")
 
     # e. 氢键受体 (HBA)
     if (hba_cfg := getattr(filter_cfg, "h_bond_acceptors", None)) is not None:
         hba_mask = descriptors_df["HBA"] <= (hba_cfg.max or np.inf)
         if verbose > 1:
-            print("\n        - [DEBUG] H-Bond Acceptors Filter Details:")
-            print(f"          - Range: max={hba_cfg.max}")
-            print("          - `HBA` column sample:")
-            print(descriptors_df["HBA"].to_string())
-            print("          - `hba_mask` sample:")
-            print(hba_mask.to_string())
+            logger.debug("\n        - [DEBUG] H-Bond Acceptors Filter Details:")
+            logger.debug(f"          - Range: max={hba_cfg.max}")
+            logger.debug("          - `HBA` column sample:")
+            logger.debug(descriptors_df["HBA"].to_string())
+            logger.debug("          - `hba_mask` sample:")
+            logger.debug(hba_mask.to_string())
         mask &= hba_mask
         if verbose > 1:
-            print(f"        - [DEBUG] Mask count after HBA filter: {mask.sum()}")
+            logger.debug(f"        - [DEBUG] Mask count after HBA filter: {mask.sum()}")
 
     # f. QED 评分
     if (qed_cfg := getattr(filter_cfg, "qed", None)) is not None:
         qed_mask = descriptors_df["QED"] >= (qed_cfg.min or -np.inf)
         if verbose > 1:
-            print("\n        - [DEBUG] QED Score Filter Details:")
-            print(f"          - Range: min={qed_cfg.min}")
-            print("          - `QED` column sample:")
-            print(descriptors_df["QED"].to_string())
-            print("          - `qed_mask` sample:")
-            print(qed_mask.to_string())
+            logger.debug("\n        - [DEBUG] QED Score Filter Details:")
+            logger.debug(f"          - Range: min={qed_cfg.min}")
+            logger.debug("          - `QED` column sample:")
+            logger.debug(descriptors_df["QED"].to_string())
+            logger.debug("          - `qed_mask` sample:")
+            logger.debug(qed_mask.to_string())
         mask &= qed_mask
         if verbose > 1:
-            print(f"        - [DEBUG] Mask count after QED filter: {mask.sum()}")
+            logger.debug(f"        - [DEBUG] Mask count after QED filter: {mask.sum()}")
 
     # g. SA Score
     if (sa_score_cfg := getattr(filter_cfg, "sa_score", None)) is not None:
         sa_mask = descriptors_df["SA_Score"] <= (sa_score_cfg.max or np.inf)
         if verbose > 1:
-            print("\n        - [DEBUG] SA Score Filter Details:")
-            print(f"          - Range: max={sa_score_cfg.max}")
-            print("          - `SA_Score` column sample:")
-            print(descriptors_df["SA_Score"].to_string())
-            print("          - `sa_mask` sample:")
-            print(sa_mask.to_string())
+            logger.debug("\n        - [DEBUG] SA Score Filter Details:")
+            logger.debug(f"          - Range: max={sa_score_cfg.max}")
+            logger.debug("          - `SA_Score` column sample:")
+            logger.debug(descriptors_df["SA_Score"].to_string())
+            logger.debug("          - `sa_mask` sample:")
+            logger.debug(sa_mask.to_string())
         mask &= sa_mask
         if verbose > 1:
-            print(f"        - [DEBUG] Mask count after SA Score filter: {mask.sum()}")
+            logger.debug(
+                f"        - [DEBUG] Mask count after SA Score filter: {mask.sum()}"
+            )
 
     # --- 3. 返回最终的、与原始输入对齐的布尔掩码 ---
     final_mask = pd.Series(False, index=smiles_series.index, dtype=bool)
     passed_indices = mask[mask].index
 
     if verbose > 1:
-        print("\n      - [DEBUG] Final internal mask (before re-indexing):")
-        print(mask.to_string())
-        print(
+        logger.debug("\n      - [DEBUG] Final internal mask (before re-indexing):")
+        logger.debug(mask.to_string())
+        logger.debug(
             f"      - [DEBUG] Indices that passed all filters: {passed_indices.tolist()}"
         )
 
@@ -272,12 +285,14 @@ def filter_molecules_by_properties(
 
     if verbose > 0:
         num_passed = final_mask.sum()
-        print(
+        logger.info(
             f"--- [Molecule Filter] Complete. {num_passed} / {initial_count} molecules passed all filters. ---"
         )
 
     if verbose > 1:
-        print("\n      - [DEBUG] Final returned mask (aligned to original input):")
-        print(final_mask.to_string())
+        logger.debug(
+            "\n      - [DEBUG] Final returned mask (aligned to original input):"
+        )
+        logger.debug(final_mask.to_string())
 
     return final_mask
