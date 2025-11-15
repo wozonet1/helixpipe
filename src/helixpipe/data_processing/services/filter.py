@@ -12,7 +12,7 @@ from rdkit.Contrib.SA_Score import sascorer  # type: ignore
 # 现在，我们可以直接像导入顶层模块一样导入它
 from tqdm import tqdm
 
-from helixpipe.typing import SMILES, AppConfig
+from helixpipe.typing import AppConfig
 
 logger = logging.getLogger(__name__)
 # --- 全局初始化 (在模块级别执行一次，避免在每个并行进程中重复加载) ---
@@ -31,7 +31,7 @@ RDLogger.logger().setLevel(RDLogger.CRITICAL)  # 全局关闭RDKit的冗余日�
 tqdm.pandas()
 
 
-def _calculate_descriptors_for_chunk(smiles_series: pd.Series[SMILES]) -> pd.DataFrame:
+def _calculate_descriptors_for_chunk(smiles_series: pd.Series) -> pd.DataFrame:
     """
     【V3 - 健壮版】为SMILES块计算描述符，并保持原始索引。
     """
@@ -80,8 +80,8 @@ def _calculate_descriptors_for_chunk(smiles_series: pd.Series[SMILES]) -> pd.Dat
 
 
 def filter_molecules_by_properties(
-    smiles_series: pd.Series[SMILES], config: AppConfig
-) -> pd.Series[bool]:
+    smiles_series: pd.Series, config: AppConfig
+) -> pd.Series:
     """
     【V7 - 极限调试版】
     为每一步过滤增加详细的日志打印，以追踪数据变化。

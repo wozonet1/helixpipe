@@ -22,7 +22,7 @@ def get_canonical_tuple(
 def get_similarity_relation_type(
     type1: str,
     type2: str,
-    kg_config: KnowledgeGraphConfig,
+    kg_config: "KnowledgeGraphConfig",
 ) -> Tuple[str, str, str]:
     """根据配置模板，生成标准的相似性关系类型字符串。"""
     priority_map = {name: meta.priority for name, meta in kg_config.entity_meta.items()}

@@ -8,14 +8,6 @@ from .caching import run_cached_operation
 from .config_loader import load_config_with_override as load_config
 from .errors import ConfigPathError, SchemaRegistrationError
 
-# From graph_utils.py
-from .graph_utils import (
-    get_canonical_relation,
-)
-
-# From metrics.py
-from .metrics import accuracy
-
 # From path_manager.py
 from .path_manager import (
     check_paths_exist,
@@ -25,7 +17,6 @@ from .path_manager import (
 
 # From reproducibility.py
 from .reproducibility import set_seeds
-from .tracking import MLflowTracker
 
 # --- You can also define a version for your library ---
 __version__ = "0.1.0"
@@ -36,11 +27,8 @@ __all__ = [
     "load_config",
     "check_paths_exist",
     "set_seeds",
-    "accuracy",
-    "MLflowTracker",
     "ensure_path_exists",
     "get_project_root",
-    "get_canonical_relation",
     "ConfigPathError",
     "SchemaRegistrationError",
     "run_cached_operation",

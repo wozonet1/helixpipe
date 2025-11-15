@@ -31,7 +31,7 @@ class SelectorExecutor:
         source_col: str,
         target_col: str,
         relation_col: str,
-    ) -> pd.Series[bool]:
+    ) -> pd.Series:
         """
         【V4 - 逻辑无懈可击版】
         """
@@ -76,7 +76,7 @@ class SelectorExecutor:
 
     def _get_entity_column_match_mask(
         self, entity_id_column: pd.Series, selector: EntitySelectorConfig | None
-    ) -> pd.Series[bool]:
+    ) -> pd.Series:
         # 这个辅助方法已经是正确的，保持不变
         if selector is None or not any(selector.__dict__.values()):
             return pd.Series(True, index=entity_id_column.index)

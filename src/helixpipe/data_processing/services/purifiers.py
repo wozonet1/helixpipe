@@ -6,14 +6,12 @@ from typing import cast
 import pandas as pd
 from rdkit import Chem, RDLogger
 
-from helixpipe.typing import SMILES, ProteinSequence
-
 logger = logging.getLogger(__name__)
 # --- 全局设置 ---
 RDLogger.logger().setLevel(RDLogger.CRITICAL)
 
 
-def validate_smiles_structure(smiles_series: pd.Series[SMILES]) -> pd.Series[SMILES]:
+def validate_smiles_structure(smiles_series: pd.Series) -> pd.Series:
     """
     【新】对一个SMILES Series进行结构和语法有效性验证，并进行标准化。
 
@@ -45,12 +43,12 @@ def validate_smiles_structure(smiles_series: pd.Series[SMILES]) -> pd.Series[SMI
 
     # 4. 将结果对齐回原始索引
     #    .reindex() 会自动用 NaN (我们稍后会处理) 填充那些在 canonical_series 中不存在的索引
-    return cast(pd.Series[SMILES], canonical_series.reindex(smiles_series.index))
+    return cast(pd.Series, canonical_series.reindex(smiles_series.index))
 
 
 def validate_protein_structure(
-    sequence_series: pd.Series[ProteinSequence],
-) -> pd.Series[ProteinSequence]:
+    sequence_series: pd.Series,
+) -> pd.Series:
     """
     【新】对一个蛋白质序列Series进行字符集有效性验证。
 
@@ -75,4 +73,4 @@ def validate_protein_structure(
         return all(char in valid_chars_set for char in seq.strip().upper())
 
     # 2. 应用验证函数，直接返回布尔掩码
-    return cast(pd.Series[ProteinSequence], sequence_series.apply(is_valid_sequence))
+    return cast(pd.Series, sequence_series.apply(is_valid_sequence))

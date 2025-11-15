@@ -16,8 +16,8 @@ if TYPE_CHECKING:
     from .selector_executor import SelectorExecutor
 logger = logging.getLogger(__name__)
 
-LogicInteractionPair = Tuple[LogicID, LogicID]
-AuthInteractionPair = Tuple[AuthID, AuthID]
+LogicInteractionPair = Tuple["LogicID", "LogicID"]
+AuthInteractionPair = Tuple["AuthID", "AuthID"]
 
 
 class SupervisionFileManager:
