@@ -10,4 +10,4 @@ from .similarity_calculators import calculate_and_save_similarity_chunks
 # from .feature_extractors import extract_esm_protein_embeddings
 
 # 但通常，保持两层命名空间（features.extractors）是更清晰的做法。
-__all__ = [extract_features, calculate_and_save_similarity_chunks]
+__all__ = ["extract_features", "calculate_and_save_similarity_chunks"]

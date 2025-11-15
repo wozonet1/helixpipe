@@ -3,10 +3,10 @@ import shutil
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
-from typing import Callable, Generator, Tuple, Union
+from typing import Any, Generator, Tuple, cast, overload
 
 import research_template as rt
-from omegaconf import DictConfig, ListConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf
 from omegaconf.errors import (
     ConfigKeyError,
     InterpolationResolutionError,
@@ -14,12 +14,14 @@ from omegaconf.errors import (
 from research_template import check_paths_exist as generic_check_paths_exist
 from research_template.errors import ConfigPathError
 
+from helixpipe.typing import AppConfig, PathFactory, PathLike, TemplateKey
+
 logger = logging.getLogger(__name__)
 
 
 def _walk_config(
     cfg: DictConfig, prefix: str = ""
-) -> Generator[Tuple[str, any], None, None]:
+) -> Generator[Tuple[str, Any], None, None]:
     """
     一个辅助函数，用于递归地遍历OmegaConf配置树，并生成所有叶子节点的
     (完整路径, 值) 对。
@@ -33,8 +35,9 @@ def _walk_config(
                                                 (full_key, value) 元组。
     """
     for key, value in cfg.items_ex(resolve=False):
+        key = str(key)
         full_key = f"{prefix}.{key}" if prefix else key
-        if isinstance(value, (DictConfig, ListConfig)):
+        if isinstance(value, DictConfig):
             # 如果值是容器，则继续递归
             yield from _walk_config(value, prefix=full_key)
         else:
@@ -42,7 +45,7 @@ def _walk_config(
             yield full_key, value
 
 
-def setup_dataset_directories(config: DictConfig) -> None:
+def setup_dataset_directories(config: AppConfig) -> None:
     """
     【V3 重构版】根据配置，创建所有必需的目录，并按需清理旧的实验产物。
     此函数现在是“声明式”的：它遍历配置中定义的所有路径，并确保它们存在。
@@ -51,7 +54,7 @@ def setup_dataset_directories(config: DictConfig) -> None:
 
     try:
         # --- 1. 按需清理 (更智能的清理) ---
-        if config.runtime.get("force_restart", False):
+        if config.runtime.force_restart:
             # 我们只清理与【当前实验配置】相关的【specific】文件夹。
             # 这可以避免误删其他实验（例如，不同relations）的昂贵产物。
 
@@ -66,17 +69,17 @@ def setup_dataset_directories(config: DictConfig) -> None:
                 logger.warning(
                     f"!!! WARNING: `force_restart` is True for variant '{variant_name}' and experiment '{experiment_name}'."
                 )
-                logger.into(f"    Deleting directory: {dir_to_clean}")
+                logger.info(f"    Deleting directory: {dir_to_clean}")
                 shutil.rmtree(dir_to_clean)
 
         # --- 2. 声明式地创建所有需要的目录 ---
-        logger.into("--> Ensuring all necessary directories exist...")
+        logger.info("--> Ensuring all necessary directories exist...")
 
         # a. 遍历 `paths` 配置块中的所有叶子节点 (路径模板)
         #    OmegaConf.select_leaves 会返回一个生成器，包含 (key, value)
         paths_to_ensure = []
         paths_config_node = config.data_structure.paths
-        for key, value_template in _walk_config(paths_config_node):
+        for key, value_template in _walk_config(cast(DictConfig, paths_config_node)):
             full_key = f"data_structure.paths.{key}"
 
             try:
@@ -89,7 +92,7 @@ def setup_dataset_directories(config: DictConfig) -> None:
                 paths_to_ensure.append(path)
             except (KeyError, ValueError):
                 # 忽略那些无法在当前上下文中解析的路径 (例如，gtopdb的专属路径在bindingdb运行时)
-                # logger.into(f"    - Skipping path key '{full_key}' (cannot be resolved in current context: {e})")
+                # logger.info(f"    - Skipping path key '{full_key}' (cannot be resolved in current context: {e})")
                 pass
 
         # c. 确保每个解析出的路径的父目录都存在
@@ -101,9 +104,9 @@ def setup_dataset_directories(config: DictConfig) -> None:
                 created_count += 1
 
         if created_count > 0:
-            logger.into(f"--> Successfully created {created_count} new directories.")
+            logger.info(f"--> Successfully created {created_count} new directories.")
         else:
-            logger.into("-> All necessary directories already exist.")
+            logger.info("-> All necessary directories already exist.")
 
         # --- 3. (可选) 检查原始文件目录是否为空 ---
         raw_dir_path = get_path(config, "raw.dummy_file_to_get_dir").parent
@@ -114,19 +117,32 @@ def setup_dataset_directories(config: DictConfig) -> None:
 
         logger.info("--- [Setup] Directory setup complete. ---")
 
-    except (rt.ConfigKeyError, KeyError) as e:
+    except (ConfigKeyError, KeyError) as e:
         # 使用我们之前设计的自定义异常来提供清晰的错误报告
-        missing_key = e.full_key if isinstance(e, rt.ConfigKeyError) else str(e)
+        missing_key = e.full_key if isinstance(e, ConfigKeyError) else str(e)
         raise rt.ConfigPathError(
             message=f"Failed during directory setup due to missing config key: {missing_key}",
-            missing_key=missing_key,
+            failed_interpolation_key=missing_key,
             file_key="N/A (during setup)",
         ) from e
 
 
+StaticKey = str
+
+
+@overload
 def get_path(
-    cfg: DictConfig, short_key: str, **kwargs
-) -> Union[Path, Callable[..., Path]]:
+    cfg: DictConfig, short_key: TemplateKey, **kwargs
+) -> PathFactory: ...  # 注意：这里是三个点，表示这是一个纯签名的声明，没有实现
+
+
+@overload
+def get_path(
+    cfg: DictConfig, short_key: StaticKey, **kwargs
+) -> Path: ...  # 这是针对所有其他 str 类型 key 的签名
+
+
+def get_path(cfg: DictConfig, short_key: str, **kwargs) -> PathLike:
     """
     【V11 路径工厂最终版】一个智能的、双模式的路径获取函数。
 
@@ -149,7 +165,7 @@ def get_path(
     """
     full_key = f"data_structure.paths.{short_key}"
     try:
-        resolved_path_str = OmegaConf.select(cfg, full_key)
+        resolved_path_str = cast(str, OmegaConf.select(cfg, full_key))
 
     except InterpolationResolutionError as e:
         # 【核心修改】捕获插值错误，并传递更丰富的上下文
@@ -178,13 +194,15 @@ def get_path(
         # 定义一个闭包函数作为我们的“路径工厂”
         def path_factory(**factory_kwargs) -> Path:
             # 使用 format_map 和 defaultdict，可以安全地处理不完整的参数
-            final_str = resolved_path_str.format_map(defaultdict(str, factory_kwargs))
+            final_str = str(
+                resolved_path_str.format_map(defaultdict(str, factory_kwargs))
+            )
             if "{" in final_str:
                 # 检查格式化后是否还有未填充的占位符
                 logger.warning(
                     f"Warning: Path template for key '{short_key}' may be incompletely formatted: {final_str}"
                 )
-            return project_root / final_str
+            return cast(Path, project_root / final_str)
 
         # 2. 如果在调用 get_path 时已经提供了 kwargs，则使用 functools.partial
         #    来“预填充”这些参数，返回一个新的、参数更少的函数。
@@ -201,7 +219,7 @@ def get_path(
             logger.warning(
                 f"Warning: kwargs {kwargs} were provided for a static path key '{short_key}' and will be ignored."
             )
-        return project_root / resolved_path_str
+        return cast(Path, project_root / resolved_path_str)
 
 
 def check_project_files_exist(config: "DictConfig", *file_keys: str) -> bool:
@@ -220,11 +238,11 @@ def check_project_files_exist(config: "DictConfig", *file_keys: str) -> bool:
     """
     try:
         # 使用一个生成器表达式，高效地将所有 file_keys 转换为 Path 对象
-        paths_to_check = (get_path(config, key) for key in file_keys)
+        paths_to_check = (cast(Path, get_path(config, key)) for key in file_keys)
 
         # 调用通用的检查函数
         return generic_check_paths_exist(paths_to_check)
 
-    except (KeyError, ValueError):
+    except (KeyError, ValueError, ConfigPathError):
         # 如果任何一个 get_path 调用失败，都视为检查不通过
         return False

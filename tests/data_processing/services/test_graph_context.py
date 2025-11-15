@@ -5,9 +5,11 @@ import pandas as pd
 import torch
 from omegaconf import OmegaConf
 
-# 导入所有需要的真实模块和配置类
-from helixpipe.configs import AppConfig, register_all_schemas
+from helixpipe.configs import register_all_schemas
 from helixpipe.data_processing.services.graph_context import GraphBuildContext
+
+# 导入所有需要的真实模块和配置类
+from helixpipe.typing import AppConfig
 
 # --- 模拟依赖 (Mocks) ---
 logging.basicConfig(level=logging.DEBUG)

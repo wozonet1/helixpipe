@@ -49,7 +49,7 @@ class TestIDValidationServiceOffline(unittest.TestCase):
         if self.test_root.exists():
             shutil.rmtree(self.test_root)
 
-    def _get_test_config(self, overrides: list = None) -> DictConfig:
+    def _get_test_config(self, overrides: list | None = None) -> DictConfig:
         """加载配置并将其路径重定向到沙箱。"""
         overrides = overrides or []
         project_root = rt.get_project_root()

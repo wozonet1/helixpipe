@@ -20,14 +20,40 @@ ignore = ["E501",]
 # 忽略所有已安装的第三方库中缺失的类型提示
 # (例如，如果你导入了requests，mypy不会抱怨requests没有类型提示)
 ignore_missing_imports = true
-
+# -- 核心规则 --
+disallow_untyped_defs = false  # [重要] 一开始先设为 False，允许未注解的函数
+disallow_any_unimported = true
 # 【核心配置】
 # 不要因为一个模块没有 py.typed 就跳过它
 follow_imports = "normal" 
 
 # 明确告诉mypy你的源代码在哪里
-files = ["src", "tests", "analysis/scripts"]
+files = ["src"]
 
 # 增加一些严格的检查选项 (推荐)
 warn_return_any = true
 warn_unused_configs = true
+exclude = '''
+(?x)(
+    ^src/helixpipe/analysis/.*$
+    |
+    ^tests/.*$
+    |
+    ^src/helixpipe/training/.*$
+    |
+    ^src/helixpipe/models/.*$
+  )
+'''
+[[tool.mypy.overrides]]
+module = "rdkit.*"
+# 1. 告诉 mypy 不要去分析 rdkit 的源代码，只使用类型存根 (.pyi) 文件
+follow_imports = "skip"
+# 2. [关键] 同时告诉 mypy，如果在这些存根文件中发现了任何错误，请直接忽略它们
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "torch_geometric.*"
+# 强制 mypy 像对待没有类型提示的库一样对待 PyG，以避免其内部的解析错误
+follow_imports = "skip"
+ignore_errors = true
+

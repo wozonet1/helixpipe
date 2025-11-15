@@ -2,6 +2,7 @@ import logging
 import pickle as pkl
 import time
 from pathlib import Path
+from typing import Union, cast
 
 import pandas as pd
 import pubchempy as pcp
@@ -9,10 +10,12 @@ import requests
 from rdkit import Chem
 from tqdm import tqdm
 
+from helixpipe.typing import CID, SMILES
+
 logger = logging.getLogger(__name__)
 
 
-def canonicalize_smiles(smiles):
+def canonicalize_smiles(smiles: SMILES):
     try:
         mol = Chem.MolFromSmiles(smiles)
         if mol is not None:
@@ -25,10 +28,10 @@ def canonicalize_smiles(smiles):
 
 
 def canonicalize_smiles_to_cid(
-    smiles_list: list[str],
-    cache_path: Path = None,
+    smiles_list: list[SMILES],
+    cache_path: Union[Path, None],
     force_regenerate: bool = False,  # 新增 force_regenerate
-) -> dict[str, int]:
+) -> dict[SMILES, CID]:
     """
     【新版 - 更健壮】将一个SMILES字符串列表，转换为PubChem CID。
     采用逐个查询的方式，以最大限度地提高成功率和错误隔离。
@@ -38,7 +41,7 @@ def canonicalize_smiles_to_cid(
             f"--> [Canonicalizer] Loading cached SMILES->CID map from: {cache_path}"
         )
         with open(cache_path, "rb") as f:
-            return pkl.load(f)
+            return cast(dict[SMILES, CID], pkl.load(f))
 
     logger.info(
         "--> [Canonicalizer] Starting SMILES to CID conversion (robust, one-by-one mode)..."

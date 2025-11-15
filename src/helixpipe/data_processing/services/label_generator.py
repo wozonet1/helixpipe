@@ -5,15 +5,19 @@ import numpy as np
 import pandas as pd
 import research_template as rt
 
-from helixpipe.configs import AppConfig
+from helixpipe.typing import AppConfig
 from helixpipe.utils import get_path
 
 if TYPE_CHECKING:
+    from helixpipe.typing import AuthID, LogicID
+
     from .id_mapper import IDMapper
     from .interaction_store import InteractionStore
     from .selector_executor import SelectorExecutor
-
 logger = logging.getLogger(__name__)
+
+LogicInteractionPair = Tuple[LogicID, LogicID]
+AuthInteractionPair = Tuple[AuthID, AuthID]
 
 
 class SupervisionFileManager:
@@ -29,7 +33,7 @@ class SupervisionFileManager:
         config: AppConfig,
         id_mapper: "IDMapper",
         executor: "SelectorExecutor",
-        global_positive_set: Set[Tuple[int, int]],
+        global_positive_set: Set[LogicInteractionPair],
     ):
         """
         在构造时，接收所有需要的服务和全局状态。
@@ -175,7 +179,9 @@ class SupervisionFileManager:
         logger.debug("--- [_prepare_test_df] END ---")
         return final_df_shuffled
 
-    def _perform_negative_sampling(self, num_to_sample: int) -> List[Tuple]:
+    def _perform_negative_sampling(
+        self, num_to_sample: int
+    ) -> List[AuthInteractionPair]:
         """
         (私有) 执行配置驱动的负采样，返回权威ID对列表。
         """
@@ -187,6 +193,9 @@ class SupervisionFileManager:
         logger.debug("  - Performing negative sampling for test set...")
 
         neg_sampling_scope = self.config.training.coldstart.evaluation_scope
+
+        if neg_sampling_scope is None:
+            raise RuntimeError("evaluation_scope is not specified")
 
         source_pool_auth = self.executor.select_entities(
             neg_sampling_scope.source_selector
@@ -201,7 +210,7 @@ class SupervisionFileManager:
             )
             return []
 
-        negative_pairs_auth = []
+        negative_pairs_auth: list[AuthInteractionPair] = []
         source_list = list(source_pool_auth)
         target_list = list(target_pool_auth)
 

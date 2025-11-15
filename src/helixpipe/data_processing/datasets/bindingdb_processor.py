@@ -2,16 +2,18 @@
 
 import logging
 import sys
+from typing import cast
 
 import argcomplete
 import pandas as pd
 import research_template as rt
 from hydra import compose
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
-from helixpipe.configs import AppConfig, register_all_schemas
-from helixpipe.utils import get_path, register_hydra_resolvers
+from helixpipe.configs import register_all_schemas
+from helixpipe.typing import AppConfig
+from helixpipe.utils import SchemaAccessor, get_path, register_hydra_resolvers
 
 from .base_processor import BaseProcessor
 
@@ -31,7 +33,8 @@ class BindingdbProcessor(BaseProcessor):
     def __init__(self, config: AppConfig):
         super().__init__(config)
         # 引用外部schema，用于解析原始文件
-        self.external_schema = self.config.data_structure.schema.external.bindingdb
+        schema_node = config.data_structure.schema.external["bindingdb"]
+        self.external_schema = SchemaAccessor(schema_node)
 
     def _load_raw_data(self) -> pd.DataFrame:
         """
@@ -64,11 +67,13 @@ class BindingdbProcessor(BaseProcessor):
             disable=disable_tqdm,
         ):
             # 基础的、绝对必要的预过滤
-            chunk = chunk[chunk[self.external_schema.organism] == "Homo sapiens"].copy()
+            chunk = chunk[
+                chunk[self.external_schema.get_col("organism")] == "Homo sapiens"
+            ].copy()
             chunk.dropna(
                 subset=[
-                    self.external_schema.protein_id,
-                    self.external_schema.molecule_id,
+                    self.external_schema.get_col("protein_id"),
+                    self.external_schema.get_col("molecule_id"),
                 ],
                 inplace=True,
             )
@@ -100,23 +105,29 @@ class BindingdbProcessor(BaseProcessor):
 
         # 核心规范化列
         entity_names = self.config.knowledge_graph.entity_types
-        final_df[self.schema.source_id] = df[self.external_schema.molecule_id]
+        final_df[self.schema.source_id] = df[
+            self.external_schema.get_col("molecule_id")
+        ]
         final_df[self.schema.source_type] = entity_names.drug
-        final_df[self.schema.target_id] = df[self.external_schema.protein_id]
+        final_df[self.schema.target_id] = df[self.external_schema.get_col("protein_id")]
         final_df[self.schema.target_type] = entity_names.protein
         final_df[self.schema.relation_type] = (
             self.config.knowledge_graph.relation_types.default
         )
 
         # 附带所有下游需要的“原材料”
-        final_df["structure_molecule"] = df[self.external_schema.molecule_sequence]
-        final_df["structure_protein"] = df[self.external_schema.protein_sequence]
+        final_df["structure_molecule"] = df[
+            self.external_schema.get_col("molecule_sequence")
+        ]
+        final_df["structure_protein"] = df[
+            self.external_schema.get_col("protein_sequence")
+        ]
 
         # 附带亲和力数据以供下一步过滤
         for aff_type in [
-            self.external_schema.ki,
-            self.external_schema.ic50,
-            self.external_schema.kd,
+            self.external_schema.get_col("ki"),
+            self.external_schema.get_col("ic50"),
+            self.external_schema.get_col("kd"),
         ]:
             if aff_type in df.columns:
                 final_df[aff_type] = df[aff_type]
@@ -132,9 +143,9 @@ class BindingdbProcessor(BaseProcessor):
 
         # 1. 计算统一的亲和力值
         for aff_type in [
-            self.external_schema.ki,
-            self.external_schema.ic50,
-            self.external_schema.kd,
+            self.external_schema.get_col("ki"),
+            self.external_schema.get_col("ic50"),
+            self.external_schema.get_col("kd"),
         ]:
             if aff_type in df.columns:
                 df[aff_type] = pd.to_numeric(
@@ -143,9 +154,9 @@ class BindingdbProcessor(BaseProcessor):
                 )
 
         df["affinity_nM"] = (
-            df[self.external_schema.ki]
-            .fillna(df[self.external_schema.kd])
-            .fillna(df[self.external_schema.ic50])
+            df[self.external_schema.get_col("ki")]
+            .fillna(df[self.external_schema.get_col("kd")])
+            .fillna(df[self.external_schema.get_col("ic50")])
         )
 
         # 2. 应用亲和力阈值过滤
@@ -212,7 +223,7 @@ if __name__ == "__main__":
     with initialize_config_dir(
         config_dir=config_dir, version_base=None, job_name="bindingdb_process"
     ):
-        cfg: AppConfig = compose(config_name="config", overrides=final_overrides)
+        cfg: DictConfig = compose(config_name="config", overrides=final_overrides)
 
     # c. 打印最终配置以供调试
     logger.info("\n" + "~" * 80)
@@ -222,7 +233,7 @@ if __name__ == "__main__":
     logger.info("~" * 80 + "\n")
 
     # === 阶段 3: 执行核心业务逻辑 ===
-
+    cfg = cast(AppConfig, cfg)
     # a. 实例化处理器
     processor = BindingdbProcessor(config=cfg)
 

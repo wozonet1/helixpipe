@@ -11,8 +11,10 @@ from rdkit import Chem
 from rdkit.Chem import Crippen, Descriptors
 from tqdm import tqdm
 
+from helixpipe.configs import register_all_schemas
+
 # 导入所有需要的项目内部模块
-from helixpipe.configs import AppConfig, register_all_schemas
+from helixpipe.typing import AppConfig
 from helixpipe.utils import get_path, register_hydra_resolvers
 
 from .plot_utils import (

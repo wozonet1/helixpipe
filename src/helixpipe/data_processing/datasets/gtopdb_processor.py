@@ -1,5 +1,5 @@
 # 文件: src/helixpipe/data_processing/datasets/gtopdb_processor.py (最终架构版)
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import argcomplete
 import numpy as np
@@ -7,18 +7,18 @@ import pandas as pd
 import research_template as rt
 
 from helixpipe.configs import register_all_schemas
-from helixpipe.utils import get_path, register_hydra_resolvers
+from helixpipe.utils import SchemaAccessor, get_path, register_hydra_resolvers
 
 # 导入基类和所有需要的辅助模块
 from .base_processor import BaseProcessor
 
 if TYPE_CHECKING:
-    from helixpipe.configs import AppConfig
+    from helixpipe.typing import AppConfig
 
 
 import logging
 
-from helixpipe.configs import AppConfig
+from helixpipe.typing import AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,9 @@ class GtopdbProcessor(BaseProcessor):
 
     def __init__(self, config: AppConfig):
         super().__init__(config)
-        self.external_schema = self.config.data_structure.schema.external.gtopdb
+        self.external_schema = SchemaAccessor(
+            self.config.data_structure.schema.external["gtopdb"]
+        )
 
     # --- 步骤 1: 实现数据加载 ---
     def _load_raw_data(self) -> pd.DataFrame:
@@ -49,8 +51,8 @@ class GtopdbProcessor(BaseProcessor):
         # 在合并前，预先过滤掉没有SMILES或CID的配体，以减小处理体积
         ligands_df.dropna(
             subset=[
-                self.external_schema.ligands.molecule_sequence,
-                self.external_schema.ligands.molecule_id,
+                self.external_schema.get_col("ligands.molecule_sequence"),
+                self.external_schema.get_col("ligands.molecule_id"),
             ],
             inplace=True,
         )
@@ -59,8 +61,8 @@ class GtopdbProcessor(BaseProcessor):
         merged_df = pd.merge(
             interactions_df,
             ligands_df,
-            left_on=self.external_schema.interactions.ligand_id,
-            right_on=self.external_schema.ligands.ligand_id,
+            left_on=self.external_schema.get_col("interactions.ligand_id"),
+            right_on=self.external_schema.get_col("ligands.ligand_id"),
         )
         return merged_df
 
@@ -89,7 +91,9 @@ class GtopdbProcessor(BaseProcessor):
 
         # 1. Source (Molecule)
         # 我们不再在这里重命名，而是直接赋值给新列
-        final_df[self.schema.source_id] = df[self.external_schema.ligands.molecule_id]
+        final_df[self.schema.source_id] = df[
+            self.external_schema.get_col("ligands.molecule_id")
+        ]
         final_df[self.schema.source_type] = np.where(
             df["endogenous_flag"],  # 条件: if endogenous_flag is True
             entity_names.ligand_endo,  # 值为 True 时的结果
@@ -99,7 +103,9 @@ class GtopdbProcessor(BaseProcessor):
         # 2. Target (Protein)
         # 清洗UniProt ID (e.g., 'P12345|...')并赋值给新列
         final_df[self.schema.target_id] = (
-            df[self.external_schema.interactions.target_id].str.split("|").str[0]
+            df[self.external_schema.get_col("interactions.target_id")]
+            .str.split("|")
+            .str[0]
         )
         final_df[self.schema.target_type] = entity_names.protein
 
@@ -112,14 +118,16 @@ class GtopdbProcessor(BaseProcessor):
 
         # 4. 结构信息
         final_df["structure_molecule"] = df[
-            self.external_schema.ligands.molecule_sequence
+            self.external_schema.get_col("ligands.molecule_sequence")
         ]
         # GtoPdb不提供蛋白质序列，所以我们不创建 structure_protein 列
 
         # 5. 用于下一步过滤的领域特定信息
-        final_df["affinity_nM"] = df[self.external_schema.interactions.affinity]
+        final_df["affinity_nM"] = df[
+            self.external_schema.get_col("interactions.affinity")
+        ]
         final_df["endogenous_flag"] = df[
-            self.external_schema.interactions.endogenous_flag
+            self.external_schema.get_col("interactions.endogenous_flag")
         ]
 
         return final_df
@@ -162,7 +170,7 @@ if __name__ == "__main__":
     from hydra import compose, initialize_config_dir
     from omegaconf import OmegaConf
 
-    from helixpipe.configs import AppConfig
+    from helixpipe.typing import AppConfig
 
     BASE_OVERRIDES = [
         "data_structure=gtopdb",
@@ -183,7 +191,9 @@ if __name__ == "__main__":
     with initialize_config_dir(
         config_dir=config_dir, version_base=None, job_name="gtopdb_process"
     ):
-        cfg: "AppConfig" = compose(config_name="config", overrides=final_overrides)
+        cfg: "AppConfig" = cast(
+            AppConfig, compose(config_name="config", overrides=final_overrides)
+        )
 
     logger.info("\n" + "~" * 80)
     logger.info(" " * 25 + "HYDRA COMPOSED CONFIGURATION")

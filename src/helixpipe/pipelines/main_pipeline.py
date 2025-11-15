@@ -1,13 +1,11 @@
 import logging
-from typing import Dict, Tuple
+from typing import List, Sequence, Tuple, cast
 
 import numpy as np
 import pandas as pd
 import research_template as rt
 import torch
 
-# (确保在文件顶部有以下 imports)
-from helixpipe.configs import AppConfig
 from helixpipe.data_processing import (
     DataSplitter,
     GraphBuildContext,
@@ -21,12 +19,22 @@ from helixpipe.data_processing import (
     validate_and_filter_entities,
 )
 from helixpipe.features import extract_features
+
+# (确保在文件顶部有以下 imports)
+from helixpipe.typing import (
+    CID,
+    PID,
+    AppConfig,
+    AuthID,
+    FeatureDict,
+    ProcessorOutputs,
+)
 from helixpipe.utils import get_path
 
 logger = logging.getLogger(__name__)
 
 
-def process_data(config: AppConfig, processor_outputs: Dict[str, pd.DataFrame]):
+def process_data(config: AppConfig, processor_outputs: ProcessorOutputs):
     """
     【V5 - 最终完整编排版】数据处理的总编排器。
     """
@@ -179,7 +187,7 @@ def _stage6_generate_features(
     该函数通过动态查询IDMapper来处理任意数量的分子和蛋白质亚型。
     """
     logger.info(
-        "\n--- [Pipeline Stage 7] Generating or loading node features for all subtypes... ---"
+        "\n--- [Pipeline Stage 6] Generating or loading node features for all subtypes... ---"
     )
 
     final_features_path = get_path(config, "processed.common.node_features")
@@ -206,67 +214,79 @@ def _stage6_generate_features(
 
     # --- 1. “分类打包”工作流 ---
 
-    # a. 准备“篮子”和“打包清单”
-    all_molecule_ids = []
-    all_protein_ids = []
+    # [修复] 直接使用这些列表，它们的顺序是正确的，无需再排序
+    ordered_molecule_ids: List[CID] = []
+    ordered_protein_ids: List[PID] = []
 
-    # b. 向IDMapper“问询”所有存在的实体类型，并进行“大类分拣”
     entity_types = id_mapper.entity_types
     for entity_type in entity_types:
         if id_mapper.is_molecule(entity_type):
-            all_molecule_ids.extend(id_mapper.get_ordered_ids(entity_type))
+            ordered_molecule_ids.extend(
+                cast(list[CID], id_mapper.get_ordered_ids(entity_type))
+            )
         elif id_mapper.is_protein(entity_type):
-            all_protein_ids.extend(id_mapper.get_ordered_ids(entity_type))
+            ordered_protein_ids.extend(
+                cast(list[PID], id_mapper.get_ordered_ids(entity_type))
+            )
 
-    # c. 根据“打包清单”提取“货物”（结构信息）
-    #    使用 .set_index() 创建一个高效的查找映射
     structure_map = entities_with_structures.set_index("entity_id")["structure"]
 
-    # 使用 .map() 或列表推导式高效、有序地提取结构
-    ordered_smiles = [structure_map.get(mid) for mid in all_molecule_ids]
-    ordered_sequences = [structure_map.get(pid) for pid in all_protein_ids]
+    # [修复] 确保 SMILES/序列列表的顺序与 ID 列表的顺序严格一致
+    ordered_smiles = [structure_map.get(mid) for mid in ordered_molecule_ids]
+    ordered_sequences = [structure_map.get(pid) for pid in ordered_protein_ids]
 
-    # --- 2. 调用“打包工人”（特征提取器） ---
-
+    # --- 2. 调用特征提取器 ---
     device = torch.device(config.runtime.gpu if torch.cuda.is_available() else "cpu")
 
     molecule_features_dict = {}
-    if all_molecule_ids:
+    if ordered_molecule_ids:
         molecule_features_dict = extract_features(
-            entity_type="molecule",  # 使用通用大类名称
+            entity_type="molecule",
             config=config,
             device=device,
-            authoritative_ids=all_molecule_ids,
+            # [修复] 传入有序的 ID 列表
+            authoritative_ids=ordered_molecule_ids,
             sequences_or_smiles=ordered_smiles,
             force_regenerate=restart_flag,
         )
 
     protein_features_dict = {}
-    if all_protein_ids:
+    if ordered_protein_ids:
         protein_features_dict = extract_features(
-            entity_type="protein",  # 使用通用大类名称
+            entity_type="protein",
             config=config,
             device=device,
-            authoritative_ids=all_protein_ids,
+            # [修复] 传入有序的 ID 列表
+            authoritative_ids=ordered_protein_ids,
             sequences_or_smiles=ordered_sequences,
             force_regenerate=restart_flag,
         )
 
-    # --- 3. 按顺序组装最终的“集装箱”（特征矩阵） ---
+    # --- 3. 按顺序组装最终的特征矩阵 (您的优秀重构) ---
+    def extract_ordered_embeddings(
+        ordered_ids: Sequence[AuthID], features_dict: FeatureDict, meta: str
+    ) -> List[torch.Tensor]:
+        ordered_embeddings = []
+        for entity_id in ordered_ids:
+            feature = features_dict.get(entity_id)
+            if feature is None:
+                # 提供了更具体的错误信息
+                raise RuntimeError(
+                    f"Feature extraction failed for {meta} entity with ID: {entity_id}."
+                )
+            ordered_embeddings.append(feature)
+        return ordered_embeddings
 
-    ordered_mol_embeddings = [
-        molecule_features_dict.get(mid) for mid in all_molecule_ids
-    ]
-    ordered_prot_embeddings = [
-        protein_features_dict.get(pid) for pid in all_protein_ids
-    ]
-
-    # 健壮性检查
-    if any(e is None for e in ordered_mol_embeddings):
-        raise RuntimeError("Molecule feature extraction failed for some entities.")
-    if any(e is None for e in ordered_prot_embeddings):
-        raise RuntimeError("Protein feature extraction failed for some entities.")
-
+    ordered_mol_embeddings = extract_ordered_embeddings(
+        ordered_ids=ordered_molecule_ids,
+        features_dict=molecule_features_dict,
+        meta="molecule",
+    )
+    ordered_prot_embeddings = extract_ordered_embeddings(
+        ordered_ids=ordered_protein_ids,
+        features_dict=protein_features_dict,
+        meta="protein",
+    )
     molecule_embeddings = (
         torch.stack(ordered_mol_embeddings)
         if ordered_mol_embeddings
@@ -360,8 +380,7 @@ def _stage7_split_and_build_graphs(
     }
 
     # 6. 循环每个Fold，执行图构建和标签生成
-    for (
-        fold_idx,
+    for fold_idx, (
         train_graph_store,
         train_labels_store,
         test_store,
@@ -395,16 +414,17 @@ def _stage7_split_and_build_graphs(
         }
 
         # 将逻辑ID按分子/蛋白质分类
-        relevant_mol_ids_logic = {
-            lid
-            for lid in relevant_logic_ids
-            if id_mapper.is_molecule(id_mapper.logic_id_to_type_map.get(lid))
-        }
-        relevant_prot_ids_logic = {
-            lid
-            for lid in relevant_logic_ids
-            if id_mapper.is_protein(id_mapper.logic_id_to_type_map.get(lid))
-        }
+        relevant_mol_ids_logic = set()
+        for lid in relevant_logic_ids:
+            node_type = id_mapper.logic_id_to_type_map.get(lid)
+            if node_type is not None and id_mapper.is_molecule(node_type):
+                relevant_mol_ids_logic.add(lid)
+
+        relevant_prot_ids_logic = set()
+        for lid in relevant_logic_ids:
+            node_type = id_mapper.logic_id_to_type_map.get(lid)
+            if node_type is not None and id_mapper.is_protein(node_type):
+                relevant_prot_ids_logic.add(lid)
 
         context = GraphBuildContext(
             fold_idx=fold_idx,

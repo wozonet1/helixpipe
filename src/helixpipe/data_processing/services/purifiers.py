@@ -1,16 +1,19 @@
 # src/helixpipe/data_processing/services/purifiers.py
 
 import logging
+from typing import cast
 
 import pandas as pd
 from rdkit import Chem, RDLogger
+
+from helixpipe.typing import SMILES, ProteinSequence
 
 logger = logging.getLogger(__name__)
 # --- 全局设置 ---
 RDLogger.logger().setLevel(RDLogger.CRITICAL)
 
 
-def validate_smiles_structure(smiles_series: pd.Series) -> pd.Series:
+def validate_smiles_structure(smiles_series: pd.Series[SMILES]) -> pd.Series[SMILES]:
     """
     【新】对一个SMILES Series进行结构和语法有效性验证，并进行标准化。
 
@@ -33,8 +36,7 @@ def validate_smiles_structure(smiles_series: pd.Series) -> pd.Series:
 
     # 2. 验证SMILES化学结构有效性
     #    使用 apply + lambda，对于无效的SMILES，MolFromSmiles返回None
-    mol_series = cleaned_series.dropna().apply(Chem.MolFromSmiles)
-
+    mol_series = cast(pd.Series, cleaned_series.dropna().apply(Chem.MolFromSmiles))
     # 3. 标准化 (Canonicalization)
     #    只对有效的分子对象进行标准化
     canonical_series = mol_series.dropna().apply(
@@ -43,10 +45,12 @@ def validate_smiles_structure(smiles_series: pd.Series) -> pd.Series:
 
     # 4. 将结果对齐回原始索引
     #    .reindex() 会自动用 NaN (我们稍后会处理) 填充那些在 canonical_series 中不存在的索引
-    return canonical_series.reindex(smiles_series.index)
+    return cast(pd.Series[SMILES], canonical_series.reindex(smiles_series.index))
 
 
-def validate_protein_structure(sequence_series: pd.Series) -> pd.Series:
+def validate_protein_structure(
+    sequence_series: pd.Series[ProteinSequence],
+) -> pd.Series[ProteinSequence]:
     """
     【新】对一个蛋白质序列Series进行字符集有效性验证。
 
@@ -71,4 +75,4 @@ def validate_protein_structure(sequence_series: pd.Series) -> pd.Series:
         return all(char in valid_chars_set for char in seq.strip().upper())
 
     # 2. 应用验证函数，直接返回布尔掩码
-    return sequence_series.apply(is_valid_sequence)
+    return cast(pd.Series[ProteinSequence], sequence_series.apply(is_valid_sequence))

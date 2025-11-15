@@ -6,9 +6,8 @@ from .gtopdb_processor import GtopdbProcessor
 # from .string_processor import StringProcessor
 
 __all__ = [
-    BaseProcessor,
-    BindingdbProcessor,
-    GtopdbProcessor,
-    BrendaProcessor,
-    # StringProcessor,
+    "BaseProcessor",
+    "BindingdbProcessor",
+    "GtopdbProcessor",
+    "BrendaProcessor",
 ]

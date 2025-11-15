@@ -12,8 +12,10 @@ import umap.umap_ as umap
 # 您需要先安装它们: pip install scikit-learn umap-learn
 from sklearn.cluster import KMeans
 
+from helixpipe.configs import register_all_schemas
+
 # 导入所有需要的项目内部模块
-from helixpipe.configs import AppConfig, register_all_schemas
+from helixpipe.typing import AppConfig
 from helixpipe.utils import get_path, register_hydra_resolvers
 
 # 在所有Hydra操作之前，执行全局注册

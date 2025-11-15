@@ -1,12 +1,12 @@
 # 文件: src/helixpipe/data_processing/services/graph_context.py (最终版)
 
 import logging
-from typing import TYPE_CHECKING, Dict, List, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, Set
 
 import pandas as pd
 import torch
 
-from helixpipe.configs import AppConfig
+from helixpipe.typing import AppConfig, LogicID, LogicInteractionTriple
 
 if TYPE_CHECKING:
     from .id_mapper import IDMapper
@@ -26,8 +26,8 @@ class GraphBuildContext:
         global_id_mapper: "IDMapper",
         global_mol_embeddings: torch.Tensor,
         global_prot_embeddings: torch.Tensor,
-        relevant_mol_ids: Set[int],
-        relevant_prot_ids: Set[int],
+        relevant_mol_ids: Set[LogicID],
+        relevant_prot_ids: Set[LogicID],
         config: AppConfig,
     ):
         logger.debug("\n--- [GraphBuildContext] Initializing local context... ---")
@@ -104,7 +104,9 @@ class GraphBuildContext:
         logger.debug("  --- Step 3: Building Local ID to Type Map ---")
         self.local_id_to_type_map: Dict[int, str] = {}
         for local_id, global_id in enumerate(self.local_to_global_id_list):
-            node_type = global_id_mapper.get_meta_by_logic_id(global_id)["type"]
+            meta = global_id_mapper.get_meta_by_logic_id(global_id)
+            if meta is not None:
+                node_type = meta["type"]
             self.local_id_to_type_map[local_id] = node_type
             logger.debug(
                 f"      - Local ID {local_id} (Global {global_id}) -> Type '{node_type}'"
@@ -115,8 +117,8 @@ class GraphBuildContext:
         )
 
     def convert_pairs_to_local(
-        self, global_pairs: List[Tuple[int, int, str]]
-    ) -> List[Tuple[int, int, str]]:
+        self, global_pairs: List[LogicInteractionTriple]
+    ) -> List[LogicInteractionTriple]:
         """将使用全局ID的交互对列表，转换为使用局部ID。"""
         local_pairs = []
         for u_global, v_global, rel_type in global_pairs:
@@ -138,7 +140,7 @@ class GraphBuildContext:
         global_df[target_col] = global_df[target_col].map(reverse_map)
         return global_df
 
-    def convert_ids_to_local(self, global_ids: Set[int]) -> Set[int]:
+    def convert_ids_to_local(self, global_ids: Set[LogicID]) -> Set[LogicID]:
         """将一个全局逻辑ID的集合，转换为局部ID的集合。"""
         return {
             self.global_to_local_id_map[gid]
@@ -146,10 +148,10 @@ class GraphBuildContext:
             if gid in self.global_to_local_id_map
         }
 
-    def get_local_node_type(self, local_id: int) -> str:
+    def get_local_node_type(self, local_id: LogicID) -> str:
         """根据局部ID，返回其节点类型。"""
         return self.local_id_to_type_map[local_id]
 
-    def get_local_protein_id_offset(self) -> int:
+    def get_local_protein_id_offset(self) -> LogicID:
         """返回在局部ID空间中，蛋白质ID的起始编号。"""
         return self.num_local_mols

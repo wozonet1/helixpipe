@@ -7,7 +7,7 @@ import torch_geometric.transforms as T
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import LinkNeighborLoader
 
-from helixpipe.configs import AppConfig
+from helixpipe.typing import AppConfig
 from helixpipe.utils import get_path
 
 

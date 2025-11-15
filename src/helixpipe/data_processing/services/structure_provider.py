@@ -12,7 +12,7 @@ from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry  # type: ignore
 from tqdm import tqdm
 
-from helixpipe.configs import AppConfig
+from helixpipe.typing import CID, PID, SMILES, AppConfig, ProteinSequence
 from helixpipe.utils import get_path
 
 logger = logging.getLogger(__name__)
@@ -48,8 +48,8 @@ class StructureProvider:
     # --- 公共接口 ---
 
     def get_sequences(
-        self, uniprot_ids: List[str], force_restart: bool = False
-    ) -> Dict[str, str]:
+        self, uniprot_ids: List[PID], force_restart: bool = False
+    ) -> Dict[PID, ProteinSequence]:
         """为UniProt ID列表获取序列，使用增量缓存。"""
         return rt.run_cached_operation(
             cache_path=get_path(self.config, "cache.ids.enriched_protein_sequences"),
@@ -61,8 +61,8 @@ class StructureProvider:
         )
 
     def get_smiles(
-        self, cids: List[int], force_restart: bool = False
-    ) -> Dict[int, str]:
+        self, cids: List[CID], force_restart: bool = False
+    ) -> Dict[CID, SMILES]:
         """为PubChem CID列表获取SMILES，使用增量缓存。"""
         return rt.run_cached_operation(
             cache_path=get_path(self.config, "cache.ids.enriched_molecule_smiles"),
@@ -76,7 +76,9 @@ class StructureProvider:
     # --- 私有实现方法 ---
 
     # --- 【核心修改】为原有的 _fetch_sequences_from_uniprot 方法增加降级逻辑 ---
-    def _fetch_sequences_from_uniprot(self, ids_to_fetch: List[str]) -> Dict[str, str]:
+    def _fetch_sequences_from_uniprot(
+        self, ids_to_fetch: List[PID]
+    ) -> Dict[PID, ProteinSequence]:
         """
         【V4 - 带GET降级版】调用UniProt API获取蛋白质序列。
         主要使用高效的GET stream请求，但在失败时降级为逐一查询。
@@ -91,7 +93,7 @@ class StructureProvider:
         logger.info(
             f"--> [UniProt Fetcher] Fetching sequences for {len(valid_ids)} valid UniProt IDs..."
         )
-        sequences_map: Dict[str, str] = {}
+        sequences_map: Dict[PID, ProteinSequence] = {}
 
         # 2. 按批次大小进行分块 (逻辑保持不变)
         for i in tqdm(
@@ -114,18 +116,16 @@ class StructureProvider:
                 # 【风险点】检查URL长度，如果过长，主动抛出异常以触发降级
                 # UniProt官方未明确GET的URL长度限制，但一般Web服务器在2000-8000字符
                 # 我们设定一个保守的阈值，例如 4000
-                if (
-                    len(
-                        self._session.prepare_request(
-                            requests.Request(
-                                "GET",
-                                "https://rest.uniprot.org/uniprotkb/stream",
-                                params=params,
-                            )
-                        ).url
+                url = self._session.prepare_request(
+                    requests.Request(
+                        "GET",
+                        "https://rest.uniprot.org/uniprotkb/stream",
+                        params=params,
                     )
-                    > 4000
-                ):
+                ).url
+                if url is None:
+                    raise RuntimeError
+                if len(url) > 4000:
                     raise ValueError(
                         "Generated GET request URL is too long, forcing fallback."
                     )
@@ -194,7 +194,9 @@ class StructureProvider:
         return sequences_map
 
     # --- 辅助方法: 逐一查询 (这个函数保持不变，作为降级的实现) ---
-    def _fetch_batch_one_by_one(self, id_chunk: List[str]) -> Dict[str, str]:
+    def _fetch_batch_one_by_one(
+        self, id_chunk: List[PID]
+    ) -> Dict[PID, ProteinSequence]:
         """作为最终的降级手段，逐个请求ID。"""
         results = {}
         for pid in tqdm(id_chunk, desc="     - Fallback (one-by-one)", leave=False):
@@ -221,7 +223,7 @@ class StructureProvider:
             time.sleep(0.1)
         return results
 
-    def _fetch_smiles_from_pubchem(self, ids_to_fetch: List[int]) -> Dict[int, str]:
+    def _fetch_smiles_from_pubchem(self, ids_to_fetch: List[CID]) -> Dict[CID, SMILES]:
         """【私有版】调用PubChem API，获取SMILES。"""
         if not ids_to_fetch:
             return {}

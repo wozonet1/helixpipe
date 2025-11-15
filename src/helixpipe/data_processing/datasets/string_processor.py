@@ -1,13 +1,13 @@
 # src/helixpipe/data_processing/datasets/string_processor.py
-# src/helixpipe/data_processing/datasets/string_processor.py
 import logging
-from typing import Dict
+from typing import Dict, cast
 
 import pandas as pd
 import research_template as rt
 
-from helixpipe.configs import AppConfig, register_all_schemas
-from helixpipe.utils import get_path, register_hydra_resolvers
+from helixpipe.configs import register_all_schemas
+from helixpipe.typing import AppConfig
+from helixpipe.utils import SchemaAccessor, get_path, register_hydra_resolvers
 
 from .base_processor import BaseProcessor
 
@@ -26,7 +26,9 @@ class StringProcessor(BaseProcessor):
 
     def __init__(self, config: AppConfig):
         super().__init__(config)
-        self.external_schema = self.config.data_structure.schema.external.string
+        self.external_schema = SchemaAccessor(
+            self.config.data_structure.schema.external["string"]
+        )
         # 在初始化时，就加载并准备好作为内部状态的ID映射字典
         self._id_map: Dict[str, str] = self._build_id_map()
 
@@ -45,9 +47,9 @@ class StringProcessor(BaseProcessor):
 
         aliases_df = pd.read_csv(aliases_path, sep="\t", compression="gzip")
 
-        string_id_col = self.external_schema.string_protein_id
-        alias_col = self.external_schema.alias
-        source_col = self.external_schema.source
+        string_id_col = self.external_schema.get_col("string_protein_id")
+        alias_col = self.external_schema.get_col("alias")
+        source_col = self.external_schema.get_col("source")
 
         # 使用 .rename() 清理带'#'的列名，以便后续方便地使用属性访问
         clean_string_id_col = string_id_col.lstrip("#")
@@ -85,9 +87,9 @@ class StringProcessor(BaseProcessor):
             raise FileNotFoundError(f"STRING links file not found at '{links_path}'")
 
         # 使用 usecols 提前筛选所需列
-        protein1_col = self.external_schema.protein1
-        protein2_col = self.external_schema.protein2
-        score_col = self.external_schema.combined_score
+        protein1_col = self.external_schema.get_col("protein1")
+        protein2_col = self.external_schema.get_col("protein2")
+        score_col = self.external_schema.get_col("combined_score")
 
         return pd.read_csv(
             links_path,
@@ -103,8 +105,8 @@ class StringProcessor(BaseProcessor):
         # raw_data 现在就是 links_df
         links_df = raw_data
 
-        protein1_col = self.external_schema.protein1
-        protein2_col = self.external_schema.protein2
+        protein1_col = self.external_schema.get_col("protein1")
+        protein2_col = self.external_schema.get_col("protein2")
 
         # 使用 .map() 进行高效映射
         links_df["protein1_uniprot"] = links_df[protein1_col].map(self._id_map)
@@ -154,7 +156,7 @@ if __name__ == "__main__":
     from hydra import compose, initialize_config_dir
     from omegaconf import OmegaConf
 
-    from helixpipe.configs import AppConfig
+    from helixpipe.typing import AppConfig
 
     BASE_OVERRIDES = [
         "data_structure=string",
@@ -174,7 +176,9 @@ if __name__ == "__main__":
     with initialize_config_dir(
         config_dir=config_dir, version_base=None, job_name="string_process"
     ):
-        cfg: "AppConfig" = compose(config_name="config", overrides=final_overrides)
+        cfg: "AppConfig" = cast(
+            AppConfig, compose(config_name="config", overrides=final_overrides)
+        )
 
     logger.info("\n" + "~" * 80)
     logger.info(" " * 25 + "HYDRA COMPOSED CONFIGURATION")

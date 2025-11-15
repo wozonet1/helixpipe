@@ -1,14 +1,15 @@
 import logging
-from typing import Iterator, Set, Tuple
+from typing import Iterator, Set, Tuple, Union
 
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 
-from helixpipe.configs import AppConfig
-from helixpipe.configs.training import (
+from helixpipe.typing import (
+    AppConfig,
     EntitySelectorConfig,
     InteractionSelectorConfig,
+    SplitResult,
 )
 
 from .id_mapper import IDMapper
@@ -60,14 +61,14 @@ class DataSplitter:
 
         if self.is_cold_start:
             # 冷启动时，我们划分的是实体ID（权威ID）
-            self._items_to_split = sorted(
+            self._items_to_split: Union[list, pd.DataFrame] = sorted(
                 list(self.executor.select_entities(self.coldstart_cfg.pool_scope))
             )
         else:
             # 热启动时，我们划分的是可评估的交互 DataFrame
             self._items_to_split = self._evaluable_store.dataframe
 
-        self._iterator: Iterator | None = None
+        self._iterator: Union[Iterator, None] = None
         logger.info(
             f"Splitter ready. Found {len(self._evaluable_store)} evaluable pairs and {len(self._background_store)} background pairs."
         )
@@ -134,9 +135,10 @@ class DataSplitter:
     ) -> Tuple["InteractionStore", "InteractionStore"]:
         """使用 store.query() 和 store.difference() 高效分流。"""
         logger.info("Pre-splitting pairs into 'evaluable' and 'background' sets...")
-        evaluable_store = self.store.query(
-            self.coldstart_cfg.evaluation_scope, self.id_mapper
-        )
+        evaluation_scope = self.coldstart_cfg.evaluation_scope
+        if evaluation_scope is None:
+            raise RuntimeError("evaluation_scope is not specified")
+        evaluable_store = self.store.query(evaluation_scope, self.id_mapper)
         background_store = self.store.difference(evaluable_store)
         return evaluable_store, background_store
 
@@ -171,9 +173,7 @@ class DataSplitter:
                 )
                 self._iterator = iter(skf.split(df, y_stratify))
 
-    def _split_data(
-        self, split_result
-    ) -> Tuple[InteractionStore, InteractionStore, InteractionStore, Set[int]]:
+    def _split_data(self, split_result) -> SplitResult:
         """
         【V2 - 极限调试版】
         执行实际的数据切分，操作InteractionStore对象，并打印详细的日志。
@@ -187,7 +187,7 @@ class DataSplitter:
         evaluable_df = self._evaluable_store.dataframe
         logger.debug(f"Evaluable store contains {len(evaluable_df)} interactions.")
 
-        if self.is_cold_start:
+        if self.is_cold_start and isinstance(self._items_to_split, list):
             # --- 冷启动逻辑 ---
             logger.debug("Mode: Cold-Start")
             if self._items_to_split:
@@ -232,7 +232,7 @@ class DataSplitter:
             train_eval_store = InteractionStore._from_dataframe(
                 train_eval_df, self.config
             )
-        else:
+        elif isinstance(self._items_to_split, pd.DataFrame):
             # --- 热启动逻辑 ---
             logger.debug("Mode: Hot-Start")
             if self._items_to_split.empty:
@@ -360,12 +360,13 @@ class DataSplitter:
 
     def __next__(
         self,
-    ) -> Tuple[
-        int, "InteractionStore", "InteractionStore", "InteractionStore", Set[int]
-    ]:
+    ) -> Tuple[int, SplitResult]:
         if self.fold_idx > self.num_folds:
             raise StopIteration
-
+        if self._iterator is None:
+            raise RuntimeError(
+                "Iterator has not been initialized. Did you forget to use this class in a for loop?"
+            )
         try:
             split_result = next(self._iterator)
         except StopIteration:
@@ -387,10 +388,12 @@ class DataSplitter:
 
         result = (
             self.fold_idx,
-            final_train_graph_store,
-            final_train_labels_store,
-            final_test_store,
-            cold_start_entity_ids_logic,
+            (
+                final_train_graph_store,
+                final_train_labels_store,
+                final_test_store,
+                cold_start_entity_ids_logic,
+            ),
         )
         self.fold_idx += 1
         return result

@@ -3,7 +3,7 @@
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from typing import List, Set, Tuple, Union
+from typing import DefaultDict, List, Literal, Set, Tuple, Union, overload
 
 import faiss
 import numpy as np
@@ -11,10 +11,11 @@ import pandas as pd
 import research_template as rt
 import torch
 
-from helixpipe.configs import AppConfig
+from helixpipe.typing import AppConfig, LogicID, LogicInteractionTriple
 
 from .graph_context import GraphBuildContext
 
+SimilarityResult = Tuple[int, int, float, str]
 logger = logging.getLogger(__name__)
 # ==============================================================================
 # 1. Builder 抽象基类 (接口) - 保持不变
@@ -25,7 +26,7 @@ class GraphBuilder(ABC):
     """【Builder接口】定义了构建一个异构图所需的所有步骤的抽象方法。"""
 
     @abstractmethod
-    def add_interaction_edges(self, train_pairs: List[Tuple[int, int, str]]):
+    def add_interaction_edges(self, train_pairs: List[LogicInteractionTriple]):
         raise NotImplementedError
 
     @abstractmethod
@@ -38,6 +39,14 @@ class GraphBuilder(ABC):
 
     @abstractmethod
     def get_graph(self) -> pd.DataFrame:
+        raise NotImplementedError
+
+    @abstractmethod
+    def filter_background_edges_for_strict_mode(self):
+        """
+        If in 'strict' mode, filters out background edges that touch cold-start nodes.
+        This is an in-place operation on the builder's internal state.
+        """
         raise NotImplementedError
 
 
@@ -59,7 +68,7 @@ class HeteroGraphBuilder(GraphBuilder):
         context: GraphBuildContext,
         molecule_embeddings: torch.Tensor,
         protein_embeddings: torch.Tensor,
-        cold_start_entity_ids_local: Union[Set[int], None] = None,
+        cold_start_entity_ids_local: Union[Set[LogicID], None] = None,
     ):
         """
         初始化具体的生成器。
@@ -83,10 +92,10 @@ class HeteroGraphBuilder(GraphBuilder):
                 "--- [HeteroGraphBuilder] Initialized for on-the-fly similarity computation. ---"
             )
 
-    def add_interaction_edges(self, train_pairs: List[Tuple[int, int, str]]):
+    def add_interaction_edges(self, train_pairs: List[LogicInteractionTriple]):
         """【实现】根据 final_edge_type 和 relations.flags 添加交互边。"""
         flags = self.config.relations.flags
-        counts = defaultdict(int)
+        counts: DefaultDict[str, int] = defaultdict(int)
 
         for u, v, final_edge_type in train_pairs:
             if flags.get(final_edge_type, False):
@@ -116,13 +125,34 @@ class HeteroGraphBuilder(GraphBuilder):
             k=self.config.data_params.similarity_top_k,
         )
 
+    @overload
+    def _add_similarity_edges_ann(
+        self,
+        *,  # 使用 * 强制后续参数为关键字参数，好习惯
+        entity_type: str,
+        embeddings: torch.Tensor,
+        k: int,
+        analysis_mode: Literal[True],
+    ) -> List[SimilarityResult]: ...
+
+    @overload
+    def _add_similarity_edges_ann(
+        self,
+        *,
+        entity_type: str,
+        embeddings: torch.Tensor,
+        k: int,
+        analysis_mode: Literal[False] = False,
+    ) -> None: ...
+
     def _add_similarity_edges_ann(
         self,
         entity_type: str,
         embeddings: torch.Tensor,
         k: int,
         analysis_mode: bool = False,  # [NEW] 新增 analysis_mode 参数
-    ) -> Union[List[Tuple[int, int, float, str]], None]:
+    ) -> Union[List[SimilarityResult], None]:
+        # TODO:添加类型别名
         """
         [V3] 使用 Faiss (ANN) 计算 Top-K 相似邻居。
         - 在正常模式下，筛选边并添加到 self._edges。
@@ -142,16 +172,15 @@ class HeteroGraphBuilder(GraphBuilder):
         faiss.normalize_L2(embeddings_np)
         index.add(embeddings_np)
         distances, indices = index.search(embeddings_np, k + 1)
-
+        if distances is None or indices is None:
+            return [] if analysis_mode else None
         id_offset = (
             0
             if entity_type == "molecule"
             else self.context.get_local_protein_id_offset()
         )
 
-        # [MODIFIED] 根据模式选择不同的输出容器
-        candidate_pairs_for_analysis = [] if analysis_mode else None
-        edge_counts = defaultdict(int)
+        edge_counts: DefaultDict[str, int] = defaultdict(int)
         if self.verbose > 1:
             logger.debug(
                 f"\n    --- [DEBUG] Inside _add_similarity_edges_ann for '{entity_type}' ---"
@@ -187,6 +216,7 @@ class HeteroGraphBuilder(GraphBuilder):
 
                 # [MODIFIED] 核心逻辑分支
                 if analysis_mode:
+                    candidate_pairs_for_analysis = []
                     # 在分析模式下，不进行阈值过滤，直接收集所有计算出的相似度
                     candidate_pairs_for_analysis.append(
                         (source_id, target_id, similarity, final_edge_type)

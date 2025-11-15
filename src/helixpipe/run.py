@@ -3,9 +3,10 @@ import logging
 import hydra
 import research_template as rt
 
-from helixpipe.configs import AppConfig, register_all_schemas
+from helixpipe.configs import register_all_schemas
 from helixpipe.data_loader_strategy import load_datasets
 from helixpipe.pipelines import process_data
+from helixpipe.typing import AppConfig
 
 # from helixpipe.train import train  # noqa: F401
 # <--- 导入我们的新策略函数

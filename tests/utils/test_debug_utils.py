@@ -6,7 +6,7 @@ import pandas as pd
 from omegaconf import OmegaConf
 
 # 导入我们需要测试的函数和颜色类（如果它在debug.py中）
-from helixpipe.utils.debug import validate_authoritative_dti_file
+from helixpipe.utils.diagnostics import validate_authoritative_dti_file
 
 # 模拟一个最小化的 AppConfig
 MOCK_CONFIG = OmegaConf.create(

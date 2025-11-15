@@ -1,7 +1,7 @@
 from __future__ import annotations  # 允许类方法返回自身的类型提示
 
 import math
-from typing import TYPE_CHECKING, Any, Dict, List, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, Set
 
 import numpy as np
 import pandas as pd
@@ -9,7 +9,8 @@ import pandas as pd
 from .selector_executor import SelectorExecutor
 
 if TYPE_CHECKING:
-    from helixpipe.configs import AppConfig, InteractionSelectorConfig
+    from helixpipe.configs import InteractionSelectorConfig
+    from helixpipe.typing import AppConfig, AuthID, LogicInteractionTriple
 
     from .id_mapper import IDMapper
 import logging
@@ -172,26 +173,25 @@ class InteractionStore:
         if self._df.empty:
             return self
 
-        # --- 【核心修正】智能参数选择逻辑 ---
+        # [修复] 不再使用 sample_kwargs 字典
+        sampled_df: pd.DataFrame
 
-        # 1. 确定采样模式和参数
         if n is not None:
-            # 如果 n 被指定，则忽略 fraction
-            sample_kwargs = {"n": n}
+            # 直接调用，参数明确
+            sampled_df = self._df.sample(
+                n=n, random_state=seed, replace=False, ignore_index=True
+            )
         elif fraction is not None:
-            # 如果只指定了 fraction
             if fraction >= 1.0:
-                # fraction >= 1.0 意味着不进行采样，直接返回拷贝
+                logger.warning("fraction >=1.0, skipping sampling...")
                 return self._from_dataframe(self._df.copy(), self._config)
-            sample_kwargs = {"frac": fraction}
+            # 直接调用，参数明确
+            sampled_df = self._df.sample(
+                frac=fraction, random_state=seed, replace=False, ignore_index=True
+            )
         else:
-            # 如果 n 和 fraction 都未指定，则不进行采样
+            logger.warning("no parameters was specified to sample")
             return self._from_dataframe(self._df.copy(), self._config)
-
-        # 2. 调用 pandas 的 sample 方法
-        sampled_df = self._df.sample(
-            **sample_kwargs, random_state=seed, replace=False, ignore_index=True
-        )
 
         logger.info(
             f"    - [InteractionStore.sample] Sampled {len(sampled_df)} interactions from {len(self._df)}."
@@ -235,7 +235,7 @@ class InteractionStore:
 
     # --- 核心API ---
 
-    def get_all_entity_auth_ids(self) -> Set[Any]:
+    def get_all_entity_auth_ids(self) -> Set[AuthID]:
         """
         【提供给IDMapper】
         从所有交互中，提取出一个包含所有唯一实体权威ID的集合。
@@ -247,7 +247,7 @@ class InteractionStore:
         target_ids = set(self._df[self._schema.target_id].dropna().unique())
         return source_ids.union(target_ids)
 
-    def filter_by_entities(self, valid_entity_ids: Set[Any]) -> InteractionStore:
+    def filter_by_entities(self, valid_entity_ids: Set[AuthID]) -> InteractionStore:
         """
         【不可变操作】
         接收一个纯净的实体ID集合，返回一个只包含“纯净”交互的新InteractionStore实例。
@@ -268,7 +268,7 @@ class InteractionStore:
 
     def get_mapped_positive_pairs(
         self, id_mapper: IDMapper
-    ) -> List[Tuple[int, int, str]]:
+    ) -> List[LogicInteractionTriple]:
         """
         【提供给下游】
         将内部的、纯净的交互DataFrame，映射为使用【逻辑ID】的元组列表。

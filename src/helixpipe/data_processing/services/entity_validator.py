@@ -4,7 +4,7 @@ import logging
 
 import pandas as pd
 
-from helixpipe.configs import AppConfig
+from helixpipe.typing import CID, PID, SMILES, AppConfig, ProteinSequence
 
 # 导入所有需要的底层服务
 from .filter import filter_molecules_by_properties  # 我们重构后的版本
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def _validate_molecules(
-    id_series: pd.Series, structure_series: pd.Series, config: AppConfig
+    id_series: pd.Series[CID], structure_series: pd.Series[SMILES], config: AppConfig
 ) -> pd.Series:
     """
     【V2 - 索引修复版】
@@ -59,7 +59,9 @@ def _validate_molecules(
 
 
 def _validate_proteins(
-    id_series: pd.Series, structure_series: pd.Series, config: AppConfig
+    id_series: pd.Series[PID],
+    structure_series: pd.Series[ProteinSequence],
+    config: AppConfig,
 ) -> pd.Series:
     """
     【V2 - 索引安全版】

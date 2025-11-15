@@ -8,7 +8,7 @@ import research_template as rt
 import torch
 from tqdm import tqdm
 
-from helixpipe.configs import AppConfig
+from helixpipe.typing import AppConfig, AuthID
 from helixpipe.utils import get_path
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ class BaseFeatureExtractor(ABC):
     # --- 模板方法 (不可修改的骨架) ---
     def extract(
         self,
-        authoritative_ids: List[Any],
+        authoritative_ids: List[AuthID],
         sequences_or_smiles: List[str],
         force_regenerate: bool = False,
     ) -> Dict[Any, torch.Tensor]:

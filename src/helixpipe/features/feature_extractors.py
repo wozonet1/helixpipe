@@ -1,9 +1,11 @@
 # 文件: src/helixpipe/features/feature_extractors.py (重构后)
 
-from typing import Any, Dict, List
+from typing import Any, List
 
 import torch
 from transformers import AutoModel, AutoTokenizer, EsmModel
+
+from helixpipe.typing import SMILES, AppConfig, FeatureDict, ProteinSequence
 
 from .base_extractor import BaseFeatureExtractor  # 导入我们的新基类
 
@@ -15,7 +17,9 @@ class EsmFeatureExtractor(BaseFeatureExtractor):
         model = EsmModel.from_pretrained(self.model_name)
         return model, tokenizer
 
-    def _prepare_batch_input(self, tokenizer: Any, batch_data: List[str]) -> Any:
+    def _prepare_batch_input(
+        self, tokenizer: Any, batch_data: List[ProteinSequence]
+    ) -> Any:
         return tokenizer(
             batch_data,
             padding=True,
@@ -47,7 +51,7 @@ class ChembertaFeatureExtractor(BaseFeatureExtractor):
         model = AutoModel.from_pretrained(self.model_name)
         return model, tokenizer
 
-    def _prepare_batch_input(self, tokenizer: Any, batch_data: List[str]) -> Any:
+    def _prepare_batch_input(self, tokenizer: Any, batch_data: List[SMILES]) -> Any:
         return tokenizer(
             batch_data,
             padding=True,
@@ -69,9 +73,10 @@ class ChembertaFeatureExtractor(BaseFeatureExtractor):
 
 # --- 高阶分派函数 ---
 def extract_features(
-    entity_type: str, config, device, **kwargs
-) -> Dict[Any, torch.Tensor]:
+    entity_type: str, config: AppConfig, device, **kwargs
+) -> FeatureDict:
     """一个高阶函数，根据 entity_type 动态选择并运行正确的提取器。"""
+    extractor: BaseFeatureExtractor
     if entity_type == "protein":
         extractor = EsmFeatureExtractor(entity_type, config, device)
         return extractor.extract(**kwargs)

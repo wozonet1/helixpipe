@@ -4,7 +4,7 @@ import json
 import logging
 import pickle as pkl
 import re
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Union, cast
 
 import argcomplete
 import pandas as pd
@@ -13,11 +13,9 @@ from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
-from helixpipe.configs import AppConfig, register_all_schemas
-from helixpipe.utils import (
-    get_path,
-    register_hydra_resolvers,
-)
+from helixpipe.configs import register_all_schemas
+from helixpipe.typing import AppConfig
+from helixpipe.utils import SchemaAccessor, get_path, register_hydra_resolvers
 
 from .base_processor import BaseProcessor
 
@@ -36,7 +34,9 @@ class BrendaProcessor(BaseProcessor):
 
     def __init__(self, config: AppConfig):
         super().__init__(config)
-        self.external_schema = self.config.data_structure.schema.external.brenda
+        self.external_schema = SchemaAccessor(
+            self.config.data_structure.schema.external["brenda"]
+        )
         # 在初始化时，加载并准备好作为内部状态的“名称->CID”映射字典
 
     def _load_name_cid_map(self) -> Dict[str, int]:
@@ -53,7 +53,7 @@ class BrendaProcessor(BaseProcessor):
             )
 
         with open(map_path, "rb") as f:
-            name_map = pkl.load(f)
+            name_map = cast(Dict[str, int], pkl.load(f))
 
         if self.verbose > 0:
             logger.info(f"    - Map loaded with {len(name_map)} unique name entries.")
@@ -68,7 +68,7 @@ class BrendaProcessor(BaseProcessor):
             raise FileNotFoundError(f"Raw BRENDA JSON file not found at '{json_path}'")
 
         with open(json_path, "r", encoding="utf-8") as f:
-            return json.load(f).get("data", {})
+            return cast(Dict[str, int], json.load(f).get("data", {}))
 
     def _extract_relations(self, raw_data: Dict[str, Any]) -> pd.DataFrame:
         """
@@ -77,10 +77,10 @@ class BrendaProcessor(BaseProcessor):
         all_interactions = []
 
         # 从配置中获取所有需要的键名
-        prot_organism_key = self.external_schema.protein_organism_key
-        prot_accessions_key = self.external_schema.protein_accessions_key
-        target_organism = self.external_schema.target_organism_value
-        ligand_fields = self.external_schema.ligand_fields
+        prot_organism_key = self.external_schema.get_col("protein_organism_key")
+        prot_accessions_key = self.external_schema.get_col("protein_accessions_key")
+        target_organism = self.external_schema.get_col("target_organism_value")
+        ligand_fields = self.external_schema.get_field("ligand_fields")
 
         disable_tqdm = self.verbose == 0
         iterator = tqdm(
@@ -267,7 +267,7 @@ if __name__ == "__main__":
     with initialize_config_dir(
         config_dir=config_dir, version_base=None, job_name="brenda_process"
     ):
-        cfg: AppConfig = compose(config_name="config", overrides=final_overrides)
+        cfg = cast(AppConfig, compose(config_name="config", overrides=final_overrides))
 
     logger.info("\n" + "~" * 80)
     logger.info(" " * 25 + "HYDRA COMPOSED CONFIGURATION")

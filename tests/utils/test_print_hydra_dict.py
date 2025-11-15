@@ -37,9 +37,6 @@ def main(cfg: AppConfig):
     print("--- Fully Composed and Validated Config ---")
     print(OmegaConf.to_yaml(cfg))
     print(f"Dataset name: {cfg.data_structure.primary_dataset}")
-    print(
-        f"Internal schema for molecule: {cfg.data_structure.schema.internal.authoritative_dti.molecule_id}"
-    )
 
 
 if __name__ == "__main__":

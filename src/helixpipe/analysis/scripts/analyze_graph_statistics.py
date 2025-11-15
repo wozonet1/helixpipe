@@ -4,7 +4,8 @@ import pandas as pd
 import research_template as rt
 import seaborn as sns  # 用于盒图
 
-from helixpipe.configs import AppConfig, register_all_schemas
+from helixpipe.configs import register_all_schemas
+from helixpipe.typing import AppConfig
 from helixpipe.utils import get_path, register_hydra_resolvers
 
 from .plot_utils import plot_bar_chart_with_counts

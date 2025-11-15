@@ -19,22 +19,22 @@ from .structure_provider import StructureProvider
 # --- 4. 定义 __all__，只包含被提升的组件 ---
 __all__ = [
     # 核心服务类
-    IDMapper,
-    InteractionStore,
-    SelectorExecutor,
-    StructureProvider,
-    DataSplitter,
-    GraphDirector,
-    HeteroGraphBuilder,
-    GraphBuilder,
-    GraphBuildContext,
-    SupervisionFileManager,
+    "IDMapper",
+    "InteractionStore",
+    "SelectorExecutor",
+    "StructureProvider",
+    "DataSplitter",
+    "GraphDirector",
+    "HeteroGraphBuilder",
+    "GraphBuilder",
+    "GraphBuildContext",
+    "SupervisionFileManager",
     # 重量级函数
-    filter_molecules_by_properties,
-    validate_and_filter_entities,
+    "filter_molecules_by_properties",
+    "validate_and_filter_entities",
     # 常用轻量级函数
-    get_human_uniprot_whitelist,
-    get_valid_pubchem_cids,
-    validate_smiles_structure,
-    validate_protein_structure,
+    "get_human_uniprot_whitelist",
+    "get_valid_pubchem_cids",
+    "validate_smiles_structure",
+    "validate_protein_structure",
 ]

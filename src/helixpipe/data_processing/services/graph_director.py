@@ -1,9 +1,9 @@
 # 文件: src/helixpipe/data_processing/services/graph_director.py (全新)
 
 import logging
-from typing import List, Tuple
+from typing import List
 
-from helixpipe.configs import AppConfig
+from helixpipe.typing import AppConfig, LogicInteractionTriple
 
 # 我们需要从 graph_builder 模块导入 GraphBuilder 的抽象基类定义
 # (我们将在下一步创建它)
@@ -31,7 +31,9 @@ class GraphDirector:
         self.config = config
         self.verbose = config.runtime.verbose
 
-    def construct(self, builder: GraphBuilder, train_pairs: List[Tuple[int, int, str]]):
+    def construct(
+        self, builder: GraphBuilder, train_pairs: List[LogicInteractionTriple]
+    ):
         """
         执行图的构建。
 
@@ -40,7 +42,7 @@ class GraphDirector:
 
         Args:
             builder (GraphBuilder): 一个实现了 GraphBuilder 接口的具体生成器实例。
-            train_pairs (List[Tuple[int, int, str]]):
+            train_pairs (List[LogicInteractionTriple]):
                 训练集中的交互对，包含 (u, v, final_edge_type)。
                 这是构建交互边的必需“原料”。
         """

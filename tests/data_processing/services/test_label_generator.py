@@ -4,9 +4,11 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 from omegaconf import OmegaConf
 
-# 导入所有需要的模块
-from helixpipe.configs import AppConfig, register_all_schemas
+from helixpipe.configs import register_all_schemas
 from helixpipe.data_processing.services.label_generator import SupervisionFileManager
+
+# 导入所有需要的模块
+from helixpipe.typing import AppConfig
 
 # --- 模拟依赖 (Mocks) ---
 

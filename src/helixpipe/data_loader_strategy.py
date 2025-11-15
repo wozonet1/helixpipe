@@ -2,8 +2,7 @@
 
 import importlib
 import logging
-import sys
-from typing import Dict
+from typing import cast
 
 import hydra
 import pandas as pd
@@ -11,10 +10,9 @@ import research_template as rt
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
 
-from helixpipe.configs import AppConfig
-
 # 导入我们的抽象基类，用于类型检查和文档
 from helixpipe.data_processing import BaseProcessor
+from helixpipe.typing import AppConfig, ProcessorOutputs
 
 logger = logging.getLogger(__name__)
 
@@ -46,15 +44,12 @@ def _run_processor(name: str, config: AppConfig) -> pd.DataFrame:
         module = importlib.import_module(module_path)
         ProcessorClass = getattr(module, class_name)
 
-        # 3. 验证该类是否是我们期望的类型
-        if not issubclass(ProcessorClass, BaseProcessor):
+        # 4. 实例化处理器，并将专属的config“注入”进去
+        processor_instance = ProcessorClass(config=config)
+        if not isinstance(processor_instance, BaseProcessor):
             raise TypeError(
                 f"Class '{class_name}' found in '{module_path}' is not a valid subclass of BaseProcessor."
             )
-
-        # 4. 实例化处理器，并将专属的config“注入”进去
-        processor_instance = ProcessorClass(config=config)
-
         # 5. 调用统一的接口，执行处理流程
         df = processor_instance.process()
 
@@ -76,7 +71,7 @@ def _run_processor(name: str, config: AppConfig) -> pd.DataFrame:
             f"and contains the class '{class_name}'."
         )
         logger.error(f"   - Original error: {e}")
-        sys.exit(1)
+        raise RuntimeError(f"Failed to load processor '{name}'") from e
 
     except Exception:  # 将 Exception 放在最后，捕获所有其他异常
         logger.error(
@@ -85,7 +80,7 @@ def _run_processor(name: str, config: AppConfig) -> pd.DataFrame:
         import traceback
 
         traceback.print_exc()
-        sys.exit(1)
+        raise RuntimeError(f"Unexpected error in processor '{name}'")
 
 
 def _compose_aux_config(config: AppConfig, aux_dataset_name: str) -> AppConfig:
@@ -101,13 +96,19 @@ def _compose_aux_config(config: AppConfig, aux_dataset_name: str) -> AppConfig:
     ]
 
     global_paths_dict = OmegaConf.to_container(config.global_paths, resolve=True)
+    if not isinstance(global_paths_dict, dict):
+        logger.error("failed to load global paths")
+        raise RuntimeError
     for key, value in global_paths_dict.items():
+        key = str(key)
         overrides_list.append(f"global_paths.{key}={value}")
 
-    return hydra.compose(config_name="config", overrides=overrides_list)
+    return cast(
+        AppConfig, hydra.compose(config_name="config", overrides=overrides_list)
+    )
 
 
-def load_datasets(config: AppConfig) -> Dict[str, pd.DataFrame]:
+def load_datasets(config: AppConfig) -> ProcessorOutputs:
     """
     【V4 - 最终兼容版】根据主配置，加载主数据集和所有指定的辅助数据集。
     能够智能地在 @hydra.main 环境和独立测试环境中工作。
@@ -126,7 +127,7 @@ def load_datasets(config: AppConfig) -> Dict[str, pd.DataFrame]:
         loaded_datasets[primary_dataset_name] = base_df
 
     # 2. 按需加载所有辅助数据集
-    aux_dataset_names = config.dataset_collection.get("auxiliary_datasets", [])
+    aux_dataset_names = getattr(config.dataset_collection, "auxiliary_datasets", [])
 
     if not aux_dataset_names:
         logger.info("\n--> No auxiliary datasets specified.")

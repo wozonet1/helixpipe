@@ -2,15 +2,17 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, List
+from typing import Any, Callable, List, Tuple
 
 import pandas as pd
 import research_template as rt
 
-from helixpipe.configs import AppConfig
+from helixpipe.typing import AppConfig
 from helixpipe.utils import get_path
 
 logger = logging.getLogger(__name__)
+
+Phase = Tuple[str, Callable]
 
 
 class BaseProcessor(ABC):
@@ -42,7 +44,7 @@ class BaseProcessor(ABC):
 
         # --- 流水线定义 ---
         # 每个步骤都是一个元组 (step_name, step_function)
-        pipeline = [
+        pipeline: List[Phase] = [
             ("Load Raw Data", self._load_raw_data),
             ("Extract Relations", self._extract_relations),
             ("Standardize IDs", self._standardize_ids),
@@ -129,7 +131,7 @@ class BaseProcessor(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def _filter_data(self) -> Any:
+    def _filter_data(self, df: pd.DataFrame) -> Any:
         """应用data_params里的进行筛选"""
         raise NotImplementedError
 

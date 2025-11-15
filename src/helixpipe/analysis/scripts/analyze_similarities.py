@@ -4,13 +4,15 @@ import pandas as pd
 import research_template as rt
 import torch
 
-# 导入所有需要的项目内部模块
-from helixpipe.configs import AppConfig, register_all_schemas
+from helixpipe.configs import register_all_schemas
 from helixpipe.data_processing import (
     GraphBuildContext,
     IDMapper,
 )
 from helixpipe.data_processing.services.graph_builder import HeteroGraphBuilder
+
+# 导入所有需要的项目内部模块
+from helixpipe.typing import AppConfig
 from helixpipe.utils import get_path, register_hydra_resolvers
 
 # 导入绘图工具

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, List
 
 from hydra.core.config_store import ConfigStore
-from omegaconf import ValidationError
+from omegaconf import DictConfig, ValidationError
 
 from .analysis import AnalysisConfig
 from .data_params import DataParamsConfig
@@ -32,7 +32,7 @@ from .validators import ValidatorsConfig
 #    这个类现在可以被项目中的任何其他文件导入！
 # --------------------------------------------------------------------------
 @dataclass
-class AppConfig:
+class AppConfig(DictConfig):
     """
     【最终版】顶层聚合配置的静态定义。
     它作为整个配置结构的唯一“真理之源”和可导入的类型。

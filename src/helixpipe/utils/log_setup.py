@@ -3,7 +3,7 @@
 import logging
 import sys
 
-from helixpipe.configs import AppConfig
+from helixpipe.typing import AppConfig
 
 
 def setup_logging(config: AppConfig):

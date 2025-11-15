@@ -11,11 +11,8 @@ logging, and path management that are specific to the 'helixpipe' project."""
 
 # 从 debug.py 中提升核心的验证函数
 # 假设 validate_authoritative_dti_file 是最常用的
-from .debug import (
-    run_online_validation,
-    validate_authoritative_dti_file,
-    validate_config_with_data,
-)
+from .configs_utils import SchemaAccessor
+from .diagnostics import run_graph_diagnostics, run_online_validation
 
 # 从 download.py 中提升核心下载函数
 # 假设 download_bindingdb_data 是一个高级接口
@@ -24,9 +21,6 @@ from .download import download_bindingdb_data
 # 从 hydra_setup.py 中提升注册函数
 # path_resolver 是内部实现，通常不需要在包级别暴露
 from .hydra_setup import register_hydra_resolvers
-
-# 从 log.py 中提升装饰器
-from .log import log_step
 
 # log_setup.py
 from .log_setup import setup_logging
@@ -38,18 +32,16 @@ from .pathing import get_path
 # 这份列表定义了当其他模块执行 `from helixpipe.utils import *` 时，
 # 应该导入哪些名称。这也是对包的公共API的一种“文档”。
 __all__ = [
-    # debug.py
-    validate_authoritative_dti_file,
-    run_online_validation,
-    validate_config_with_data,
+    # diagnostics.py
+    "run_graph_diagnostics",
+    "run_online_validation",
     # download.py
-    download_bindingdb_data,
+    "download_bindingdb_data",
     # hydra_setup.py
-    register_hydra_resolvers,
-    # log.py
-    log_step,
+    "register_hydra_resolvers",
     # pathing.py
-    get_path,
+    "get_path",
     # log_setup.py
-    setup_logging,
+    "setup_logging",
+    "SchemaAccessor",
 ]

@@ -10,10 +10,12 @@ import numpy as np
 import pandas as pd
 import torch
 
-# 导入所有需要的真实模块
-from helixpipe.configs import AppConfig, register_all_schemas
+from helixpipe.configs import register_all_schemas
 from helixpipe.data_loader_strategy import load_datasets
 from helixpipe.pipelines.main_pipeline import process_data
+
+# 导入所有需要的真实模块
+from helixpipe.typing import AppConfig
 from helixpipe.utils import get_path, register_hydra_resolvers
 
 # 全局注册

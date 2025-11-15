@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING, Dict, Set
 import pandas as pd
 
 if TYPE_CHECKING:
-    from helixpipe.configs import EntitySelectorConfig, InteractionSelectorConfig
+    from helixpipe.typing import (
+        AuthID,
+        EntitySelectorConfig,
+        InteractionSelectorConfig,
+    )
 
     from .id_mapper import IDMapper
 
@@ -27,7 +31,7 @@ class SelectorExecutor:
         source_col: str,
         target_col: str,
         relation_col: str,
-    ) -> pd.Series:
+    ) -> pd.Series[bool]:
         """
         【V4 - 逻辑无懈可击版】
         """
@@ -72,7 +76,7 @@ class SelectorExecutor:
 
     def _get_entity_column_match_mask(
         self, entity_id_column: pd.Series, selector: EntitySelectorConfig | None
-    ) -> pd.Series:
+    ) -> pd.Series[bool]:
         # 这个辅助方法已经是正确的，保持不变
         if selector is None or not any(selector.__dict__.values()):
             return pd.Series(True, index=entity_id_column.index)
@@ -82,25 +86,28 @@ class SelectorExecutor:
             auth_id: self.id_mapper.get_meta_by_auth_id(auth_id)
             for auth_id in unique_ids
         }
-        match_map = {
-            uid: self._entity_meta_matches_selector(meta, selector)
-            for uid, meta in meta_cache.items()
-        }
+        match_map = {}
+        for uid, meta in meta_cache.items():
+            if meta is None:
+                # 核心规则：如果一个实体没有元数据，它不可能匹配任何有具体要求的选择器。
+                # 只有当选择器为空时，它才可能“通过”（返回True）。
+                match_map[uid] = False
+            else:
+                # 只有在 meta 存在时，才调用纯净版的匹配函数
+                match_map[uid] = self._entity_meta_matches_selector(meta, selector)
 
         return entity_id_column.map(match_map).fillna(False)
 
     def _entity_meta_matches_selector(
-        self, meta: Dict | None, selector: EntitySelectorConfig | None
+        self, meta: Dict, selector: EntitySelectorConfig
     ) -> bool:
         # 这个辅助方法已经是正确的“严格模式”，保持不变
-        if selector is None or not any(selector.__dict__.values()):
-            return True
-        if meta is None:
-            return False
         if selector.entity_types and meta.get("type") not in selector.entity_types:
             return False
         if selector.meta_types:
             entity_type = meta.get("type")
+            if entity_type is None:
+                return False
             is_meta_type_match = (
                 self.id_mapper.is_molecule(entity_type)
                 and "molecule" in selector.meta_types
@@ -116,7 +123,7 @@ class SelectorExecutor:
             return False
         return True
 
-    def select_entities(self, selector: EntitySelectorConfig | None) -> Set:
+    def select_entities(self, selector: EntitySelectorConfig | None) -> Set[AuthID]:
         """
         根据实体选择器，从 IDMapper 中筛选出匹配的【权威ID】集合。
         """
@@ -143,7 +150,9 @@ class SelectorExecutor:
         for auth_id in all_final_auth_ids:
             # a. 获取元数据
             meta = self.id_mapper.get_meta_by_auth_id(auth_id)
-
+            # [修改] 在这里处理 None
+            if meta is None:
+                continue  # 跳过后续的匹配
             # b. 调用我们已经测试过的、可靠的匹配函数
             if self._entity_meta_matches_selector(meta, selector):
                 matching_ids.add(auth_id)
