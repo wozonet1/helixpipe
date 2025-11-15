@@ -19,7 +19,7 @@ register_hydra_resolvers()
     config_name="config",
     version_base=None,
 )
-def main(cfg: AppConfig):
+def main(cfg: AppConfig) -> None:
     """
     对【每个Fold的图构建结果】进行统计分析，包括节点和边的数量/类型。
     回答的问题是：“模型在每个训练Fold中实际看到的图是什么样的？”

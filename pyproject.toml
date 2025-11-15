@@ -88,7 +88,7 @@ ignore = ["E501",]
 # 定义分析范围
 include = ["src", "tests", "analysis"]
 # 定义导入路径
-extraPaths = ["src"]
+extraPaths = ["src","tests"]
 # 默认检查模式
 typeCheckingMode = "standard"
 
@@ -111,12 +111,18 @@ reportArgumentType = "none"
 # MyPy Configuration - For CI/CD and Batch Analysis
 # ==========================================================
 [tool.mypy]
-# 定义导入路径 (与 extraPaths 对应)
-mypy_path = "src/"
+# ==========================================================
+# 1. 全局默认配置 (Global Defaults)
+#    这些规则将应用于所有未被 overrides 覆盖的文件，
+#    实际上，它们将主要作用于我们的 'src/' 目录。
+# ==========================================================
+mypy_path = ["src/","tests"]
+python_version = "3.9"
 
-# --- 核心严格选项 (与 Pyright 'strict' 模式对齐) ---
+# --- 开启最严格的检查，作为我们生产代码的黄金标准 ---
 check_untyped_defs = true
 disallow_any_unimported = true
+disallow_incomplete_defs = true
 disallow_untyped_defs = true
 no_implicit_optional = true
 show_error_codes = true
@@ -124,22 +130,33 @@ strict_equality = true
 warn_redundant_casts = true
 warn_return_any = true
 warn_unused_configs = true
-warn_unused_ignores = true
+warn_unused_ignores = false
 
 
+# ==========================================================
+# 2. 覆盖规则 (Overrides)
+# ==========================================================
 
-# --- 忽略第三方库的导入错误 (与 Pyright 的默认行为对齐) ---
+# --- 规则一：忽略所有第三方库 ---
 [[tool.mypy.overrides]]
 module = [
     "pandas.*", "numpy.*", "torch.*", "torch_geometric.*", "omegaconf.*", 
-    "hydra.*", "rdkit.*", "tqdm.*", "sklearn.*", "research_template.*", "joblib.*"
+    "hydra.*", "rdkit.*", "tqdm.*", "sklearn.*", "research_template.*", "joblib.*","faiss.*"
 ]
 ignore_missing_imports = true
 
-# --- 【核心】为 'tests' 和 'analysis' 目录定义宽松规则 ---
-# (MyPy 使用 per-file 规则，而不是像 Pyright 那样的环境)
+
+# --- 规则二：为 tests/ 和 analysis/ 目录应用一套更宽松的规则 ---
 [[tool.mypy.overrides]]
-# 匹配 tests/ 和 analysis/ 目录下的所有文件
 module = ["tests.*", "analysis.*"]
-# 关闭“参数类型不匹配”的检查
+
+# a. 【核心】允许函数没有类型注解
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+# b. 允许在测试中使用 Any 类型，这在 mock 时非常方便
+disallow_any_unimported = false
+disallow_any_generics = false
+
+# c. 允许参数类型不匹配 (例如，将 MockIDMapper 传给期望 IDMapper 的函数)
 disable_error_code = "arg-type"

@@ -66,7 +66,7 @@ def validate_protein_structure(
     VALID_SEQ_CHARS = "ACDEFGHIKLMNOPQRSTUVWXYZ"
     valid_chars_set = set(VALID_SEQ_CHARS)
 
-    def is_valid_sequence(seq):
+    def is_valid_sequence(seq) -> None:
         if not isinstance(seq, str) or not seq:
             return False
         # 移除空格并转为大写，然后检查每个字符是否都在合法集合中

@@ -17,7 +17,7 @@ from .pathing import get_path
 # --- 私有辅助函数 ---
 
 
-def _download_file(url: str, output_path: Path):
+def _download_file(url: str, output_path: Path) -> None:
     """一个通用的文件下载函数，带进度条和“跳过已存在文件”的逻辑。"""
     if output_path.exists():
         print(f"--> 找到已存在的文件: '{output_path.name}'。跳过下载。")
@@ -72,7 +72,7 @@ def _get_dynamic_urls_for_bindingdb() -> dict:
 # --- 公开的下载器函数 ---
 
 
-def download_bindingdb_data(config: DictConfig):
+def download_bindingdb_data(config: DictConfig) -> None:
     """为BindingDB数据集下载所有必需的原始文件。"""
     print("\n" + "=" * 80)
     print(" " * 25 + "启动 BindingDB 数据下载器")

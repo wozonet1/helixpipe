@@ -107,7 +107,7 @@ config_path = project_root / "conf"
 
 
 @hydra.main(config_path=str(config_path), config_name="config", version_base=None)
-def main(cfg: AppConfig):
+def main(cfg: AppConfig) -> None:
     """
     一个独立的、由Hydra驱动的脚本，用于对嵌入空间进行降维和可视化，
     以进行“拓扑结构”的健全性检查。

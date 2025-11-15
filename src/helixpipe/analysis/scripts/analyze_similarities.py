@@ -84,7 +84,7 @@ config_path = hx.get_project_root() / "conf"
 
 
 @hydra.main(config_path=str(config_path), config_name="config", version_base=None)
-def main(cfg: AppConfig):
+def main(cfg: AppConfig) -> None:
     """
     一个独立的、由Hydra驱动的脚本，用于在全局相关实体上进行相似度分布的
     探索性数据分析 (EDA)，以指导阈值设定。

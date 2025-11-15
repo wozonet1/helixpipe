@@ -1,13 +1,13 @@
 # tests/helpers.py
 
-from typing import Any, cast
+from typing import cast
 
 from omegaconf import OmegaConf
 
 from helixpipe.configs import AppConfig
 
 
-def create_test_config(overrides: dict[str, Any] = None) -> AppConfig:
+def create_test_config(overrides=None) -> AppConfig:
     """
     创建一个用于测试的基础 AppConfig 对象，并允许覆盖。
     """

@@ -73,7 +73,7 @@ class DataSplitter:
             f"Splitter ready. Found {len(self._evaluable_store)} evaluable pairs and {len(self._background_store)} background pairs."
         )
 
-    def _initialize_cold_start_scopes(self):
+    def _initialize_cold_start_scopes(self) -> None:
         """
         (私有) 检查并智能地修正 coldstart 配置中的 `pool_scope` 和 `evaluation_scope`。
 
@@ -142,7 +142,7 @@ class DataSplitter:
         background_store = self.store.difference(evaluable_store)
         return evaluable_store, background_store
 
-    def _prepare_iterator(self):
+    def _prepare_iterator(self) -> None:
         """根据 self.is_cold_start 的状态，初始化正确的sklearn迭代器。"""
         if self.num_folds <= 1 or len(self._items_to_split) == 0:
             self._iterator = iter([None])  # 单次运行或没有数据可分
@@ -181,7 +181,7 @@ class DataSplitter:
                 )
                 self._iterator = iter(skf.split(df, y_stratify))
 
-    def _split_data(self, split_result) -> SplitResult:
+    def _split_data(self, split_result: SplitResult) -> SplitResult:
         """
         【V2 - 极限调试版】
         执行实际的数据切分，操作InteractionStore对象，并打印详细的日志。

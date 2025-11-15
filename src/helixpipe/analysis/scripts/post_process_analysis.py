@@ -8,7 +8,7 @@ sys.path.append(str(Path(__file__).parent))
 from plot_utils import plot_grouped_bar_chart
 
 
-def collate_and_plot(multirun_dir: Path, dataset_name: str):
+def collate_and_plot(multirun_dir: Path, dataset_name: str) -> None:
     """
     收集Hydra多任务运行的所有分析结果，并生成最终的对比图。
     """

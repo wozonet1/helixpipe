@@ -24,7 +24,7 @@ class StringProcessor(BaseProcessor):
     3. 将数据“翻译”成内部的规范化交互格式。
     """
 
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig) -> None:
         super().__init__(config)
         self.external_schema = SchemaAccessor(
             self.config.data_structure.schema.external["string"]

@@ -29,7 +29,7 @@ class GtopdbProcessor(BaseProcessor):
     【V5 - 最终架构版】：严格实现BaseProcessor定义的六步流水线。
     """
 
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig) -> None:
         super().__init__(config)
         self.external_schema = SchemaAccessor(
             self.config.data_structure.schema.external["gtopdb"]

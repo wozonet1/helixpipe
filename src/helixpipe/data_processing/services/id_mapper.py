@@ -24,7 +24,9 @@ class IDMapper:
     并提供丰富的、由配置驱动的查询API。
     """
 
-    def __init__(self, processor_outputs: dict[str, pd.DataFrame], config: AppConfig):
+    def __init__(
+        self, processor_outputs: dict[str, pd.DataFrame], config: AppConfig
+    ) -> None:
         """
         构造函数从 Processor 的输出字典中，聚合所有实体的元信息，
         并预处理实体类型的元数据。
@@ -89,7 +91,7 @@ class IDMapper:
         self._logic_id_to_auth_id_map: dict[LogicID, AuthID] = {}
         self._auth_id_to_logic_id_map: dict[AuthID, LogicID] = {}
 
-    def finalize_with_valid_entities(self, valid_entity_ids: set[AuthID]):
+    def finalize_with_valid_entities(self, valid_entity_ids: set[AuthID]) -> None:
         """
         接收一个纯净的实体ID集合，并只为这些实体执行类型合并和最终的ID分配。
         """
@@ -220,7 +222,7 @@ class IDMapper:
             )
         return pd.DataFrame(manifest_data)
 
-    def save_maps_to_csv(self, entities_with_structures: pd.DataFrame):
+    def save_maps_to_csv(self, entities_with_structures: pd.DataFrame) -> None:
         """
         将IDMapper内部的所有核心映射关系，结合外部提供的结构信息，保存到'nodes.csv'。
         """

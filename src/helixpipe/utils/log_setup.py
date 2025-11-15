@@ -6,7 +6,7 @@ import sys
 from helixpipe.typing import AppConfig
 
 
-def setup_logging(config: AppConfig):
+def setup_logging(config: AppConfig) -> None:
     """
     根据Hydra配置，初始化整个项目的日志系统。
     """

@@ -14,7 +14,7 @@ from helixpipe.typing import SMILES
 logger = logging.getLogger(__name__)
 
 
-def calculate_drug_fingerprint_similarity(drug_list: list[SMILES]):
+def calculate_drug_fingerprint_similarity(drug_list: list[SMILES]) -> None:
     # 将SMILES转换为RDKit分子对象
     molecules = [Chem.MolFromSmiles(smiles) for smiles in drug_list]
     fpgen = GetMorganGenerator(radius=2, fpSize=2048)
@@ -108,7 +108,7 @@ def calculate_and_save_similarity_chunks(
 #     return substitution_matrices.Array(data=custom_matrix_dict)
 
 
-# def calculate_protein_align_similarity(sequence_list, cpus: int):
+# def calculate_protein_align_similarity(sequence_list, cpus: int) -> None:
 #     # 定义 Aligner 的配置字典，以便传递给并行任务s
 #     aligner_config = {
 #         "mode": "local",

@@ -6,7 +6,7 @@ from omegaconf import DictConfig, OmegaConf
 
 
 class SchemaAccessor:
-    def __init__(self, schema_node: DictConfig):
+    def __init__(self, schema_node: DictConfig) -> None:
         # schema_node 就是 self.config.data_structure.schema.external['gtopdb']
         self._node = schema_node
 

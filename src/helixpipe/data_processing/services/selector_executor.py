@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class SelectorExecutor:
-    def __init__(self, id_mapper: IDMapper, verbose: bool = False):
+    def __init__(self, id_mapper: IDMapper, verbose: bool = False) -> None:
         self.id_mapper = id_mapper
         self.verbose = verbose  # 保持 verbose 以便未来调试
 

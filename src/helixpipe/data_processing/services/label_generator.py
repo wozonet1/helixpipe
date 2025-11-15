@@ -54,7 +54,7 @@ class SupervisionFileManager:
         self,
         train_labels_store: "InteractionStore",
         test_store: "InteractionStore",
-    ):
+    ) -> None:
         """
         【编排器】调用核心逻辑方法创建DataFrame，并执行文件I/O操作。
         """

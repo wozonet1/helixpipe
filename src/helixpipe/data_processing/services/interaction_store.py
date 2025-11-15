@@ -27,7 +27,9 @@ class InteractionStore:
     查询方法遵循不可变模式，返回新的InteractionStore实例。
     """
 
-    def __init__(self, processor_outputs: dict[str, pd.DataFrame], config: AppConfig):
+    def __init__(
+        self, processor_outputs: dict[str, pd.DataFrame], config: AppConfig
+    ) -> None:
         """
         【V2 - 带规范化排序版】
         在流水线早期，通过聚合所有Processor的输出来初始化，并立即对交互对进行规范化。

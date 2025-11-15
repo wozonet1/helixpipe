@@ -28,7 +28,9 @@ class StructureProvider:
     OPTIMAL_UNIPROT_BATCH_SIZE = 100
     OPTIMAL_PUBCHEM_BATCH_SIZE = 400
 
-    def __init__(self, config: AppConfig, proxies: Optional[dict[str, str]] = None):
+    def __init__(
+        self, config: AppConfig, proxies: Optional[dict[str, str]] = None
+    ) -> None:
         self.config = config
         self.proxies = proxies
         self._session = self._create_session()

@@ -3,13 +3,13 @@ import unittest
 
 import pandas as pd
 import torch
-from helper import create_test_config
 
 from helixpipe.configs import register_all_schemas
 from helixpipe.data_processing.services.graph_context import GraphBuildContext
 
 # 导入所有需要的真实模块和配置类
 from helixpipe.typing import AppConfig
+from tests.helper import create_test_config
 
 # --- 模拟依赖 (Mocks) ---
 logging.basicConfig(level=logging.DEBUG)

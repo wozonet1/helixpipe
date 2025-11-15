@@ -27,15 +27,15 @@ class GraphBuilder(ABC):
     """【Builder接口】定义了构建一个异构图所需的所有步骤的抽象方法。"""
 
     @abstractmethod
-    def add_interaction_edges(self, train_pairs: list[LogicInteractionTriple]):
+    def add_interaction_edges(self, train_pairs: list[LogicInteractionTriple]) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def add_molecule_similarity_edges(self):
+    def add_molecule_similarity_edges(self) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def add_protein_similarity_edges(self):
+    def add_protein_similarity_edges(self) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -43,7 +43,7 @@ class GraphBuilder(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def filter_background_edges_for_strict_mode(self):
+    def filter_background_edges_for_strict_mode(self) -> None:
         """
         If in 'strict' mode, filters out background edges that touch cold-start nodes.
         This is an in-place operation on the builder's internal state.
@@ -93,7 +93,7 @@ class HeteroGraphBuilder(GraphBuilder):
             "--- [HeteroGraphBuilder] Initialized for on-the-fly similarity computation. ---"
         )
 
-    def add_interaction_edges(self, train_pairs: list[LogicInteractionTriple]):
+    def add_interaction_edges(self, train_pairs: list[LogicInteractionTriple]) -> None:
         """【实现】根据 final_edge_type 和 relations.flags 添加交互边。"""
         flags = self.config.relations.flags
         counts: DefaultDict[str, int] = defaultdict(int)
@@ -109,7 +109,7 @@ class HeteroGraphBuilder(GraphBuilder):
                 logger.info(f"      - {count} '{edge_type}' edges.")
 
     # [MODIFIED] 更新公共方法以读取新的 'similarity_top_k' 配置
-    def add_molecule_similarity_edges(self):
+    def add_molecule_similarity_edges(self) -> None:
         """【实现】调用ANN方法计算并添加分子相似性边。"""
         self._add_similarity_edges_ann(
             entity_type="molecule",
@@ -118,7 +118,7 @@ class HeteroGraphBuilder(GraphBuilder):
         )
 
     # [MODIFIED] 更新公共方法
-    def add_protein_similarity_edges(self):
+    def add_protein_similarity_edges(self) -> None:
         """【实现】调用ANN方法计算并添加蛋白质相似性边。"""
         self._add_similarity_edges_ann(
             entity_type="protein",
@@ -273,7 +273,7 @@ class HeteroGraphBuilder(GraphBuilder):
 
     # [NEW] 新增的、职责专一的过滤方法
     # TODO: 精细化调控
-    def filter_background_edges_for_strict_mode(self):
+    def filter_background_edges_for_strict_mode(self) -> None:
         """
         如果处于 'strict' 模式，则从已添加的边 (_edges) 中，
         移除所有接触到冷启动实体的背景知识边。

@@ -30,7 +30,7 @@ class BindingdbProcessor(BaseProcessor):
     3. 执行BindingDB专属的“亲和力阈值”领域筛选。
     """
 
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig) -> None:
         super().__init__(config)
         # 引用外部schema，用于解析原始文件
         schema_node = config.data_structure.schema.external["bindingdb"]

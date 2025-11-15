@@ -32,7 +32,7 @@ class BrendaProcessor(BaseProcessor):
     3. 应用特定于BRENDA的、基于关系类型的动力学/亲和力阈值。
     """
 
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig) -> None:
         super().__init__(config)
         self.external_schema = SchemaAccessor(
             self.config.data_structure.schema.external["brenda"]

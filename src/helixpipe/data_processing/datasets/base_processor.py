@@ -20,7 +20,7 @@ class BaseProcessor(ABC):
     【最终架构版 v2】数据处理器的抽象基类，使用模板方法和流水线编排风格。
     """
 
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.verbose = config.runtime.verbose
         self.schema = self.config.data_structure.schema.internal.canonical_interaction

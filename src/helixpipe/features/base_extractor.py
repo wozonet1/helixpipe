@@ -19,7 +19,7 @@ class BaseFeatureExtractor(ABC):
     一个通用的、基于“每个实体一个缓存文件”策略的特征提取器框架 (模板方法模式)。
     """
 
-    def __init__(self, entity_type: str, config: AppConfig, device: str):
+    def __init__(self, entity_type: str, config: AppConfig, device: str) -> None:
         self.entity_type = entity_type
         self.config = config
         self.device = device

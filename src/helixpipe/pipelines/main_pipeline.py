@@ -34,7 +34,7 @@ from helixpipe.utils import get_path
 logger = logging.getLogger(__name__)
 
 
-def process_data(config: AppConfig, processor_outputs: ProcessorOutputs):
+def process_data(config: AppConfig, processor_outputs: ProcessorOutputs) -> None:
     """
     【V5 - 最终完整编排版】数据处理的总编排器。
     """

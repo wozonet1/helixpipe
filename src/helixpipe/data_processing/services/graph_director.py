@@ -20,7 +20,7 @@ class GraphDirector:
     它将图的【构建流程】与具体的【构建实现】相分离。
     """
 
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig) -> None:
         """
         初始化指挥者。
 

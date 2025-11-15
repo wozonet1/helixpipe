@@ -215,7 +215,9 @@ def plot_grouped_bar_chart(
     print(f"--> Grouped bar chart saved to: {output_path}")
 
 
-def plot_histogram(data: np.ndarray, title: str, xlabel: str, output_path: Path):
+def plot_histogram(
+    data: np.ndarray, title: str, xlabel: str, output_path: Path
+) -> None:
     """通用的直方图绘制函数。"""
     if data is None or len(data) == 0:
         print(f"--> No data to plot for '{title}'. Skipping.")

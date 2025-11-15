@@ -23,7 +23,9 @@ register_hydra_resolvers()
 # --- 绘图与分析的辅助函数 ---
 
 
-def analyze_degree_distribution(G: nx.Graph, output_dir: Path, config: AppConfig):
+def analyze_degree_distribution(
+    G: nx.Graph, output_dir: Path, config: AppConfig
+) -> None:
     """
     分析图的度分布，并生成直方图和对数-对数图。
     """
@@ -135,7 +137,7 @@ def analyze_connectivity_and_communities(G: nx.Graph, output_dir: Path) -> str:
     config_name="config",
     version_base=None,
 )
-def main(cfg: AppConfig):
+def main(cfg: AppConfig) -> None:
     """
     一个独立的、由Hydra驱动的脚本，用于加载一个已生成的图文件，
     并对其进行深入的拓扑结构分析。

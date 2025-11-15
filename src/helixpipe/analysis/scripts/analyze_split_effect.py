@@ -13,7 +13,7 @@ register_hydra_resolvers()
 
 
 @hydra.main(config_path="../../conf", config_name="config", version_base=None)
-def analyze_split_effect(cfg: DictConfig):
+def analyze_split_effect(cfg: DictConfig) -> None:
     """
     【V2 重构版】可视化冷启动分割对图结构的影响。
 

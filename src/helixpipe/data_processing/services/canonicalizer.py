@@ -15,7 +15,7 @@ from helixpipe.typing import CID, SMILES
 logger = logging.getLogger(__name__)
 
 
-def canonicalize_smiles(smiles: SMILES):
+def canonicalize_smiles(smiles: SMILES) -> None:
     try:
         mol = Chem.MolFromSmiles(smiles)
         if mol is not None:

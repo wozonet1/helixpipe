@@ -72,7 +72,7 @@ class SchemaRegistrationError(Exception):
     当在ConfigStore中注册结构化配置Schema失败时抛出的自定义异常。
     """
 
-    def __init__(self, schema_name: str, original_exception: Exception):
+    def __init__(self, schema_name: str, original_exception: Exception) -> None:
         self.schema_name = schema_name
         self.original_exception = original_exception
 

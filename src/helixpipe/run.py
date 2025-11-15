@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 @hydra.main(config_path=f"{config_path}", config_name="config", version_base=None)
-def run_experiment(cfg: AppConfig):
+def run_experiment(cfg: AppConfig) -> None:
     """
     项目主实验流程的顶层入口。
     """
