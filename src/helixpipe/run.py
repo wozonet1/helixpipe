@@ -30,16 +30,7 @@ def run_experiment(cfg: AppConfig):
     # 这一行代码取代了所有之前的数据加载逻辑
     processor_outputs = load_datasets(cfg)
 
-    # --- 阶段 3: 运行下游数据处理流水线 (图构建等) ---
-    if not cfg.runtime.skip_data_proc:
-        process_data(cfg, processor_outputs)
-    else:
-        logger.warning(
-            "\n⚠️  Skipping data processing as per 'runtime.skip_data_proc' flag."
-        )
-
-    # --- 阶段 4: 运行模型训练 ---
-    # train(cfg)
+    process_data(cfg, processor_outputs)
 
 
 if __name__ == "__main__":
