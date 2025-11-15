@@ -3,8 +3,8 @@ from collections import defaultdict
 from typing import Any, Callable, Dict, List, Optional, Set
 
 import pandas as pd
-import research_template as rt
 
+import helixlib as hx
 from helixpipe.configs import EntitySelectorConfig
 from helixpipe.configs.knowledge_graph import EntityMetaConfig
 
@@ -262,7 +262,7 @@ class IDMapper:
             nodes_schema.structure
         ].fillna("")
         output_path = get_path(self._config, "processed.common.nodes_metadata")
-        rt.ensure_path_exists(output_path)
+        hx.ensure_path_exists(output_path)
         nodes_df.to_csv(output_path, index=False)
         logger.info(f"--> Core metadata file 'nodes.csv' saved to: {output_path}")
 

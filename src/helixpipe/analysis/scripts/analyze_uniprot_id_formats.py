@@ -4,12 +4,13 @@ import re
 import sys
 
 import pandas as pd
-import research_template as rt
 from tqdm import tqdm
+
+import helixlib as hx
 
 # --- 动态路径设置 ---
 try:
-    PROJECT_ROOT = rt.get_project_root()
+    PROJECT_ROOT = hx.get_project_root()
 except IndexError:
     raise RuntimeError("Could not determine project root.")
 

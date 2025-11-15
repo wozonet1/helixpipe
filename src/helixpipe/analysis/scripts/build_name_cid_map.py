@@ -37,7 +37,7 @@ def build_map():
     start_time = time.time()
 
     # 使用流式读取，避免将几十GB的文件一次性读入内存
-    with gzip.open(SOURCE_SYNONYM_FILE, "rt", encoding="utf-8") as f:
+    with gzip.open(SOURCE_SYNONYM_FILE, "hx", encoding="utf-8") as f:
         # 使用tqdm来可视化处理进度 (需要知道总行数，如果不知道可以不加total)
         # 估算行数以提供进度条，实际行数可能略有不同
         estimated_lines = 300_000_000

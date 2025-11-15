@@ -7,12 +7,13 @@ import time
 
 import numpy as np
 import pandas as pd
-import research_template as rt
 from tqdm import tqdm
+
+import helixlib as hx
 
 # --- 动态路径设置 ---
 try:
-    PROJECT_ROOT = rt.get_project_root()
+    PROJECT_ROOT = hx.get_project_root()
 except IndexError:
     raise RuntimeError("Could not determine project root.")
 
@@ -161,7 +162,7 @@ def load_pubchem_cid_pool_from_assets(sample_size: int = 50000) -> list:
 
     # 由于文件巨大，我们不读取全部，而是进行随机抽样
     cids = set()
-    with gzip.open(filepath, "rt", encoding="utf-8") as f:
+    with gzip.open(filepath, "hx", encoding="utf-8") as f:
         # 估算总行数以进行合理的随机抽样
         estimated_total = 300_000_000
         # 我们希望采样大约0.1%的行来获得足够多的ID

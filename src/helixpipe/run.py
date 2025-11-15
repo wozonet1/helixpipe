@@ -1,8 +1,8 @@
 import logging
 
 import hydra
-import research_template as rt
 
+import helixlib as hx
 from helixpipe.configs import register_all_schemas
 from helixpipe.data_loader_strategy import load_datasets
 from helixpipe.pipelines import process_data
@@ -15,7 +15,7 @@ from helixpipe.utils import register_hydra_resolvers, setup_logging
 register_all_schemas()
 register_hydra_resolvers()
 
-project_root = rt.get_project_root()
+project_root = hx.get_project_root()
 config_path = f"{project_root}/conf"
 logger = logging.getLogger(__name__)
 

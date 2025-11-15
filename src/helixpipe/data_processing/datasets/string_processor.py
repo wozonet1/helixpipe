@@ -3,8 +3,8 @@ import logging
 from typing import Dict, cast
 
 import pandas as pd
-import research_template as rt
 
+import helixlib as hx
 from helixpipe.configs import register_all_schemas
 from helixpipe.typing import AppConfig
 from helixpipe.utils import SchemaAccessor, get_path, register_hydra_resolvers
@@ -170,7 +170,7 @@ if __name__ == "__main__":
 
     register_hydra_resolvers()
     register_all_schemas()
-    project_root = rt.get_project_root()
+    project_root = hx.get_project_root()
     config_dir = str(project_root / "conf")
 
     with initialize_config_dir(

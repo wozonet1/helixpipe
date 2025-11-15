@@ -7,9 +7,9 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
-import research_template as rt
 import seaborn as sns
 
+import helixlib as hx
 from helixpipe.configs import register_all_schemas
 
 # 导入所有需要的项目内部模块
@@ -131,7 +131,7 @@ def analyze_connectivity_and_communities(G: nx.Graph, output_dir: Path) -> str:
 
 
 @hydra.main(
-    config_path=str(rt.get_project_root() / "conf"),
+    config_path=str(hx.get_project_root() / "conf"),
     config_name="config",
     version_base=None,
 )
@@ -165,14 +165,14 @@ def main(cfg: AppConfig):
 
         # b. 准备输出目录 (这次必须包含 relations.name)
         output_dir = (
-            rt.get_project_root()
+            hx.get_project_root()
             / "analysis_outputs"
             / (cfg.dataset_collection.name or "base")
             / cfg.data_params.name
             / cfg.relations.name
             / "topology_analysis"
         )
-        rt.ensure_path_exists(output_dir / "dummy.txt")
+        hx.ensure_path_exists(output_dir / "dummy.txt")
 
         # --- 步骤 2: 构建 NetworkX 图对象 ---
         print("\n--- [Step 2/3] Building NetworkX graph object...")

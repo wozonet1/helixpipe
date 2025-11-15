@@ -6,10 +6,11 @@ from datetime import datetime
 from pathlib import Path
 
 import requests
-import research_template as rt
 from hydra import compose, initialize
 from omegaconf import DictConfig
 from tqdm import tqdm
+
+import helixlib as hx
 
 from .pathing import get_path
 
@@ -79,7 +80,7 @@ def download_bindingdb_data(config: DictConfig):
 
     # 确定要保存到的 raw 目录
     raw_dir = get_path(config, "raw.dummy_file_to_get_dir").parent
-    rt.ensure_path_exists(raw_dir / "dummy.txt")
+    hx.ensure_path_exists(raw_dir / "dummy.txt")
 
     urls = _get_dynamic_urls_for_bindingdb()
 

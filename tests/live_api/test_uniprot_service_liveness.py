@@ -22,11 +22,10 @@ except IndexError:
 
 # --- 在路径设置好之后，再进行导入 ---
 import hydra
-
-# 导入我们项目的真实模块
-import research_template as rt
 from omegaconf import OmegaConf
 
+# 导入我们项目的真实模块
+import helixlib as hx
 from helixpipe.data_processing.services.id_validation_service import (
     get_human_uniprot_whitelist,
 )
@@ -63,7 +62,7 @@ class TestLiveUniProtAPI(unittest.TestCase):
 
     def _get_test_config(self):
         """辅助函数，加载配置并将其路径重定向到沙箱。"""
-        project_root = rt.get_project_root()
+        project_root = hx.get_project_root()
         with hydra.initialize_config_dir(
             config_dir=str(project_root / "conf"),
             version_base=None,

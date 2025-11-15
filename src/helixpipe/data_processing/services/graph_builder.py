@@ -8,9 +8,9 @@ from typing import DefaultDict, List, Literal, Set, Tuple, Union, overload
 import faiss
 import numpy as np
 import pandas as pd
-import research_template as rt
 import torch
 
+import helixlib as hx
 from helixpipe.typing import AppConfig, LogicID, LogicInteractionTriple
 
 from .graph_context import GraphBuildContext
@@ -204,7 +204,7 @@ class HeteroGraphBuilder(GraphBuilder):
                 type2 = self.context.get_local_node_type(local_id_j)
 
                 source_type, relation_prefix, target_type = (
-                    rt.graph_utils.get_canonical_relation(type1, type2)
+                    hx.graph_utils.get_canonical_relation(type1, type2)
                 )
                 final_edge_type = f"{relation_prefix}_similarity"
 

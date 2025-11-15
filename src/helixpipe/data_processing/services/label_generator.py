@@ -3,8 +3,8 @@ from typing import TYPE_CHECKING, List, Set, Tuple
 
 import numpy as np
 import pandas as pd
-import research_template as rt
 
+import helixlib as hx
 from helixpipe.typing import AppConfig
 from helixpipe.utils import get_path
 
@@ -72,7 +72,7 @@ class SupervisionFileManager:
         train_labels_path = self.labels_path_factory(
             prefix=f"fold_{self.fold_idx}", suffix="train"
         )
-        rt.ensure_path_exists(train_labels_path)
+        hx.ensure_path_exists(train_labels_path)
         train_df.to_csv(train_labels_path, index=False)
         if self.verbose > 0:
             logger.info(
@@ -82,7 +82,7 @@ class SupervisionFileManager:
         test_labels_path = self.labels_path_factory(
             prefix=f"fold_{self.fold_idx}", suffix="test"
         )
-        rt.ensure_path_exists(test_labels_path)
+        hx.ensure_path_exists(test_labels_path)
         test_df.to_csv(test_labels_path, index=False)
         if self.verbose > 0:
             pos_count = (test_df["label"] == 1).sum() if "label" in test_df else 0

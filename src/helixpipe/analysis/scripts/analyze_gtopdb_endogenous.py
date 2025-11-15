@@ -3,10 +3,11 @@
 import sys
 
 import pandas as pd
-import research_template as rt
+
+import helixlib as hx
 
 # --- 脚本配置 ---
-PROJECT_ROOT = rt.get_project_root()
+PROJECT_ROOT = hx.get_project_root()
 
 # 定义GtoPdb的原始数据目录
 GTOPDB_RAW_DIR = PROJECT_ROOT / "data" / "gtopdb" / "raw"

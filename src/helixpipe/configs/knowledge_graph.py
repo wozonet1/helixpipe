@@ -35,6 +35,14 @@ class RelationTypeNames:
 
 
 @dataclass
+class RelationTemplateNames:
+    """定义【派生】关系类型的命名模板。"""
+
+    # {source_type} 和 {target_type} 将作为占位符
+    similarity: str = "{source_type}_{target_type}_similarity"
+
+
+@dataclass
 class KnowledgeGraphConfig:
     """
     【新增】定义知识图谱的逻辑/语义层。
@@ -44,6 +52,10 @@ class KnowledgeGraphConfig:
     # 实体类型名称的官方注册表
     entity_types: EntityTypeNames = field(default_factory=EntityTypeNames)
     relation_types: RelationTypeNames = field(default_factory=RelationTypeNames)
+    relation_templates: RelationTemplateNames = field(
+        default_factory=RelationTemplateNames
+    )
+    # TODO: 整理
     entity_meta: Dict[str, EntityMetaConfig] = field(
         default_factory=lambda: {
             # 分子大类

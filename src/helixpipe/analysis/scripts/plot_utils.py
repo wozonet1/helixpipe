@@ -3,9 +3,10 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import research_template as rt
 import seaborn as sns
 from omegaconf import DictConfig
+
+import helixlib as hx
 
 # ... (您已有的绘图函数) ...
 
@@ -35,7 +36,7 @@ def plot_bar_chart_with_counts(
         ax.set_yscale("log")
 
     plt.tight_layout()
-    rt.ensure_path_exists(output_path)
+    hx.ensure_path_exists(output_path)
     plt.savefig(output_path, dpi=300)
     plt.close(fig)
     print(f"    - Bar chart saved to: {output_path.name}")
@@ -104,7 +105,7 @@ def plot_pos_neg_similarity_kde(
     ax.legend(title="Pair Type")
 
     plt.tight_layout()
-    rt.ensure_path_exists(output_path)
+    hx.ensure_path_exists(output_path)
     plt.savefig(output_path, dpi=300)
     plt.close(fig)
     print(f"    - Positive vs. Negative KDE plot saved to: {output_path.name}")
@@ -152,7 +153,7 @@ def plot_side_by_side_bar_chart(
     ax.legend(title=hue_col.replace("_", " ").title())
 
     plt.tight_layout()
-    rt.ensure_path_exists(output_path)
+    hx.ensure_path_exists(output_path)
     plt.savefig(output_path, dpi=300)
     plt.close(fig)
     print(f"--> Side-by-side bar chart saved to: {output_path}")
@@ -208,7 +209,7 @@ def plot_grouped_bar_chart(
     plt.tight_layout(rect=[0, 0.03, 0.85, 0.95])
 
     # 5. 保存
-    rt.ensure_path_exists(output_path)
+    hx.ensure_path_exists(output_path)
     plt.savefig(output_path, dpi=300)
     plt.close()
     print(f"--> Grouped bar chart saved to: {output_path}")
@@ -238,7 +239,7 @@ def plot_histogram(data: np.ndarray, title: str, xlabel: str, output_path: Path)
     ax.legend()
 
     plt.tight_layout()
-    rt.ensure_path_exists(output_path)  # 确保输出目录存在
+    hx.ensure_path_exists(output_path)  # 确保输出目录存在
     plt.savefig(output_path, dpi=300)
     plt.close(fig)
     print(f"--> Distribution plot saved to: {output_path}")

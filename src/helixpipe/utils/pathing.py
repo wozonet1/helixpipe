@@ -5,15 +5,15 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Generator, Tuple, cast, overload
 
-import research_template as rt
 from omegaconf import DictConfig, OmegaConf
 from omegaconf.errors import (
     ConfigKeyError,
     InterpolationResolutionError,
 )
-from research_template import check_paths_exist as generic_check_paths_exist
-from research_template.errors import ConfigPathError
 
+import helixlib as hx
+from helixlib import check_paths_exist as generic_check_paths_exist
+from helixlib.errors import ConfigPathError
 from helixpipe.typing import AppConfig, PathFactory, PathLike, TemplateKey
 
 logger = logging.getLogger(__name__)
@@ -120,7 +120,7 @@ def setup_dataset_directories(config: AppConfig) -> None:
     except (ConfigKeyError, KeyError) as e:
         # 使用我们之前设计的自定义异常来提供清晰的错误报告
         missing_key = e.full_key if isinstance(e, ConfigKeyError) else str(e)
-        raise rt.ConfigPathError(
+        raise hx.ConfigPathError(
             message=f"Failed during directory setup due to missing config key: {missing_key}",
             failed_interpolation_key=missing_key,
             file_key="N/A (during setup)",
@@ -187,7 +187,7 @@ def get_path(cfg: DictConfig, short_key: str, **kwargs) -> PathLike:
 
     # --- 核心的、双模式逻辑 ---
 
-    project_root = rt.get_project_root()
+    project_root = hx.get_project_root()
 
     # 1. 检查解析出的字符串是否是一个需要后续格式化的模板
     if "{" in resolved_path_str:

@@ -3,11 +3,10 @@ import unittest
 from pathlib import Path
 
 import hydra
-
-# 导入您的项目模块
-import research_template as rt
 from omegaconf import DictConfig, OmegaConf
 
+# 导入您的项目模块
+import helixlib as hx
 from helixpipe.configs import register_all_schemas
 from helixpipe.data_processing.services.id_validation_service import (
     get_human_uniprot_whitelist,
@@ -52,7 +51,7 @@ class TestIDValidationServiceOffline(unittest.TestCase):
     def _get_test_config(self, overrides: list | None = None) -> DictConfig:
         """加载配置并将其路径重定向到沙箱。"""
         overrides = overrides or []
-        project_root = rt.get_project_root()
+        project_root = hx.get_project_root()
         with hydra.initialize_config_dir(
             config_dir=str(project_root / "conf"),
             version_base=None,
@@ -69,7 +68,7 @@ class TestIDValidationServiceOffline(unittest.TestCase):
         """一个辅助函数，用于在沙箱中创建伪造的蛋白质组TSV文件。"""
         # 使用 get_path 来确保路径与主逻辑一致
         proteome_path = get_path(self.cfg, "assets.uniprot_proteome_tsv")
-        rt.ensure_path_exists(proteome_path)
+        hx.ensure_path_exists(proteome_path)
         with open(proteome_path, "w") as f:
             f.write(content)
 

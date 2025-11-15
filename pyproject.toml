@@ -7,12 +7,78 @@ name = "HelixPipe" # 给您的项目起个名字
 version = "0.1.0"
 description = "A reproducible, config-driven data engine for building heterogeneous knowledge graphs for drug discovery."
 requires-python = ">=3.9"
+authors = [
+    { name = "Chujia Zhu", email = "wozonet12345@gmail.com" },
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+# --- [核心部分在这里] ---
+# 列出你项目运行时的【核心】依赖
+dependencies = [
+    # --- 核心数据处理 ---
+    "pandas>=1.5.0",
+    "numpy>=1.21.0",
+    "PyYAML>=6.0",
+    "joblib",
+
+    # --- 配置管理 ---
+    "hydra-core>=1.3.0",
+    "omegaconf>=2.3.0",
+
+    # --- 生物/化学信息学 ---
+    "rdkit>=2022.09.1",    # 假设你使用的是 rdkit-pypi，这是最常见的
+    "bioservices",
+    "requests",
+
+    # --- 机器学习 & GNN (核心依赖) ---
+    "torch>=2.0.0",
+    "torch-geometric>=2.3.0",
+    "faiss-cpu>=1.7.0",   # 或者 "faiss-gpu"，取决于你的主要目标环境
+
+    # --- 其他工具 ---
+    "tqdm",
+]
+
+[project.optional-dependencies]
+# 依赖项用于开发、测试和质量检查
+dev = [
+    "pytest",
+    "mypy",
+    "black",
+    "isort",
+    "pre-commit",  # 强烈推荐，用于自动化代码检查
+    "pandas-stubs",
+    "types-PyYAML",
+    "types-requests",
+    "types-tqdm",
+]
+
+# 依赖项用于构建文档
+docs = [
+    "mkdocs",
+    "mkdocs-material",
+    "mkdocstrings[python]",
+]
+
+# 一个方便的分组，包含所有非核心的依赖项
+all = [
+    "helixpipe[dev]",
+    "helixpipe[docs]",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]  # 告诉setuptools，包的根目录是 'src'
-include = ["helixpipe*"]  # 包含所有以 'helixpipe' 开头的包
+include = ["helix*"]  # 包含所有以 'helixpipe' 开头的包
 exclude = []  # 可以排除特定的子包
-
+[tool.setuptools.package-dir]
+# 这一部分将包名映射到实际的目录
+helixpipe = "src/helixpipe"
+helixlib = "src/helixlib"
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 ignore = ["E501",]

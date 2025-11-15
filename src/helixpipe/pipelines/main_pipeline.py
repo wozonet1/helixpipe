@@ -3,9 +3,9 @@ from typing import List, Sequence, Tuple, cast
 
 import numpy as np
 import pandas as pd
-import research_template as rt
 import torch
 
+import helixlib as hx
 from helixpipe.data_processing import (
     DataSplitter,
     GraphBuildContext,
@@ -320,7 +320,7 @@ def _stage6_generate_features(
         .detach()
         .numpy()
     )
-    rt.ensure_path_exists(final_features_path)
+    hx.ensure_path_exists(final_features_path)
     np.save(final_features_path, all_feature_embeddings)
     logger.info(
         f"--> Final aggregated features saved to: '{final_features_path.name}'. Shape: {all_feature_embeddings.shape}"
@@ -464,7 +464,7 @@ def _stage7_split_and_build_graphs(
         graph_output_path = graph_output_path_factory(
             prefix=f"fold_{fold_idx}", suffix="train"
         )
-        rt.ensure_path_exists(graph_output_path)
+        hx.ensure_path_exists(graph_output_path)
         global_graph_df.to_csv(graph_output_path, index=False)
 
         logger.info(

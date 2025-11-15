@@ -7,11 +7,11 @@ import time
 from typing import Dict, List, Optional
 
 import requests
-import research_template as rt
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry  # type: ignore
 from tqdm import tqdm
 
+import helixlib as hx
 from helixpipe.typing import CID, PID, SMILES, AppConfig, ProteinSequence
 from helixpipe.utils import get_path
 
@@ -51,7 +51,7 @@ class StructureProvider:
         self, uniprot_ids: List[PID], force_restart: bool = False
     ) -> Dict[PID, ProteinSequence]:
         """为UniProt ID列表获取序列，使用增量缓存。"""
-        return rt.run_cached_operation(
+        return hx.run_cached_operation(
             cache_path=get_path(self.config, "cache.ids.enriched_protein_sequences"),
             calculation_func=self._fetch_sequences_from_uniprot,
             ids_to_process=uniprot_ids,
@@ -64,7 +64,7 @@ class StructureProvider:
         self, cids: List[CID], force_restart: bool = False
     ) -> Dict[CID, SMILES]:
         """为PubChem CID列表获取SMILES，使用增量缓存。"""
-        return rt.run_cached_operation(
+        return hx.run_cached_operation(
             cache_path=get_path(self.config, "cache.ids.enriched_molecule_smiles"),
             calculation_func=self._fetch_smiles_from_pubchem,
             ids_to_process=cids,

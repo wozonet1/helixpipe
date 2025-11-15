@@ -6,11 +6,11 @@ from typing import cast
 
 import argcomplete
 import pandas as pd
-import research_template as rt
 from hydra import compose
 from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
+import helixlib as hx
 from helixpipe.configs import register_all_schemas
 from helixpipe.typing import AppConfig
 from helixpipe.utils import SchemaAccessor, get_path, register_hydra_resolvers
@@ -207,14 +207,14 @@ if __name__ == "__main__":
     # === 阶段 2: 注册、加载配置并打印 ===
 
     # a. 在所有Hydra操作之前，确保解析器已注册
-    #    (rt 是 research_template)
+    #    (hx 是 research_template)
     register_hydra_resolvers()
     register_all_schemas()
     # b. 使用 initialize_config_dir 和 compose 来构建最终的配置对象
     try:
         # get_project_root 在非Hydra应用下会使用 Path.cwd()
         # 请确保您是从项目根目录运行此脚本
-        project_root = rt.get_project_root()
+        project_root = hx.get_project_root()
         config_dir = str(project_root / "conf")
     except Exception as e:
         logger.error(f"❌ 无法确定项目根目录或配置路径。错误: {e}")

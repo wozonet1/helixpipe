@@ -4,10 +4,10 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List
 
-import research_template as rt
 import torch
 from tqdm import tqdm
 
+import helixlib as hx
 from helixpipe.typing import AppConfig, AuthID
 from helixpipe.utils import get_path
 
@@ -107,7 +107,7 @@ class BaseFeatureExtractor(ABC):
                     results_dict[item_id] = embedding
 
                     cache_path = self._cache_path_factory(authoritative_id=item_id)
-                    rt.ensure_path_exists(cache_path)
+                    hx.ensure_path_exists(cache_path)
                     torch.save(embedding, cache_path)
 
         logger.info(

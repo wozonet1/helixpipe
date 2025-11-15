@@ -6,9 +6,10 @@ from typing import cast
 
 import hydra
 import pandas as pd
-import research_template as rt
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
+
+import helixlib as hx
 
 # 导入我们的抽象基类，用于类型检查和文档
 from helixpipe.data_processing import BaseProcessor
@@ -153,7 +154,7 @@ def load_datasets(config: AppConfig) -> ProcessorOutputs:
                 "No GlobalHydra context found. Initializing manually for tests."
             )
             try:
-                project_root = rt.get_project_root()
+                project_root = hx.get_project_root()
                 config_dir_abs_path = str(project_root / "conf")
                 with hydra.initialize_config_dir(
                     config_dir=config_dir_abs_path,

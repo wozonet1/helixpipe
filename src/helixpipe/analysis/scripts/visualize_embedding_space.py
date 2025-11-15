@@ -4,7 +4,6 @@ import hydra
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import research_template as rt
 import seaborn as sns
 import umap.umap_ as umap
 
@@ -12,6 +11,7 @@ import umap.umap_ as umap
 # 您需要先安装它们: pip install scikit-learn umap-learn
 from sklearn.cluster import KMeans
 
+import helixlib as hx
 from helixpipe.configs import register_all_schemas
 
 # 导入所有需要的项目内部模块
@@ -102,7 +102,7 @@ def process_and_plot_embeddings(
     print(f"    - UMAP visualization saved to: {output_path.name}")
 
 
-project_root = rt.get_project_root()
+project_root = hx.get_project_root()
 config_path = project_root / "conf"
 
 
@@ -131,13 +131,13 @@ def main(cfg: AppConfig):
 
         # 准备输出目录
         output_dir = (
-            rt.get_project_root()
+            hx.get_project_root()
             / "analysis_outputs"
             / (cfg.dataset_collection.name or "base")
             / cfg.data_params.name
             / "embedding_space_sanity_check"  # 创建一个专门的子目录
         )
-        rt.ensure_path_exists(output_dir / "dummy.txt")
+        hx.ensure_path_exists(output_dir / "dummy.txt")
 
         # 为分子和蛋白质分别进行可视化
         process_and_plot_embeddings(

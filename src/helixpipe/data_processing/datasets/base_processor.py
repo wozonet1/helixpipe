@@ -5,8 +5,8 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, List, Tuple
 
 import pandas as pd
-import research_template as rt
 
+import helixlib as hx
 from helixpipe.typing import AppConfig
 from helixpipe.utils import get_path
 
@@ -94,7 +94,7 @@ class BaseProcessor(ABC):
         logger.info(
             f"\n--> [{self.__class__.__name__}] Saving processed data to cache: '{output_target.name}'..."
         )
-        rt.ensure_path_exists(output_target)
+        hx.ensure_path_exists(output_target)
         final_df.to_csv(output_target, index=False)
 
         if self.verbose > 0:

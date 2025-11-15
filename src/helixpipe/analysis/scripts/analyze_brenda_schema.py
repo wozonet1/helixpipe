@@ -4,11 +4,11 @@ import json
 import sys
 from collections import defaultdict
 
-import research_template as rt
+import helixlib as hx
 
 # --- 配置 ---
 # 这个脚本是独立的，所以我们硬编码路径。请确保它相对于项目根目录是正确的。
-PROJECT_ROOT = rt.get_project_root()
+PROJECT_ROOT = hx.get_project_root()
 BRENDA_JSON_PATH = PROJECT_ROOT / "data/brenda/raw/brenda_2025_1.json"
 
 

@@ -1,9 +1,9 @@
 import hydra
 import numpy as np
 import pandas as pd
-import research_template as rt
 import torch
 
+import helixlib as hx
 from helixpipe.configs import register_all_schemas
 from helixpipe.data_processing import (
     GraphBuildContext,
@@ -80,7 +80,7 @@ def analyze_pos_neg_similarities(
     return pd.DataFrame(results)
 
 
-config_path = rt.get_project_root() / "conf"
+config_path = hx.get_project_root() / "conf"
 
 
 @hydra.main(config_path=str(config_path), config_name="config", version_base=None)
@@ -184,13 +184,13 @@ def main(cfg: AppConfig):
 
         # a. 准备输出目录
         output_dir = (
-            rt.get_project_root()
+            hx.get_project_root()
             / "analysis_outputs"
             / cfg.dataset_collection.name
             / cfg.data_params.name
             / cfg.relations.name
         )
-        rt.ensure_path_exists(output_dir / "dummy.txt")
+        hx.ensure_path_exists(output_dir / "dummy.txt")
 
         # b. 绘制相似度分布图
         plot_similarity_distributions(
