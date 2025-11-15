@@ -10,10 +10,10 @@ import numpy as np
 import pandas as pd
 import torch
 
-import helixlib as hx
 from helixpipe.typing import AppConfig, LogicID, LogicInteractionTriple
 
 from .graph_context import GraphBuildContext
+from .relation_utils import get_similarity_relation_type
 
 SimilarityResult = Tuple[int, int, float, str]
 logger = logging.getLogger(__name__)
@@ -79,18 +79,18 @@ class HeteroGraphBuilder(GraphBuilder):
             protein_embeddings: 【必需】用于实时计算的蛋白质特征嵌入。
         """
         self.config = config
+        self.kg_config = config.knowledge_graph
         self.context = context
         self.molecule_embeddings = molecule_embeddings
         self.protein_embeddings = protein_embeddings
-        self.verbose = config.runtime.verbose
 
         self._edges: List[List] = []
         self._graph_schema = self.config.data_structure.schema.internal.graph_output
         self._cold_start_entity_ids = cold_start_entity_ids_local
-        if self.verbose > 0:
-            logger.info(
-                "--- [HeteroGraphBuilder] Initialized for on-the-fly similarity computation. ---"
-            )
+
+        logger.info(
+            "--- [HeteroGraphBuilder] Initialized for on-the-fly similarity computation. ---"
+        )
 
     def add_interaction_edges(self, train_pairs: List[LogicInteractionTriple]):
         """【实现】根据 final_edge_type 和 relations.flags 添加交互边。"""
@@ -102,7 +102,7 @@ class HeteroGraphBuilder(GraphBuilder):
                 self._edges.append([u, v, final_edge_type])
                 counts[final_edge_type] += 1
 
-        if self.verbose > 0 and counts:
+        if counts:
             logger.info("    - Added Interaction Edges:")
             for edge_type, count in counts.items():
                 logger.info(f"      - {count} '{edge_type}' edges.")
@@ -181,13 +181,13 @@ class HeteroGraphBuilder(GraphBuilder):
         )
 
         edge_counts: DefaultDict[str, int] = defaultdict(int)
-        if self.verbose > 1:
-            logger.debug(
-                f"\n    --- [DEBUG] Inside _add_similarity_edges_ann for '{entity_type}' ---"
-            )
-            logger.debug(
-                f"    - Thresholds dictionary being used: {self.config.data_params.similarity_thresholds}"
-            )
+
+        logger.debug(
+            f"\n    --- [DEBUG] Inside _add_similarity_edges_ann for '{entity_type}' ---"
+        )
+        logger.debug(
+            f"    - Thresholds dictionary being used: {self.config.data_params.similarity_thresholds}"
+        )
         for i in range(num_embeddings):
             for neighbor_idx in range(1, k + 1):
                 j = indices[i, neighbor_idx]
@@ -203,11 +203,10 @@ class HeteroGraphBuilder(GraphBuilder):
                 type1 = self.context.get_local_node_type(local_id_i)
                 type2 = self.context.get_local_node_type(local_id_j)
 
-                source_type, relation_prefix, target_type = (
-                    hx.graph_utils.get_canonical_relation(type1, type2)
+                source_type, target_type, final_edge_type = (
+                    get_similarity_relation_type(type1, type2, self.kg_config)
                 )
-                final_edge_type = f"{relation_prefix}_similarity"
-
+                relation_prefix = f"{source_type}_{target_type}"
                 source_id, target_id = (
                     (local_id_i, local_id_j)
                     if type1 == source_type
@@ -226,25 +225,27 @@ class HeteroGraphBuilder(GraphBuilder):
                     flags = self.config.relations.flags
                     if flags.get(final_edge_type, False):
                         thresholds = self.config.data_params.similarity_thresholds
-                        threshold = thresholds.get(relation_prefix, 1.1)
+                        threshold = getattr(
+                            thresholds,
+                            relation_prefix,
+                            1.1,  # 提供一个默认值，以防 relation_prefix 对应的字段不存在
+                        )
                         if similarity > threshold:
                             self._edges.append([source_id, target_id, final_edge_type])
                             edge_counts[final_edge_type] += 1
                         # [NEW DEBUG PRINT] 打印每一个候选边的决策过程
-                        if self.verbose > 1:
-                            # 只打印相似度较高的，避免刷屏
-                            if similarity > 0.5:
-                                logger.debug(
-                                    f"      - Candidate Edge: ({local_id_i}, {local_id_j}), "
-                                    f"Type: {final_edge_type}, "
-                                    f"RelationPrefix: '{relation_prefix}', "
-                                    f"Similarity: {similarity:.4f}, "
-                                    f"Threshold: {threshold}, "
-                                    f"Passes?: {similarity > threshold}"
-                                )
+                        # 只打印相似度较高的，避免刷屏
+                        if similarity > 0.5:
+                            logger.debug(
+                                f"      - Candidate Edge: ({local_id_i}, {local_id_j}), "
+                                f"Type: {final_edge_type}, "
+                                f"Similarity: {similarity:.4f}, "
+                                f"Threshold: {threshold}, "
+                                f"Passes?: {similarity > threshold}"
+                            )
 
         if not analysis_mode:
-            if self.verbose > 0 and edge_counts:
+            if edge_counts:
                 logger.info("    - Added ANN-based Similarity Edges:")
                 for edge_type, count in edge_counts.items():
                     logger.info(f"      - {count} '{edge_type}' edges.")
@@ -254,10 +255,10 @@ class HeteroGraphBuilder(GraphBuilder):
 
     def get_graph(self) -> pd.DataFrame:
         """【实现】返回构建完成的图 DataFrame。"""
-        if self.verbose > 0:
-            logger.info(
-                f"--- [HeteroGraphBuilder] Finalizing graph with {len(self._edges)} total edges. ---"
-            )
+
+        logger.info(
+            f"--- [HeteroGraphBuilder] Finalizing graph with {len(self._edges)} total edges. ---"
+        )
 
         return pd.DataFrame(
             self._edges,
@@ -276,10 +277,10 @@ class HeteroGraphBuilder(GraphBuilder):
         移除所有接触到冷启动实体的背景知识边。
         这是一个 in-place 操作。
         """
-        if self.config.runtime.verbose > 0:
-            logger.info(
-                "    - [Builder] Applying 'strict' cold-start filter to background edges..."
-            )
+
+        logger.info(
+            "    - [Builder] Applying 'strict' cold-start filter to background edges..."
+        )
 
         # a. 识别出所有背景知识边类型
         interaction_rel_types = set(self.config.knowledge_graph.relation_types.values())
@@ -301,7 +302,7 @@ class HeteroGraphBuilder(GraphBuilder):
             else:
                 num_removed += 1
 
-        if self.config.runtime.verbose > 0 and num_removed > 0:
+        if num_removed > 0:
             logger.info(
                 f"      - Removed {num_removed} background edges connected to cold-start entities."
             )

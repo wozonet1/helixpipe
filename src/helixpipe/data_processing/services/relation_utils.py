@@ -1,4 +1,4 @@
-# src/helixpipe/utils/graph_utils.py (新文件或移动后的文件)
+# src/helixpipe/utils/relation_utils.py (新文件或移动后的文件)
 
 from typing import TYPE_CHECKING, Dict, Tuple
 
@@ -22,14 +22,18 @@ def get_canonical_tuple(
 def get_similarity_relation_type(
     type1: str,
     type2: str,
-    priority_map: Dict[str, int],
     kg_config: KnowledgeGraphConfig,
-) -> str:
+) -> Tuple[str, str, str]:
     """根据配置模板，生成标准的相似性关系类型字符串。"""
+    priority_map = {name: meta.priority for name, meta in kg_config.entity_meta.items()}
     source_type, target_type = get_canonical_tuple(type1, type2, priority_map)
 
     # 从配置中获取模板
     template = kg_config.relation_templates.similarity
 
     # 使用模板进行格式化
-    return template.format(source_type=source_type, target_type=target_type)
+    return (
+        source_type,
+        target_type,
+        template.format(source_type=source_type, target_type=target_type),
+    )

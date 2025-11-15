@@ -134,6 +134,16 @@ class GtopdbParams:
     filtering: Optional[FilteringConfig] = None
 
 
+@dataclass
+class SimilarityThresholdsConfig:
+    # 将每个已知的关系对作为可选字段
+    # 使用 Optional 意味着可以在 YAML 中省略它们，从而使用默认值
+    drug_drug: float = 0.9
+    drug_ligand: float = 0.9
+    ligand_ligand: float = 0.9
+    protein_protein: float = 0.99
+
+
 # --------------------------------------------------------------------------
 # 主 Dataclass (核心修正与补全)
 # --------------------------------------------------------------------------
@@ -150,13 +160,8 @@ class DataParamsConfig:
     name: str = "baseline"
 
     # 相似度阈值
-    similarity_thresholds: Dict[str, float] = field(
-        default_factory=lambda: {
-            "protein_protein": 0.99,
-            "drug_drug": 0.9,
-            "ligand_ligand": 0.9,
-            "drug_ligand": 0.9,
-        }
+    similarity_thresholds: SimilarityThresholdsConfig = field(
+        default_factory=SimilarityThresholdsConfig
     )
     similarity_top_k: int = 10
 
