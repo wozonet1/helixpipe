@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "HelixPipe" # 给您的项目起个名字
 version = "0.1.0"
-description = "A framework for DTI prediction using heterogeneous GNNs."
+description = "A reproducible, config-driven data engine for building heterogeneous knowledge graphs for drug discovery."
 requires-python = ">=3.9"
 
 [tool.setuptools.packages.find]
