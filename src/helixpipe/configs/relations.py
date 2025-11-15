@@ -1,7 +1,6 @@
 # 文件: src/helixpipe/configs/relations.py (最终扁平化版)
 
 from dataclasses import dataclass, field
-from typing import Dict
 
 
 @dataclass
@@ -19,7 +18,7 @@ class RelationsConfig:
     # - 键 (key): 最终要生成到图文件中的【边类型字符串】。
     # - 值 (value): 布尔值 (true/false)，决定是否启用该类型的边。
     # 这里的键名是下游模型(如PyG HeteroData)将直接消费的名称。
-    flags: Dict[str, bool] = field(
+    flags: dict[str, bool] = field(
         default_factory=lambda: {
             # 默认的DTI/LPI关系
             "interacts_with": True,

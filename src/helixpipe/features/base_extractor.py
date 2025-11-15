@@ -2,7 +2,7 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any
 
 import torch
 from tqdm import tqdm
@@ -46,15 +46,15 @@ class BaseFeatureExtractor(ABC):
     # --- 模板方法 (不可修改的骨架) ---
     def extract(
         self,
-        authoritative_ids: List[AuthID],
-        sequences_or_smiles: List[str],
+        authoritative_ids: list[AuthID],
+        sequences_or_smiles: list[str],
         force_regenerate: bool = False,
-    ) -> Dict[Any, torch.Tensor]:
+    ) -> dict[Any, torch.Tensor]:
         logger.info(
             f"\n--> [Generic Extractor] Processing {len(authoritative_ids)} {self.entity_type}s using model '{self.model_name}'..."
         )
 
-        results_dict: Dict[Any, torch.Tensor] = {}
+        results_dict: dict[Any, torch.Tensor] = {}
         missed_ids = []
         missed_data = []
 
@@ -121,7 +121,7 @@ class BaseFeatureExtractor(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def _prepare_batch_input(self, tokenizer: Any, batch_data: List[str]) -> Any:
+    def _prepare_batch_input(self, tokenizer: Any, batch_data: list[str]) -> Any:
         raise NotImplementedError
 
     @abstractmethod
@@ -131,5 +131,5 @@ class BaseFeatureExtractor(ABC):
     @abstractmethod
     def _postprocess_batch_output(
         self, outputs: Any, inputs: Any
-    ) -> List[torch.Tensor]:
+    ) -> list[torch.Tensor]:
         raise NotImplementedError

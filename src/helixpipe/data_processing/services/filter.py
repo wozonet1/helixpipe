@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 # a. 初始化PAINS过滤器
 #    这是一个比较耗时的操作，放在全局可以显著提速
 params = FilterCatalog.FilterCatalogParams()
-params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_A)
-params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_B)
-params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_C)
+params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_A)  # type: ignore
+params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_B)  # type: ignore
+params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_C)  # type: ignore
 PAINS_CATALOG = FilterCatalog.FilterCatalog(params)
 RDLogger.logger().setLevel(RDLogger.CRITICAL)  # 全局关闭RDKit的冗余日志
 
@@ -59,9 +59,9 @@ def _calculate_descriptors_for_chunk(smiles_series: pd.Series) -> pd.DataFrame:
         if mol:
             try:
                 descriptor_dict["MW"] = Descriptors.MolWt(mol)
-                descriptor_dict["LogP"] = Descriptors.MolLogP(mol)
-                descriptor_dict["HBD"] = Descriptors.NumHDonors(mol)
-                descriptor_dict["HBA"] = Descriptors.NumHAcceptors(mol)
+                descriptor_dict["LogP"] = Descriptors.MolLogP(mol)  # type: ignore
+                descriptor_dict["HBD"] = Descriptors.NumHDonors(mol)  # type: ignore
+                descriptor_dict["HBA"] = Descriptors.NumHAcceptors(mol)  # type: ignore
                 descriptor_dict["QED"] = QED.qed(mol)
                 descriptor_dict["SA_Score"] = sascorer.calculateScore(mol)
                 descriptor_dict["is_pains"] = PAINS_CATALOG.HasMatch(mol)
@@ -126,7 +126,9 @@ def filter_molecules_by_properties(
         descriptor_dfs = parallel(
             delayed(_calculate_descriptors_for_chunk)(chunk) for chunk in smiles_chunks
         )
-    descriptors_df = pd.concat([d for d in descriptor_dfs if not d.empty])
+    descriptors_df = pd.concat(
+        [d for d in descriptor_dfs if d is not None and not d.empty]
+    )
 
     if verbose > 1:
         logger.debug("\n      - [DEBUG] Descriptors calculated. DataFrame sample:")

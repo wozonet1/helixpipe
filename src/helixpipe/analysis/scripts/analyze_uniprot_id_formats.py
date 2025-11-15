@@ -30,7 +30,7 @@ REGEX_PATTERNS = {
 }
 
 
-def analyze_formats():
+def analyze_formats() -> None:
     """
     分析权威白名单中的UniProt ID格式，并评估不同正则表达式的覆盖率。
     """

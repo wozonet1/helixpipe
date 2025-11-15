@@ -3,7 +3,7 @@ import shutil
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
-from typing import Any, Generator, Tuple, cast, overload
+from typing import Any, Callable, Generator, Union, cast, overload
 
 from omegaconf import DictConfig, OmegaConf
 from omegaconf.errors import (
@@ -14,14 +14,20 @@ from omegaconf.errors import (
 import helixlib as hx
 from helixlib import check_paths_exist as generic_check_paths_exist
 from helixlib.errors import ConfigPathError
-from helixpipe.typing import AppConfig, PathFactory, PathLike, TemplateKey
+from helixpipe.typing import (
+    AppConfig,
+    PathFactory,
+    PathLike,
+    StaticPathKey,
+    TemplatePathKey,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def _walk_config(
     cfg: DictConfig, prefix: str = ""
-) -> Generator[Tuple[str, Any], None, None]:
+) -> Generator[tuple[str, Any], None, None]:
     """
     一个辅助函数，用于递归地遍历OmegaConf配置树，并生成所有叶子节点的
     (完整路径, 值) 对。
@@ -31,7 +37,7 @@ def _walk_config(
         prefix (str): 用于构建完整路径的当前前缀。
 
     Yields:
-        Generator[Tuple[str, any], None, None]: 一个生成器，每次产生一个
+        Generator[tuple[str, any], None, None]: 一个生成器，每次产生一个
                                                 (full_key, value) 元组。
     """
     for key, value in cfg.items_ex(resolve=False):
@@ -61,7 +67,9 @@ def setup_dataset_directories(config: AppConfig) -> None:
             # 使用get_path来定位要清理的目录
             # 我们通过一个 specific 模板键来获取其父目录
             dummy_specific_key = "processed.specific.graph_template"
-            dir_to_clean = get_path(config, dummy_specific_key, prefix="dummy").parent
+            dir_to_clean = get_path(
+                config, dummy_specific_key, prefix="dummy", suffix="dummy"
+            )().parent
 
             if dir_to_clean.exists():
                 variant_name = config.data_params.name
@@ -127,19 +135,20 @@ def setup_dataset_directories(config: AppConfig) -> None:
         ) from e
 
 
-StaticKey = str
-
-
 @overload
 def get_path(
-    cfg: DictConfig, short_key: TemplateKey, **kwargs
+    cfg: DictConfig, short_key: TemplatePathKey, **kwargs
 ) -> PathFactory: ...  # 注意：这里是三个点，表示这是一个纯签名的声明，没有实现
 
 
 @overload
 def get_path(
-    cfg: DictConfig, short_key: StaticKey, **kwargs
+    cfg: DictConfig, short_key: StaticPathKey, **kwargs
 ) -> Path: ...  # 这是针对所有其他 str 类型 key 的签名
+@overload
+def get_path(
+    cfg: "DictConfig", short_key: str, **kwargs
+) -> Union[Path, Callable[..., Path]]: ...
 
 
 def get_path(cfg: DictConfig, short_key: str, **kwargs) -> PathLike:

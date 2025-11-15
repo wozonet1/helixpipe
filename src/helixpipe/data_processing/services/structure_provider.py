@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import time
-from typing import Dict, List, Optional
+from typing import Optional
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -28,7 +28,7 @@ class StructureProvider:
     OPTIMAL_UNIPROT_BATCH_SIZE = 100
     OPTIMAL_PUBCHEM_BATCH_SIZE = 400
 
-    def __init__(self, config: AppConfig, proxies: Optional[Dict[str, str]] = None):
+    def __init__(self, config: AppConfig, proxies: Optional[dict[str, str]] = None):
         self.config = config
         self.proxies = proxies
         self._session = self._create_session()
@@ -48,8 +48,8 @@ class StructureProvider:
     # --- 公共接口 ---
 
     def get_sequences(
-        self, uniprot_ids: List[PID], force_restart: bool = False
-    ) -> Dict[PID, ProteinSequence]:
+        self, uniprot_ids: list[PID], force_restart: bool = False
+    ) -> dict[PID, ProteinSequence]:
         """为UniProt ID列表获取序列，使用增量缓存。"""
         return hx.run_cached_operation(
             cache_path=get_path(self.config, "cache.ids.enriched_protein_sequences"),
@@ -61,8 +61,8 @@ class StructureProvider:
         )
 
     def get_smiles(
-        self, cids: List[CID], force_restart: bool = False
-    ) -> Dict[CID, SMILES]:
+        self, cids: list[CID], force_restart: bool = False
+    ) -> dict[CID, SMILES]:
         """为PubChem CID列表获取SMILES，使用增量缓存。"""
         return hx.run_cached_operation(
             cache_path=get_path(self.config, "cache.ids.enriched_molecule_smiles"),
@@ -77,8 +77,8 @@ class StructureProvider:
 
     # --- 【核心修改】为原有的 _fetch_sequences_from_uniprot 方法增加降级逻辑 ---
     def _fetch_sequences_from_uniprot(
-        self, ids_to_fetch: List[PID]
-    ) -> Dict[PID, ProteinSequence]:
+        self, ids_to_fetch: list[PID]
+    ) -> dict[PID, ProteinSequence]:
         """
         【V4 - 带GET降级版】调用UniProt API获取蛋白质序列。
         主要使用高效的GET stream请求，但在失败时降级为逐一查询。
@@ -93,7 +93,7 @@ class StructureProvider:
         logger.info(
             f"--> [UniProt Fetcher] Fetching sequences for {len(valid_ids)} valid UniProt IDs..."
         )
-        sequences_map: Dict[PID, ProteinSequence] = {}
+        sequences_map: dict[PID, ProteinSequence] = {}
 
         # 2. 按批次大小进行分块 (逻辑保持不变)
         for i in tqdm(
@@ -195,8 +195,8 @@ class StructureProvider:
 
     # --- 辅助方法: 逐一查询 (这个函数保持不变，作为降级的实现) ---
     def _fetch_batch_one_by_one(
-        self, id_chunk: List[PID]
-    ) -> Dict[PID, ProteinSequence]:
+        self, id_chunk: list[PID]
+    ) -> dict[PID, ProteinSequence]:
         """作为最终的降级手段，逐个请求ID。"""
         results = {}
         for pid in tqdm(id_chunk, desc="     - Fallback (one-by-one)", leave=False):
@@ -223,7 +223,7 @@ class StructureProvider:
             time.sleep(0.1)
         return results
 
-    def _fetch_smiles_from_pubchem(self, ids_to_fetch: List[CID]) -> Dict[CID, SMILES]:
+    def _fetch_smiles_from_pubchem(self, ids_to_fetch: list[CID]) -> dict[CID, SMILES]:
         """【私有版】调用PubChem API，获取SMILES。"""
         if not ids_to_fetch:
             return {}
@@ -232,7 +232,7 @@ class StructureProvider:
             f"--> [PubChem Fetcher] Querying SMILES for {len(ids_to_fetch)} CIDs..."
         )
 
-        cid_to_smiles_map: Dict[int, str] = {}
+        cid_to_smiles_map: dict[int, str] = {}
 
         for i in tqdm(
             range(0, len(ids_to_fetch), self.OPTIMAL_PUBCHEM_BATCH_SIZE),

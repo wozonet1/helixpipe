@@ -4,9 +4,9 @@ from rdkit.Chem import FilterCatalog
 
 # 创建与我们代码中完全相同的PAINS过滤器
 params = FilterCatalog.FilterCatalogParams()
-params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_A)
-params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_B)
-params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_C)
+params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_A)  # type: ignore
+params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_B)  # type: ignore
+params.AddCatalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.PAINS_C)  # type: ignore
 pains_catalog = FilterCatalog.FilterCatalog(params)
 
 # 我们案件中的“嫌疑人”

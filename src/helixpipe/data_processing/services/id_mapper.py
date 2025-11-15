@@ -1,6 +1,6 @@
 import logging
 from collections import defaultdict
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Optional
 
 import pandas as pd
 
@@ -24,7 +24,7 @@ class IDMapper:
     并提供丰富的、由配置驱动的查询API。
     """
 
-    def __init__(self, processor_outputs: Dict[str, pd.DataFrame], config: AppConfig):
+    def __init__(self, processor_outputs: dict[str, pd.DataFrame], config: AppConfig):
         """
         构造函数从 Processor 的输出字典中，聚合所有实体的元信息，
         并预处理实体类型的元数据。
@@ -59,7 +59,7 @@ class IDMapper:
             )
 
         # --- 2. 聚合实体元信息 ---
-        self._collected_entities: Dict[AuthID, Dict[str, Set]] = defaultdict(
+        self._collected_entities: dict[AuthID, dict[str, set]] = defaultdict(
             lambda: {"types": set(), "sources": set()}
         )
         for source_dataset, df in processor_outputs.items():
@@ -83,13 +83,13 @@ class IDMapper:
 
         # --- 3. 初始化内部状态变量 ---
         self.is_finalized = False
-        self._final_entity_map: Dict[AuthID, Dict[str, Any]] = {}
-        self.entities_by_type: Dict[str, List[AuthID]] = defaultdict(list)
-        self._logic_id_to_type_map: Dict[LogicID, str] = {}
-        self._logic_id_to_auth_id_map: Dict[LogicID, AuthID] = {}
-        self._auth_id_to_logic_id_map: Dict[AuthID, LogicID] = {}
+        self._final_entity_map: dict[AuthID, dict[str, Any]] = {}
+        self.entities_by_type: dict[str, list[AuthID]] = defaultdict(list)
+        self._logic_id_to_type_map: dict[LogicID, str] = {}
+        self._logic_id_to_auth_id_map: dict[LogicID, AuthID] = {}
+        self._auth_id_to_logic_id_map: dict[AuthID, LogicID] = {}
 
-    def finalize_with_valid_entities(self, valid_entity_ids: Set[AuthID]):
+    def finalize_with_valid_entities(self, valid_entity_ids: set[AuthID]):
         """
         接收一个纯净的实体ID集合，并只为这些实体执行类型合并和最终的ID分配。
         """
@@ -267,27 +267,27 @@ class IDMapper:
         logger.info(f"--> Core metadata file 'nodes.csv' saved to: {output_path}")
 
     # --- 公共 Getter 和查询 API ---
-    def get_meta_by_auth_id(self, auth_id: AuthID) -> Optional[Dict[str, Any]]:
+    def get_meta_by_auth_id(self, auth_id: AuthID) -> Optional[dict[str, Any]]:
         """【新增】根据【权威ID】，获取一个实体最终的元信息。"""
         if not self.is_finalized:
             raise RuntimeError("IDMapper must be finalized first.")
 
         return self._final_entity_map.get(auth_id)
 
-    def get_meta_by_logic_id(self, logic_id: LogicID) -> Optional[Dict[str, Any]]:
+    def get_meta_by_logic_id(self, logic_id: LogicID) -> Optional[dict[str, Any]]:
         """根据逻辑ID，获取一个实体最终的元信息（最终类型、来源等）。"""
         if not self.is_finalized:
             raise RuntimeError("IDMapper must be finalized first.")
         auth_id = self._logic_id_to_auth_id_map.get(logic_id)
         return self._final_entity_map.get(auth_id) if auth_id else None
 
-    def get_all_final_ids(self) -> List[AuthID]:
+    def get_all_final_ids(self) -> list[AuthID]:
         """返回所有【最终纯净的】权威实体ID。"""
         if not self.is_finalized:
             raise RuntimeError("IDMapper must be finalized first.")
         return list(self._final_entity_map.keys())
 
-    def get_ids_by_filter(self, filter_func: Callable[[Dict], bool]) -> List[LogicID]:
+    def get_ids_by_filter(self, filter_func: Callable[[dict], bool]) -> list[LogicID]:
         """一个通用的查询接口，返回所有元信息满足过滤条件的【逻辑ID】。"""
         if not self.is_finalized:
             raise RuntimeError("IDMapper must be finalized before filtering.")
@@ -298,7 +298,7 @@ class IDMapper:
             if filter_func(meta)
         ]
 
-    def get_ids_by_selector(self, selector: EntitySelectorConfig) -> List[LogicID]:
+    def get_ids_by_selector(self, selector: EntitySelectorConfig) -> list[LogicID]:
         """
         【V2 - Executor委托版】
         一个强大的查询接口，它将解析Selector的任务完全委托给SelectorExecutor。
@@ -370,34 +370,34 @@ class IDMapper:
             )
         return len(self.entities_by_type.get(entity_type, []))
 
-    def get_ordered_ids(self, entity_type: str) -> List[AuthID]:
+    def get_ordered_ids(self, entity_type: str) -> list[AuthID]:
         if not self.is_finalized:
             raise RuntimeError("IDMapper must be finalized first.")
         return self.entities_by_type.get(entity_type, [])
 
     @property
-    def entity_types(self) -> List[str]:
+    def entity_types(self) -> list[str]:
         """获取所有最终存在的、排序后的实体类型列表。"""
         if not self.is_finalized:
             raise RuntimeError("IDMapper must be finalized first.")
         return sorted(self.entities_by_type.keys())
 
     @property
-    def logic_id_to_auth_id_map(self) -> Dict[LogicID, AuthID]:
+    def logic_id_to_auth_id_map(self) -> dict[LogicID, AuthID]:
         """获取 逻辑ID -> 权威ID 的映射字典。"""
         if not self.is_finalized:
             raise RuntimeError("IDMapper must be finalized first.")
         return self._logic_id_to_auth_id_map
 
     @property
-    def logic_id_to_type_map(self) -> Dict[LogicID, str]:
+    def logic_id_to_type_map(self) -> dict[LogicID, str]:
         """获取 逻辑ID -> 实体类型 的映射字典。"""
         if not self.is_finalized:
             raise RuntimeError("IDMapper must be finalized first.")
         return self._logic_id_to_type_map
 
     @property
-    def auth_id_to_logic_id_map(self) -> Dict[AuthID, LogicID]:
+    def auth_id_to_logic_id_map(self) -> dict[AuthID, LogicID]:
         """获取 权威ID -> 逻辑ID 的映射字典。"""
         if not self.is_finalized:
             raise RuntimeError("IDMapper must be finalized first.")

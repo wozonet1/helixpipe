@@ -2,7 +2,7 @@
 
 import pickle as pkl
 from pathlib import Path
-from typing import Callable, Dict, List, Set
+from typing import Callable
 
 from .path_manager import ensure_path_exists
 
@@ -10,12 +10,12 @@ from .path_manager import ensure_path_exists
 def run_cached_operation(
     *,
     cache_path: Path,
-    calculation_func: Callable[[List], Dict],
-    ids_to_process: List,
+    calculation_func: Callable[[list], dict],
+    ids_to_process: list,
     force_restart: bool = False,
     operation_name: str = "cached operation",
     verbose: int = 1,
-) -> Dict:
+) -> dict:
     """
     一个通用的、支持【增量更新】的模板函数。
     它只为缓存中不存在的新ID执行计算，并将结果合并回缓存。
@@ -23,19 +23,19 @@ def run_cached_operation(
     Args:
         cache_path (Path): 缓存文件的绝对路径。
         calculation_func (Callable): 接收一个ID列表作为输入的计算函数。
-        ids_to_process (List): 本次操作需要处理的所有ID的完整列表。
+        ids_to_process (list): 本次操作需要处理的所有ID的完整列表。
         force_restart (bool): 是否强制重新计算所有ID。
         operation_name (str): 用于日志打印的操作名称。
         verbose (int): 日志详细级别。
 
     Returns:
-        Dict: 一个字典，包含所有 `ids_to_process` 对应的结果。
+        dict: 一个字典，包含所有 `ids_to_process` 对应的结果。
     """
     if not ids_to_process:
         return {}
 
     # 1. 加载现有缓存
-    cached_data: Dict = {}
+    cached_data: dict = {}
     if cache_path.exists() and not force_restart:
         if verbose > 0:
             print(
@@ -54,8 +54,8 @@ def run_cached_operation(
             print(f"\n--> [Cache Miss/Restart] for '{operation_name}'.")
 
     # 2. 计算需要增量获取的ID
-    requested_ids_set: Set = set(ids_to_process)
-    cached_ids_set: Set = set(cached_data.keys())
+    requested_ids_set: set = set(ids_to_process)
+    cached_ids_set: set = set(cached_data.keys())
 
     ids_to_fetch = list(requested_ids_set - cached_ids_set)
 

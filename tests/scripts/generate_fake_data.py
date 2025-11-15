@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 
-def create_fake_brenda_json():
+def create_fake_brenda_json() -> None:
     """
     为 BrendaProcessor 的单元测试，生成一个最小化的、覆盖所有关键场景的
     伪造 BRENDA JSON 文件。

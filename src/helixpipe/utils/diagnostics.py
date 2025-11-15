@@ -3,7 +3,7 @@
 import logging
 import time
 from collections import Counter
-from typing import List, NamedTuple, no_type_check
+from typing import Any, NamedTuple, cast, no_type_check
 
 import pandas as pd
 import requests
@@ -129,6 +129,19 @@ class ValidationResult(NamedTuple):
     message: str
 
 
+def cast_result(result: Any) -> list[ValidationResult]:
+    if result is None or not isinstance(result, list):
+        raise TypeError(
+            f"Expected a list of results from parallel execution, but got {type(result).__name__}"
+        )
+    results_for_report: list[ValidationResult] = cast(list[ValidationResult], result)
+    if result and not all(isinstance(res, ValidationResult) for res in result):
+        logger.warning(
+            "Some items in parallel results are not of type ValidationResult."
+        )
+    return results_for_report
+
+
 def run_online_validation(
     nodes_df: pd.DataFrame,
     n_samples: int = 100,
@@ -170,9 +183,10 @@ def run_online_validation(
                     desc="PubChem Checks",
                 )
             )
+
             _print_validation_report(
                 "PubChem CID vs SMILES",
-                pubchem_results,
+                cast_result(pubchem_results),
                 mols_to_validate,
                 "authoritative_id",
             )
@@ -192,7 +206,7 @@ def run_online_validation(
             )
             _print_validation_report(
                 "UniProt ID vs Sequence",
-                uniprot_results,
+                cast_result(uniprot_results),
                 prots_to_validate,
                 "authoritative_id",
             )
@@ -258,7 +272,7 @@ def _validate_uniprot_entry(
 
 
 def _print_validation_report(
-    title: str, results: List[ValidationResult], sample_df: pd.DataFrame, id_col: str
+    title: str, results: list[ValidationResult], sample_df: pd.DataFrame, id_col: str
 ) -> None:
     """打印格式化的验证报告。"""
     report_header = f" {title} Validation Report "

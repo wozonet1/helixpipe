@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Dict, Set
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
@@ -99,7 +99,7 @@ class SelectorExecutor:
         return entity_id_column.map(match_map).fillna(False)
 
     def _entity_meta_matches_selector(
-        self, meta: Dict, selector: EntitySelectorConfig
+        self, meta: dict, selector: EntitySelectorConfig
     ) -> bool:
         # 这个辅助方法已经是正确的“严格模式”，保持不变
         if selector.entity_types and meta.get("type") not in selector.entity_types:
@@ -123,7 +123,7 @@ class SelectorExecutor:
             return False
         return True
 
-    def select_entities(self, selector: EntitySelectorConfig | None) -> Set[AuthID]:
+    def select_entities(self, selector: EntitySelectorConfig | None) -> set[AuthID]:
         """
         根据实体选择器，从 IDMapper 中筛选出匹配的【权威ID】集合。
         """

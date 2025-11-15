@@ -1,5 +1,6 @@
 # tests/data_processing/services/test_id_mapper.py
 
+import logging
 import unittest
 
 import pandas as pd
@@ -7,6 +8,8 @@ from omegaconf import OmegaConf
 
 # 导入我们需要测试的类和相关的dataclass
 from helixpipe.data_processing.services.id_mapper import IDMapper
+
+logger = logging.getLogger(__name__)
 
 # --- 模拟 (Mock) 配置 ---
 MOCK_CONFIG = OmegaConf.create(
@@ -90,6 +93,9 @@ class TestIDMapperV5(unittest.TestCase):
         mapper = IDMapper(processor_outputs, MOCK_CONFIG)
         mapper.finalize_with_valid_entities({101, 102, "P01", "P02"})
         meta_101 = mapper.get_meta_by_auth_id(101)
+        if meta_101 is None:
+            logger.error("meta_101 is None")
+            raise RuntimeError
         self.assertEqual(meta_101["type"], "drug")
 
         self.assertEqual(mapper.get_num_entities("drug"), 1)
@@ -125,6 +131,8 @@ class TestIDMapperV5(unittest.TestCase):
 
         # a. get_entity_meta
         meta_p01 = mapper.get_meta_by_logic_id(mapper.auth_id_to_logic_id_map["P01"])
+        assert meta_p01 is not None
+
         self.assertEqual(meta_p01["type"], "protein")
         self.assertSetEqual(meta_p01["sources"], {"bindingdb", "stringdb"})
 

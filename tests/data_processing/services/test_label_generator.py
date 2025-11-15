@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
-from omegaconf import OmegaConf
+from helper import create_test_config
 
 from helixpipe.configs import register_all_schemas
 from helixpipe.data_processing.services.label_generator import SupervisionFileManager
@@ -55,7 +55,7 @@ class MockSelectorExecutor:
 
 
 register_all_schemas()
-MOCK_CONFIG: AppConfig = OmegaConf.create(
+MOCK_CONFIG: AppConfig = create_test_config(
     {
         "runtime": {"verbose": 0, "seed": 42},
         "training": {

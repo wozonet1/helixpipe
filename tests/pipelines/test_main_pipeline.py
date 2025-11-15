@@ -3,6 +3,7 @@
 import shutil
 import unittest
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import hydra
@@ -44,7 +45,7 @@ class TestMainPipeline(unittest.TestCase):
 
         cfg.global_paths.data_root = str(self.test_dir / "data")
         cfg.global_paths.cache_root = str(self.test_dir / "data" / "cache")
-        return cfg
+        return cast(AppConfig, cfg)
 
     # 使用 @patch 装饰器来模拟所有外部和耗时的调用
     @patch("helixpipe.pipelines.main_pipeline.StructureProvider")
@@ -73,21 +74,6 @@ class TestMainPipeline(unittest.TestCase):
             201: "C1=CC=C(C=C1)C(=O)O",
             202: "CN1C=NC2=C1C(=O)N(C(=O)N2C)C",
         }
-
-        # b. 模拟 validate_and_filter_entities
-        def smart_validation_mock(enriched_entities_df, config):
-            print(
-                "--- [SMART MOCK] Simulating entity validation by checking for non-null structures. ---"
-            )
-            validated_df = enriched_entities_df[
-                enriched_entities_df["structure"].notna()
-            ].copy()
-            print(
-                f"--- [SMART MOCK] {len(validated_df)} / {len(enriched_entities_df)} entities passed mock validation."
-            )
-            return validated_df
-
-        mock_validate_entities.side_effect = smart_validation_mock
 
         # c. 模拟 extract_features
         def extract_features_side_effect(

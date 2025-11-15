@@ -1,5 +1,5 @@
 import logging
-from typing import TYPE_CHECKING, Set, Union
+from typing import TYPE_CHECKING, Union
 
 import pandas as pd
 
@@ -9,13 +9,13 @@ from helixpipe.utils import get_path
 if TYPE_CHECKING:
     from helixpipe.typing import CID, PID, AppConfig
 
-_local_human_uniprot_whitelist: Union[Set["PID"], None] = None
+_local_human_uniprot_whitelist: Union[set["PID"], None] = None
 
 
 logger = logging.getLogger(__name__)
 
 
-def _load_local_human_whitelist(config: "AppConfig") -> Set["PID"]:
+def _load_local_human_whitelist(config: "AppConfig") -> set["PID"]:
     """
     【核心新函数】从本地下载的蛋白质组TSV文件中加载并筛选ID。
     结果会被缓存在内存中。
@@ -69,8 +69,8 @@ def _load_local_human_whitelist(config: "AppConfig") -> Set["PID"]:
 
 
 def get_human_uniprot_whitelist(
-    ids_to_check: Set["PID"], config: "AppConfig"
-) -> Set["PID"]:
+    ids_to_check: set["PID"], config: "AppConfig"
+) -> set["PID"]:
     """
     【V5 纯离线版】通过与本地权威的人类蛋白质组ID列表进行比对来验证ID。
     """
@@ -90,7 +90,7 @@ def get_human_uniprot_whitelist(
     return valid_ids
 
 
-def get_valid_pubchem_cids(cids_to_check: Set["CID"], config: AppConfig) -> Set["CID"]:
+def get_valid_pubchem_cids(cids_to_check: set["CID"], config: AppConfig) -> set["CID"]:
     """
     【公共接口】获取一个经过本地验证的PubChem CID白名单。
     目前只进行格式和类型检查。

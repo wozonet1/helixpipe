@@ -109,7 +109,7 @@ def download_bindingdb_data(config: DictConfig):
 # --- 主程序入口 ---
 
 
-def main():
+def main() -> None:
     """主函数，用于从命令行运行下载器。"""
     parser = argparse.ArgumentParser(description="数据集下载器")
     parser.add_argument(

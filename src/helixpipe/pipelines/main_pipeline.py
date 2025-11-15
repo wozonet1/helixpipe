@@ -1,5 +1,5 @@
 import logging
-from typing import List, Sequence, Tuple, cast
+from typing import Sequence, cast
 
 import numpy as np
 import pandas as pd
@@ -180,7 +180,7 @@ def _stage6_generate_features(
     id_mapper: IDMapper,
     entities_with_structures: pd.DataFrame,
     restart_flag: bool,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     【V2 - 通用亚型版】为所有纯净实体生成或加载特征嵌入。
 
@@ -215,8 +215,8 @@ def _stage6_generate_features(
     # --- 1. “分类打包”工作流 ---
 
     # [修复] 直接使用这些列表，它们的顺序是正确的，无需再排序
-    ordered_molecule_ids: List[CID] = []
-    ordered_protein_ids: List[PID] = []
+    ordered_molecule_ids: list[CID] = []
+    ordered_protein_ids: list[PID] = []
 
     entity_types = id_mapper.entity_types
     for entity_type in entity_types:
@@ -265,7 +265,7 @@ def _stage6_generate_features(
     # --- 3. 按顺序组装最终的特征矩阵 (您的优秀重构) ---
     def extract_ordered_embeddings(
         ordered_ids: Sequence[AuthID], features_dict: FeatureDict, meta: str
-    ) -> List[torch.Tensor]:
+    ) -> list[torch.Tensor]:
         ordered_embeddings = []
         for entity_id in ordered_ids:
             feature = features_dict.get(entity_id)

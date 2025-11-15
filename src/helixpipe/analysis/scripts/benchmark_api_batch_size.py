@@ -186,7 +186,7 @@ def load_pubchem_cid_pool_from_assets(sample_size: int = 50000) -> list:
 # ==============================================================================
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Benchmark API batch sizes using real IDs from data/assets."
     )

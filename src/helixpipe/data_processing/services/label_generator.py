@@ -1,23 +1,22 @@
 import logging
-from typing import TYPE_CHECKING, List, Set, Tuple
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 import helixlib as hx
-from helixpipe.typing import AppConfig
 from helixpipe.utils import get_path
 
 if TYPE_CHECKING:
-    from helixpipe.typing import AuthID, LogicID
+    from helixpipe.typing import AppConfig, AuthID, LogicID
 
     from .id_mapper import IDMapper
     from .interaction_store import InteractionStore
     from .selector_executor import SelectorExecutor
 logger = logging.getLogger(__name__)
 
-LogicInteractionPair = Tuple["LogicID", "LogicID"]
-AuthInteractionPair = Tuple["AuthID", "AuthID"]
+LogicInteractionPair = tuple["LogicID", "LogicID"]
+AuthInteractionPair = tuple["AuthID", "AuthID"]
 
 
 class SupervisionFileManager:
@@ -33,7 +32,7 @@ class SupervisionFileManager:
         config: AppConfig,
         id_mapper: "IDMapper",
         executor: "SelectorExecutor",
-        global_positive_set: Set[LogicInteractionPair],
+        global_positive_set: set[LogicInteractionPair],
     ):
         """
         在构造时，接收所有需要的服务和全局状态。
@@ -181,7 +180,7 @@ class SupervisionFileManager:
 
     def _perform_negative_sampling(
         self, num_to_sample: int
-    ) -> List[AuthInteractionPair]:
+    ) -> list[AuthInteractionPair]:
         """
         (私有) 执行配置驱动的负采样，返回权威ID对列表。
         """

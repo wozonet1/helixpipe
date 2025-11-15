@@ -12,7 +12,7 @@ PROJECT_ROOT = hx.get_project_root()
 BRENDA_JSON_PATH = PROJECT_ROOT / "data/brenda/raw/brenda_2025_1.json"
 
 
-def analyze_brenda():
+def analyze_brenda() -> None:
     """
     系统性地分析BRENDA JSON文件的结构，重点关注人类蛋白质和UniProt ID的可用性。
     """

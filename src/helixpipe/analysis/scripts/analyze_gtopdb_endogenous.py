@@ -17,7 +17,7 @@ INTERACTIONS_FILE = GTOPDB_RAW_DIR / "interactions.csv"
 TARGET_COLUMN = "Endogenous"
 
 
-def analyze_endogenous_column():
+def analyze_endogenous_column() -> None:
     """
     一个独立的分析脚本，专门用于深度分析 GtoPdb 'interactions.csv' 文件中的
     'Endogenous' 列的内容、格式和分布。

@@ -1,5 +1,6 @@
 import logging
 import unittest
+from typing import cast
 
 import pandas as pd
 from omegaconf import OmegaConf
@@ -55,27 +56,30 @@ class MockIDMapper:
 
 # 注册并创建基础配置
 register_all_schemas()
-MOCK_BASE_CONFIG: AppConfig = OmegaConf.create(
-    {
-        "runtime": {"verbose": 0},
-        "knowledge_graph": {
-            "entity_meta": {"drug": {"priority": 0}, "protein": {"priority": 10}}
-        },
-        "data_structure": {
-            "primary_dataset": "db1",
-            "schema": {
-                "internal": {
-                    "canonical_interaction": {
-                        "source_id": "s_id",
-                        "source_type": "s_type",
-                        "target_id": "t_id",
-                        "target_type": "t_type",
-                        "relation_type": "rel_type",
-                    }
-                }
+MOCK_BASE_CONFIG: AppConfig = cast(
+    AppConfig,
+    OmegaConf.create(
+        {
+            "runtime": {"verbose": 0},
+            "knowledge_graph": {
+                "entity_meta": {"drug": {"priority": 0}, "protein": {"priority": 10}}
             },
-        },
-    }
+            "data_structure": {
+                "primary_dataset": "db1",
+                "schema": {
+                    "internal": {
+                        "canonical_interaction": {
+                            "source_id": "s_id",
+                            "source_type": "s_type",
+                            "target_id": "t_id",
+                            "target_type": "t_type",
+                            "relation_type": "rel_type",
+                        }
+                    }
+                },
+            },
+        }
+    ),
 )
 
 
@@ -116,7 +120,7 @@ class TestDataSplitter(unittest.TestCase):
         }
         self.store = InteractionStore(processor_outputs, MOCK_BASE_CONFIG)
         self.mock_id_mapper = MockIDMapper()
-        self.executor = SelectorExecutor(self.mock_id_mapper)
+        self.executor = SelectorExecutor(self.mock_id_mapper)  # pyright: ignore[reportArgumentType]
 
     def test_hot_start_split(self):
         """测试点1: 热启动（随机划分交互）"""
@@ -148,7 +152,7 @@ class TestDataSplitter(unittest.TestCase):
             "Should identify 0 interactions as background.",
         )
 
-        fold, train_graph, train_labels, test, cold_ids = next(iter(splitter))
+        fold, (train_graph, train_labels, test, cold_ids) = next(iter(splitter))
 
         # 热启动，test_fraction=0.5，2个可评估DTI，1个进训练，1个进测试
         self.assertEqual(
@@ -189,7 +193,7 @@ class TestDataSplitter(unittest.TestCase):
             test_config, self.store, self.mock_id_mapper, self.executor, seed=42
         )
 
-        fold, train_graph, train_labels, test, cold_ids = next(iter(splitter))
+        fold, (train_graph, train_labels, test, cold_ids) = next(iter(splitter))
 
         # 可评估的DTI (d1-p1, d2-p1) 不涉及冷启动实体，全部进入训练标签
         self.assertEqual(len(train_labels), 2)
@@ -222,7 +226,7 @@ class TestDataSplitter(unittest.TestCase):
         splitter = DataSplitter(
             test_config, self.store, self.mock_id_mapper, self.executor, seed=42
         )
-        fold, train_graph, train_labels, test, cold_ids = next(iter(splitter))
+        fold, (train_graph, train_labels, test, cold_ids) = next(iter(splitter))
 
         # train_labels 和 test 结果与 strict 模式相同
         self.assertEqual(len(train_labels), 2)

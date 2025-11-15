@@ -1,6 +1,6 @@
 # src/helixpipe/data_processing/datasets/string_processor.py
 import logging
-from typing import Dict, cast
+from typing import cast, dict
 
 import pandas as pd
 
@@ -30,9 +30,9 @@ class StringProcessor(BaseProcessor):
             self.config.data_structure.schema.external["string"]
         )
         # 在初始化时，就加载并准备好作为内部状态的ID映射字典
-        self._id_map: Dict[str, str] = self._build_id_map()
+        self._id_map: dict[str, str] = self._build_id_map()
 
-    def _build_id_map(self) -> Dict[str, str]:
+    def _build_id_map(self) -> dict[str, str]:
         """一个私有辅助方法，用于构建并返回 STRING ID -> UniProt ID 的映射字典。"""
         aliases_path = get_path(self.config, "raw.protein_aliases")
         if not aliases_path.exists():

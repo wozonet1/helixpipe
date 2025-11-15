@@ -4,7 +4,7 @@ from typing import Iterable
 import hydra
 
 
-def ensure_path_exists(filepath: Path):
+def ensure_path_exists(filepath: Path) -> None:
     """
     Ensures that the parent directory of a given file path exists.
     If the directory does not exist, it is created.

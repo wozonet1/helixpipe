@@ -3,7 +3,8 @@
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from typing import DefaultDict, List, Literal, Set, Tuple, Union, overload
+from dataclasses import asdict
+from typing import DefaultDict, Literal, Union, overload
 
 import faiss
 import numpy as np
@@ -15,7 +16,7 @@ from helixpipe.typing import AppConfig, LogicID, LogicInteractionTriple
 from .graph_context import GraphBuildContext
 from .relation_utils import get_similarity_relation_type
 
-SimilarityResult = Tuple[int, int, float, str]
+SimilarityResult = tuple[int, int, float, str]
 logger = logging.getLogger(__name__)
 # ==============================================================================
 # 1. Builder 抽象基类 (接口) - 保持不变
@@ -26,7 +27,7 @@ class GraphBuilder(ABC):
     """【Builder接口】定义了构建一个异构图所需的所有步骤的抽象方法。"""
 
     @abstractmethod
-    def add_interaction_edges(self, train_pairs: List[LogicInteractionTriple]):
+    def add_interaction_edges(self, train_pairs: list[LogicInteractionTriple]):
         raise NotImplementedError
 
     @abstractmethod
@@ -68,7 +69,7 @@ class HeteroGraphBuilder(GraphBuilder):
         context: GraphBuildContext,
         molecule_embeddings: torch.Tensor,
         protein_embeddings: torch.Tensor,
-        cold_start_entity_ids_local: Union[Set[LogicID], None] = None,
+        cold_start_entity_ids_local: Union[set[LogicID], None] = None,
     ):
         """
         初始化具体的生成器。
@@ -84,7 +85,7 @@ class HeteroGraphBuilder(GraphBuilder):
         self.molecule_embeddings = molecule_embeddings
         self.protein_embeddings = protein_embeddings
 
-        self._edges: List[List] = []
+        self._edges: list[list] = []
         self._graph_schema = self.config.data_structure.schema.internal.graph_output
         self._cold_start_entity_ids = cold_start_entity_ids_local
 
@@ -92,7 +93,7 @@ class HeteroGraphBuilder(GraphBuilder):
             "--- [HeteroGraphBuilder] Initialized for on-the-fly similarity computation. ---"
         )
 
-    def add_interaction_edges(self, train_pairs: List[LogicInteractionTriple]):
+    def add_interaction_edges(self, train_pairs: list[LogicInteractionTriple]):
         """【实现】根据 final_edge_type 和 relations.flags 添加交互边。"""
         flags = self.config.relations.flags
         counts: DefaultDict[str, int] = defaultdict(int)
@@ -133,7 +134,7 @@ class HeteroGraphBuilder(GraphBuilder):
         embeddings: torch.Tensor,
         k: int,
         analysis_mode: Literal[True],
-    ) -> List[SimilarityResult]: ...
+    ) -> list[SimilarityResult]: ...
 
     @overload
     def _add_similarity_edges_ann(
@@ -151,7 +152,7 @@ class HeteroGraphBuilder(GraphBuilder):
         embeddings: torch.Tensor,
         k: int,
         analysis_mode: bool = False,  # [NEW] 新增 analysis_mode 参数
-    ) -> Union[List[SimilarityResult], None]:
+    ) -> Union[list[SimilarityResult], None]:
         # TODO:添加类型别名
         """
         [V3] 使用 Faiss (ANN) 计算 Top-K 相似邻居。
@@ -163,6 +164,7 @@ class HeteroGraphBuilder(GraphBuilder):
             logger.info(
                 f"\n    -> Calculating '{entity_type}' similarities using ANN (Faiss) for Top-{k} neighbors..."
             )
+        candidate_pairs_for_analysis: Union[list, None] = None
         num_embeddings = embeddings.shape[0]
         if num_embeddings <= k:
             return None if not analysis_mode else []
@@ -170,8 +172,8 @@ class HeteroGraphBuilder(GraphBuilder):
         dim = embeddings_np.shape[1]
         index = faiss.IndexFlatL2(dim)
         faiss.normalize_L2(embeddings_np)
-        index.add(embeddings_np)
-        distances, indices = index.search(embeddings_np, k + 1)
+        index.add(n=num_embeddings, x=embeddings_np)
+        distances, indices = index.search(embeddings_np, k + 1)  # type: ignore
         if distances is None or indices is None:
             return [] if analysis_mode else None
         id_offset = (
@@ -283,7 +285,9 @@ class HeteroGraphBuilder(GraphBuilder):
         )
 
         # a. 识别出所有背景知识边类型
-        interaction_rel_types = set(self.config.knowledge_graph.relation_types.values())
+        interaction_rel_types = set(
+            asdict(self.config.knowledge_graph.relation_types).values()
+        )
 
         # b. 遍历当前的 _edges 列表，只保留那些应该留下的
         edges_to_keep = []

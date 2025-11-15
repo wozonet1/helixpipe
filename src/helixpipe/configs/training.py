@@ -1,7 +1,7 @@
 # 文件: src/configs/training.py
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Optional
 
 from .selectors import EntitySelectorConfig, InteractionSelectorConfig
 
@@ -28,7 +28,7 @@ class ColdstartConfig:
     strictness: str = "strict"
     # 'allowed_leakage_types' 是一个白名单，只在 strictness='strict' 时生效
     # 默认情况下，严格模式不允许任何背景边泄露
-    allowed_leakage_types: List[str] = field(default_factory=list)
+    allowed_leakage_types: list[str] = field(default_factory=list)
 
 
 @dataclass

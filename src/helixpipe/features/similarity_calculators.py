@@ -34,7 +34,7 @@ def calculate_drug_fingerprint_similarity(drug_list: list[SMILES]):
                 similarity_matrix[i, j] = 1.0
             else:
                 # 计算Tanimoto相似性
-                similarity = AllChem.DataStructs.TanimotoSimilarity(
+                similarity = AllChem.DataStructs.TanimotoSimilarity(  # type: ignore
                     fingerprints[i], fingerprints[j]
                 )
                 # 因为矩阵是对称的，所以同时填充 (i, j) 和 (j, i)
@@ -84,7 +84,7 @@ def calculate_and_save_similarity_chunks(
 #         return 0.0
 
 
-# def get_custom_blosum62_with_U():
+# def get_custom_blosum62_with_U()->None:
 #     """
 #     加载标准的BLOSUM62矩阵,并增加对'U'(硒半胱氨酸)的支持。
 #     'U'的打分规则将完全模仿'C'(半胱氨酸)。

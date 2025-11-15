@@ -99,7 +99,7 @@ def path_resolver(key: str, *, _root_: DictConfig) -> str:
 # 这是一个一次性的操作，应该在您的应用主入口执行
 
 
-def register_hydra_resolvers():
+def register_hydra_resolvers() -> None:
     """
     注册项目中所有自定义的Hydra解析器。
     """
@@ -150,6 +150,13 @@ def load_auxiliary_dataset(
 
         # 3. 使用这个临时配置和 get_path 来获取路径
         aux_dti_path = get_path(aux_cfg, "raw.authoritative_dti")
+    except Exception as e:
+        # 捕获其他可能的错误，如配置缺失、compose失败等
+        logger.error(
+            f"    - ❌ ERROR: Failed to load auxiliary dataset '{dataset_name}'. Skipping. Reason: {e}"
+        )
+        return None
+    try:
         if not aux_dti_path.exists():
             logger.error(
                 f"    - ❌ ERROR: Authoritative file for '{dataset_name}' not found at '{aux_dti_path}'. Skipping."
@@ -165,11 +172,5 @@ def load_auxiliary_dataset(
     except FileNotFoundError:
         logger.warning(
             f"    - ⚠️ WARNING: Authoritative file for '{dataset_name}' not found at '{aux_dti_path}'. Skipping."
-        )
-        return None
-    except Exception as e:
-        # 捕获其他可能的错误，如配置缺失、compose失败等
-        logger.error(
-            f"    - ❌ ERROR: Failed to load auxiliary dataset '{dataset_name}'. Skipping. Reason: {e}"
         )
         return None

@@ -1,7 +1,7 @@
 # 文件: src/configs/data_structure.py
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any
 
 # --------------------------------------------------------------------------
 # 这些是嵌套在主 DataStructureConfig 内部的、更小的配置块
@@ -267,7 +267,7 @@ class InternalSchemaConfig:  # <--- 新增一个层级
     graph_output: GraphOutputSchema = GraphOutputSchema()
     labeled_edges_output: LabeledEdgesSchema = LabeledEdgesSchema()
     nodes_output: NodesOutputSchema = field(default_factory=NodesOutputSchema)
-    protein_id_columns: List[str] = field(
+    protein_id_columns: list[str] = field(
         default_factory=lambda: ["UniProt_ID", "protein1_id", "protein2_id"]
     )
 
@@ -277,7 +277,7 @@ class SchemaConfig:
     """顶层的 Schema 配置块。"""
 
     internal: InternalSchemaConfig = InternalSchemaConfig()
-    external: Dict[str, Any] = field(default_factory=dict)
+    external: dict[str, Any] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------

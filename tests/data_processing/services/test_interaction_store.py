@@ -1,5 +1,6 @@
 import logging
 import unittest
+from typing import cast
 from unittest.mock import patch
 
 import pandas as pd
@@ -48,30 +49,33 @@ class MockIDMapper:
 
 
 register_all_schemas()
-MOCK_CONFIG: AppConfig = OmegaConf.create(
-    {
-        "runtime": {"verbose": 2},
-        "knowledge_graph": {
-            "entity_meta": {
-                "drug": {"metatype": "molecule", "priority": 0},
-                "ligand": {"metatype": "molecule", "priority": 1},
-                "protein": {"metatype": "protein", "priority": 10},
-            }
-        },
-        "data_structure": {
-            "schema": {
-                "internal": {
-                    "canonical_interaction": {
-                        "source_id": "s_id",
-                        "source_type": "s_type",
-                        "target_id": "t_id",
-                        "target_type": "t_type",
-                        "relation_type": "rel_type",
+MOCK_CONFIG: AppConfig = cast(
+    AppConfig,
+    OmegaConf.create(
+        {
+            "runtime": {"verbose": 2},
+            "knowledge_graph": {
+                "entity_meta": {
+                    "drug": {"metatype": "molecule", "priority": 0},
+                    "ligand": {"metatype": "molecule", "priority": 1},
+                    "protein": {"metatype": "protein", "priority": 10},
+                }
+            },
+            "data_structure": {
+                "schema": {
+                    "internal": {
+                        "canonical_interaction": {
+                            "source_id": "s_id",
+                            "source_type": "s_type",
+                            "target_id": "t_id",
+                            "target_type": "t_type",
+                            "relation_type": "rel_type",
+                        }
                     }
                 }
-            }
-        },
-    }
+            },
+        }
+    ),
 )
 
 

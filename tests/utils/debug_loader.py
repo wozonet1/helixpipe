@@ -7,7 +7,7 @@ from torch_geometric.data import HeteroData
 from torch_geometric.loader import LinkNeighborLoader
 
 
-def create_minimal_hetero_graph():
+def create_minimal_hetero_graph() -> None:
     """
     Creates a tiny, clean, fully-controlled heterogeneous graph in memory.
     """
@@ -55,7 +55,7 @@ def create_minimal_hetero_graph():
     return graph
 
 
-def main_minimal_debug():
+def main_minimal_debug() -> None:
     """
     A minimal script to test LinkNeighborLoader with a synthetic, in-memory graph.
     """
@@ -89,7 +89,7 @@ def main_minimal_debug():
             batch_size=4,  # A small batch size
             shuffle=True,
             neg_sampling_ratio=1.0,
-            # [CRITICAL] Set num_workers=0 to disable multiprocessing for debugging
+            # [CRITICAL] set num_workers=0 to disable multiprocessing for debugging
             num_workers=0,
         )
         print("✅ LinkNeighborLoader instantiated SUCCESSFULLY.")

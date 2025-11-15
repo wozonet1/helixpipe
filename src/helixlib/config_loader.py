@@ -29,7 +29,7 @@ def load_config_with_override(config_path: str = "config.yaml") -> dict:
     with open(config_file_path, "r") as f:
         config = cast(dict, yaml.safe_load(f))
 
-    # 2. Set up argparse to parse a special '--config' argument
+    # 2. set up argparse to parse a special '--config' argument
     parser = argparse.ArgumentParser(
         description="Run experiment with YAML config and CLI overrides."
     )

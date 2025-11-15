@@ -1,5 +1,5 @@
 import logging
-from typing import Iterator, Set, Tuple, Union
+from typing import Iterator, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -132,7 +132,7 @@ class DataSplitter:
 
     def _presplit_by_evaluation_scope(
         self,
-    ) -> Tuple["InteractionStore", "InteractionStore"]:
+    ) -> tuple["InteractionStore", "InteractionStore"]:
         """使用 store.query() 和 store.difference() 高效分流。"""
         logger.info("Pre-splitting pairs into 'evaluable' and 'background' sets...")
         evaluation_scope = self.coldstart_cfg.evaluation_scope
@@ -150,9 +150,17 @@ class DataSplitter:
 
         if self.is_cold_start:
             # 冷启动：在实体列表上进行KFold
+            if not isinstance(self._items_to_split, list):
+                raise TypeError(
+                    f"Cold-start mode requires a list of items to split, but got {type(self._items_to_split).__name__}"
+                )
             kf = KFold(n_splits=self.num_folds, shuffle=True, random_state=self.seed)
             self._iterator = iter(kf.split(self._items_to_split))
         else:  # 热启动：在交互DataFrame上进行分层KFold
+            if not isinstance(self._items_to_split, pd.DataFrame):
+                raise TypeError(
+                    f"Hot-start mode requires a DataFrame of interactions, but got {type(self._items_to_split).__name__}"
+                )
             df = self._items_to_split
             # 使用 target 节点的权威ID作为分层依据
             y_stratify = df[self.store._schema.target_id]
@@ -180,9 +188,9 @@ class DataSplitter:
         """
         logger.debug("--- [_split_data] START ---")
 
-        train_eval_store: InteractionStore
-        test_store: InteractionStore
-        cold_start_entity_ids_auth: Set = set()
+        train_eval_store: Optional[InteractionStore] = None
+        test_store: Optional[InteractionStore] = None
+        cold_start_entity_ids_auth: set = set()
 
         evaluable_df = self._evaluable_store.dataframe
         logger.debug(f"Evaluable store contains {len(evaluable_df)} interactions.")
@@ -274,7 +282,8 @@ class DataSplitter:
             train_eval_store = InteractionStore._from_dataframe(
                 train_eval_df, self.config
             )
-
+        if train_eval_store is None or test_store is None:
+            raise RuntimeError("train_eval_store is None or test_store is None")
         logger.debug(
             f"Split results: train_eval_store size={len(train_eval_store)}, test_store size={len(test_store)}"
         )
@@ -360,7 +369,7 @@ class DataSplitter:
 
     def __next__(
         self,
-    ) -> Tuple[int, SplitResult]:
+    ) -> tuple[int, SplitResult]:
         if self.fold_idx > self.num_folds:
             raise StopIteration
         if self._iterator is None:
@@ -383,7 +392,7 @@ class DataSplitter:
             f"[Splitter Fold {self.fold_idx}] "
             f"Train Graph: {len(final_train_graph_store)} edges | "
             f"Train Labels: {len(final_train_labels_store)} | "
-            f"Test Set: {len(final_test_store)}"
+            f"Test set: {len(final_test_store)}"
         )
 
         result = (

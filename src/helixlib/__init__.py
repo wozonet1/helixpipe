@@ -23,7 +23,7 @@ __version__ = "0.1.0"
 
 # --- Control what `from research_template import *` does (optional but good practice) ---
 __all__ = [
-    # List all the functions you want to be importable with '*'
+    # list all the functions you want to be importable with '*'
     "load_config",
     "check_paths_exist",
     "set_seeds",

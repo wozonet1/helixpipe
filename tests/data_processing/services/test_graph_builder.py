@@ -16,7 +16,13 @@ class MockGraphBuildContext:
     一个模拟的GraphBuildContext，用于精确控制测试场景。
     """
 
-    def __init__(self, num_mols_train, num_prots_train, num_mols_cold, num_prots_cold):
+    def __init__(
+        self,
+        num_mols_train: int,
+        num_prots_train: int,
+        num_mols_cold: int,
+        num_prots_cold: int,
+    ):
         self.num_local_mols = num_mols_train + num_mols_cold
         self.num_local_prots = num_prots_train + num_prots_cold
 
@@ -32,7 +38,7 @@ class MockGraphBuildContext:
             )
         )
 
-        self.local_id_to_type_map = {}
+        self.local_id_to_type_map: dict[int, str] = {}
         # 为了简化，我们假设所有分子都是'drug'类型
         for i in range(self.num_local_mols):
             self.local_id_to_type_map[i] = "drug"

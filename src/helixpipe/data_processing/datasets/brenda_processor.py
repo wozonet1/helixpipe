@@ -4,7 +4,7 @@ import json
 import logging
 import pickle as pkl
 import re
-from typing import Any, Dict, List, Union, cast
+from typing import Any, Union, cast
 
 import argcomplete
 import pandas as pd
@@ -39,7 +39,7 @@ class BrendaProcessor(BaseProcessor):
         )
         # 在初始化时，加载并准备好作为内部状态的“名称->CID”映射字典
 
-    def _load_name_cid_map(self) -> Dict[str, int]:
+    def _load_name_cid_map(self) -> dict[str, int]:
         """一个私有辅助方法，用于构建并返回 Name -> CID 的映射字典。"""
         map_path = get_path(self.config, "cache.ids.brenda_name_to_cid")
         if not map_path.exists():
@@ -53,13 +53,13 @@ class BrendaProcessor(BaseProcessor):
             )
 
         with open(map_path, "rb") as f:
-            name_map = cast(Dict[str, int], pkl.load(f))
+            name_map = cast(dict[str, int], pkl.load(f))
 
         if self.verbose > 0:
             logger.info(f"    - Map loaded with {len(name_map)} unique name entries.")
         return name_map
 
-    def _load_raw_data(self) -> Dict[str, Any]:
+    def _load_raw_data(self) -> dict[str, Any]:
         """
         步骤1: 从磁盘加载原始JSON数据为字典。
         """
@@ -68,9 +68,9 @@ class BrendaProcessor(BaseProcessor):
             raise FileNotFoundError(f"Raw BRENDA JSON file not found at '{json_path}'")
 
         with open(json_path, "r", encoding="utf-8") as f:
-            return cast(Dict[str, int], json.load(f).get("data", {}))
+            return cast(dict[str, int], json.load(f).get("data", {}))
 
-    def _extract_relations(self, raw_data: Dict[str, Any]) -> pd.DataFrame:
+    def _extract_relations(self, raw_data: dict[str, Any]) -> pd.DataFrame:
         """
         步骤2: 从原始字典中解析出交互关系，并附带所有辅助信息。
         """
@@ -134,7 +134,7 @@ class BrendaProcessor(BaseProcessor):
         """
         if df.empty:
             return pd.DataFrame()
-        self._name_to_cid_map: Dict[str, int] = self._load_name_cid_map()
+        self._name_to_cid_map: dict[str, int] = self._load_name_cid_map()
         # 1. 名称到CID的映射
         df["cleaned_name"] = df["molecule_name"].apply(self._clean_name)
         df["PubChem_CID"] = df["cleaned_name"].map(self._name_to_cid_map)
@@ -209,7 +209,7 @@ class BrendaProcessor(BaseProcessor):
 
     def _build_protein_map_for_ec(
         self, entry, org_key, target_org, acc_key
-    ) -> Dict[str, List[str]]:
+    ) -> dict[str, list[str]]:
         """为单个EC条目构建 内部ID -> [UniProt IDs] 的映射。"""
         protein_map = {}
         for prot_id, prot_info in entry.get("protein", {}).items():

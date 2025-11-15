@@ -1,7 +1,7 @@
 from __future__ import annotations  # 允许类方法返回自身的类型提示
 
 import math
-from typing import TYPE_CHECKING, Dict, List, Set
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -27,7 +27,7 @@ class InteractionStore:
     查询方法遵循不可变模式，返回新的InteractionStore实例。
     """
 
-    def __init__(self, processor_outputs: Dict[str, pd.DataFrame], config: AppConfig):
+    def __init__(self, processor_outputs: dict[str, pd.DataFrame], config: AppConfig):
         """
         【V2 - 带规范化排序版】
         在流水线早期，通过聚合所有Processor的输出来初始化，并立即对交互对进行规范化。
@@ -128,13 +128,13 @@ class InteractionStore:
 
     @classmethod
     def concat(
-        cls, stores: List[InteractionStore], config: AppConfig
+        cls, stores: list[InteractionStore], config: AppConfig
     ) -> InteractionStore:
         """
         【类方法】将一个InteractionStore实例的列表合并成一个单一的、新的实例。
 
         Args:
-            stores (List[InteractionStore]): 要合并的InteractionStore实例列表。
+            stores (list[InteractionStore]): 要合并的InteractionStore实例列表。
             config (AppConfig): 全局配置对象，用于初始化新的store实例。
 
         Returns:
@@ -235,7 +235,7 @@ class InteractionStore:
 
     # --- 核心API ---
 
-    def get_all_entity_auth_ids(self) -> Set[AuthID]:
+    def get_all_entity_auth_ids(self) -> set[AuthID]:
         """
         【提供给IDMapper】
         从所有交互中，提取出一个包含所有唯一实体权威ID的集合。
@@ -247,7 +247,7 @@ class InteractionStore:
         target_ids = set(self._df[self._schema.target_id].dropna().unique())
         return source_ids.union(target_ids)
 
-    def filter_by_entities(self, valid_entity_ids: Set[AuthID]) -> InteractionStore:
+    def filter_by_entities(self, valid_entity_ids: set[AuthID]) -> InteractionStore:
         """
         【不可变操作】
         接收一个纯净的实体ID集合，返回一个只包含“纯净”交互的新InteractionStore实例。
@@ -268,7 +268,7 @@ class InteractionStore:
 
     def get_mapped_positive_pairs(
         self, id_mapper: IDMapper
-    ) -> List[LogicInteractionTriple]:
+    ) -> list[LogicInteractionTriple]:
         """
         【提供给下游】
         将内部的、纯净的交互DataFrame，映射为使用【逻辑ID】的元组列表。

@@ -2,7 +2,7 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Callable, List, Tuple
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -12,7 +12,7 @@ from helixpipe.utils import get_path
 
 logger = logging.getLogger(__name__)
 
-Phase = Tuple[str, Callable]
+Phase = tuple[str, Callable]
 
 
 class BaseProcessor(ABC):
@@ -44,7 +44,7 @@ class BaseProcessor(ABC):
 
         # --- 流水线定义 ---
         # 每个步骤都是一个元组 (step_name, step_function)
-        pipeline: List[Phase] = [
+        pipeline: list[Phase] = [
             ("Load Raw Data", self._load_raw_data),
             ("Extract Relations", self._extract_relations),
             ("Standardize IDs", self._standardize_ids),
@@ -137,7 +137,7 @@ class BaseProcessor(ABC):
 
     # --- Base类提供的通用、可复用的步骤 ---
 
-    def _get_final_columns(self) -> List[str]:
+    def _get_final_columns(self) -> list[str]:
         return [
             self.schema.source_id,
             self.schema.source_type,

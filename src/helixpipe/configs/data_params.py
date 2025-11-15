@@ -1,7 +1,7 @@
 # 文件: src/configs/data_params.py (完整修正版)
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Optional
 
 from .training import InteractionSelectorConfig
 
@@ -27,7 +27,7 @@ class StratifiedSamplingConfig:
 
     enabled: bool = False
     # strata 是一个规则列表，采样器会按顺序应用
-    strata: List[StratumConfig] = field(default_factory=list)
+    strata: list[StratumConfig] = field(default_factory=list)
 
 
 @dataclass
@@ -173,7 +173,7 @@ class DataParamsConfig:
 
     # 特征提取器配置 (字典形式)
     # 我们可以在这里为 feature_extractors 提供一个更完整的默认结构
-    feature_extractors: Dict[str, FeatureExtractorConfig] = field(
+    feature_extractors: dict[str, FeatureExtractorConfig] = field(
         default_factory=lambda: {
             "protein": FeatureExtractorConfig(
                 extractor_function="extract_esm_protein_embeddings",

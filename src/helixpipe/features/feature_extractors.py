@@ -1,6 +1,6 @@
 # 文件: src/helixpipe/features/feature_extractors.py (重构后)
 
-from typing import Any, List
+from typing import Any
 
 import torch
 from transformers import AutoModel, AutoTokenizer, EsmModel
@@ -18,7 +18,7 @@ class EsmFeatureExtractor(BaseFeatureExtractor):
         return model, tokenizer
 
     def _prepare_batch_input(
-        self, tokenizer: Any, batch_data: List[ProteinSequence]
+        self, tokenizer: Any, batch_data: list[ProteinSequence]
     ) -> Any:
         return tokenizer(
             batch_data,
@@ -33,7 +33,7 @@ class EsmFeatureExtractor(BaseFeatureExtractor):
 
     def _postprocess_batch_output(
         self, outputs: Any, inputs: Any
-    ) -> List[torch.Tensor]:
+    ) -> list[torch.Tensor]:
         token_representations = outputs.last_hidden_state
         embeddings = []
         for i in range(token_representations.size(0)):
@@ -51,7 +51,7 @@ class ChembertaFeatureExtractor(BaseFeatureExtractor):
         model = AutoModel.from_pretrained(self.model_name)
         return model, tokenizer
 
-    def _prepare_batch_input(self, tokenizer: Any, batch_data: List[SMILES]) -> Any:
+    def _prepare_batch_input(self, tokenizer: Any, batch_data: list[SMILES]) -> Any:
         return tokenizer(
             batch_data,
             padding=True,
@@ -65,7 +65,7 @@ class ChembertaFeatureExtractor(BaseFeatureExtractor):
 
     def _postprocess_batch_output(
         self, outputs: Any, inputs: Any
-    ) -> List[torch.Tensor]:
+    ) -> list[torch.Tensor]:
         # ChemBERTa 直接使用 [CLS] token 的输出
         cls_embeddings = outputs.last_hidden_state[:, 0, :]
         return [emb for emb in cls_embeddings]  # 转换为列表

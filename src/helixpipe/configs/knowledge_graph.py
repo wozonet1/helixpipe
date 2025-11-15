@@ -1,7 +1,7 @@
 # src/helixpipe/configs/knowledge_graph.py
 
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Optional
 
 
 @dataclass
@@ -56,7 +56,7 @@ class KnowledgeGraphConfig:
         default_factory=RelationTemplateNames
     )
     # TODO: 整理
-    entity_meta: Dict[str, EntityMetaConfig] = field(
+    entity_meta: dict[str, EntityMetaConfig] = field(
         default_factory=lambda: {
             # 分子大类
             "drug": EntityMetaConfig(metatype="molecule", priority=0),
@@ -73,4 +73,4 @@ class KnowledgeGraphConfig:
             "disease": EntityMetaConfig(metatype="disease", priority=30),
         }
     )
-    type_mapping_strategy: Optional[Dict[str, str]] = None
+    type_mapping_strategy: Optional[dict[str, str]] = None

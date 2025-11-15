@@ -1,15 +1,15 @@
 # 新构想: src/helixpipe/configs/selectors.py (创建一个新文件)
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Optional
 
 
 # 这是我们已有的实体选择器
 @dataclass
 class EntitySelectorConfig:
-    entity_types: Optional[List[str]] = None
-    meta_types: Optional[List[str]] = None
-    from_sources: Optional[List[str]] = None
+    entity_types: Optional[list[str]] = None
+    meta_types: Optional[list[str]] = None
+    from_sources: Optional[list[str]] = None
 
 
 # 【全新】这是我们的边选择器
@@ -24,6 +24,6 @@ class InteractionSelectorConfig:
     target_selector: Optional[EntitySelectorConfig] = None
 
     # 规则3: 对边的“关系类型”进行筛选
-    relation_types: Optional[List[str]] = None
+    relation_types: Optional[list[str]] = None
 
     # 逻辑: 一个交互必须同时满足所有非None的选择器规则。

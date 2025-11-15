@@ -15,7 +15,7 @@ SOURCE_SYNONYM_FILE = Path("data/assets/CID-Synonym-filtered.gz")
 OUTPUT_MAP_FILE = Path("data/cache/ids/pubchem_name_to_cid.pkl")
 
 
-def build_map():
+def build_map() -> None:
     """
     解析PubChem的同义词文件，构建一个 name -> cid 的映射字典。
     注意：这是一个耗时且消耗内存的操作，但只需运行一次。

@@ -5,7 +5,7 @@ import sys
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List
+from typing import Any
 
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, ValidationError
@@ -19,8 +19,6 @@ from .data_structure import DataStructureConfig
 from .dataset_collection import DatasetCollectionConfig
 from .global_paths import GlobalPathsConfig
 from .knowledge_graph import KnowledgeGraphConfig
-from .mlflow import MlflowConfig
-from .predictor import PredictorConfig
 from .relations import RelationsConfig
 from .runtime import RuntimeConfig
 from .training import TrainingConfig
@@ -38,13 +36,13 @@ class AppConfig(DictConfig):
     它作为整个配置结构的唯一“真理之源”和可导入的类型。
     """
 
-    defaults: List[Any] = field(default_factory=list)
+    defaults: list[Any] = field(default_factory=list)
 
     # --- 明确列出所有配置组字段 ---
     data_structure: DataStructureConfig = field(default_factory=DataStructureConfig)
     data_params: DataParamsConfig = field(default_factory=DataParamsConfig)
     relations: RelationsConfig = field(default_factory=RelationsConfig)
-    predictor: PredictorConfig = field(default_factory=PredictorConfig)
+
     validators: ValidatorsConfig = field(default_factory=ValidatorsConfig)
     dataset_collection: DatasetCollectionConfig = field(
         default_factory=DatasetCollectionConfig
@@ -54,14 +52,14 @@ class AppConfig(DictConfig):
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     global_paths: GlobalPathsConfig = field(default_factory=GlobalPathsConfig)
-    mlflow: MlflowConfig = field(default_factory=MlflowConfig)
+
     knowledge_graph: KnowledgeGraphConfig = field(default_factory=KnowledgeGraphConfig)
 
 
 # --------------------------------------------------------------------------
 # 3. 自动化的注册函数 (职责简化)
 # --------------------------------------------------------------------------
-def register_all_schemas():
+def register_all_schemas() -> None:
     """
     【最终版】将静态定义的AppConfig及其所有组件注册到Config Store。
     它还包含一个检查步骤，以确保AppConfig没有遗漏任何configs目录下的模块。
@@ -78,7 +76,6 @@ def register_all_schemas():
             "data_structure": DataStructureConfig,
             "data_params": DataParamsConfig,
             "relations": RelationsConfig,
-            "predictor": PredictorConfig,
             "analysis": AnalysisConfig,
             "validators": ValidatorsConfig,
             "dataset_collection": DatasetCollectionConfig,
@@ -125,7 +122,7 @@ def register_all_schemas():
     print("--> All structured config schemas registered successfully.")
 
 
-def _validate_completeness():
+def _validate_completeness() -> None:
     """一个辅助函数，用于检查AppConfig是否包含了configs目录下的所有定义。"""
     defined_fields = {f.name for f in dataclasses.fields(AppConfig)}
 

@@ -34,7 +34,7 @@ def validate_smiles_structure(smiles_series: pd.Series) -> pd.Series:
 
     # 2. 验证SMILES化学结构有效性
     #    使用 apply + lambda，对于无效的SMILES，MolFromSmiles返回None
-    mol_series = cast(pd.Series, cleaned_series.dropna().apply(Chem.MolFromSmiles))
+    mol_series = cast(pd.Series, cleaned_series.dropna().apply(Chem.MolFromSmiles))  # type: ignore
     # 3. 标准化 (Canonicalization)
     #    只对有效的分子对象进行标准化
     canonical_series = mol_series.dropna().apply(

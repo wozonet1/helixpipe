@@ -10,7 +10,7 @@
 当前的交互数据流如下：
 
 1.  **原始聚合：** 所有 `Processor` 的输出被简单地 `pd.concat` 成一个巨大的、临时的 DataFrame。
-2.  **匿名传递：** 这个 DataFrame 或者一个 `List[Tuple]` 被作为“二等公民”，在 `main_pipeline`, `sampler`, `splitter` 等多个服务之间传来传去。
+2.  **匿名传递：** 这个 DataFrame 或者一个 `list[Tuple]` 被作为“二等公民”，在 `main_pipeline`, `sampler`, `splitter` 等多个服务之间传来传去。
 3.  **逻辑重复：** 复杂的交互筛选逻辑（如根据源/目标实体的属性进行过滤）需要在 `sampler` 和 `splitter` 中被**重复实现**，违反了“不要重复自己”（DRY）原则。
 4.  **职责不清：** `main_pipeline` 承担了过多的交互过滤职责，而 `sampler` 和 `splitter` 则混合了策略执行和底层数据操作，导致了高耦合和低内聚。
 
@@ -42,7 +42,7 @@
 
 3.  **下游服务（`sampler`, `splitter`）重构：**
 
-    - `sampler` 和 `splitter` 不再直接操作 `List[Tuple]`。它们将接收 `InteractionStore` 对象作为输入。
+    - `sampler` 和 `splitter` 不再直接操作 `list[Tuple]`。它们将接收 `InteractionStore` 对象作为输入。
     - 它们的核心逻辑将被简化为：调用 `interaction_store.query(...)`来获取满足特定策略的交互子集，然后在这些子集（也是 `InteractionStore` 对象）上执行采样或划分，最后再合并结果。
     - 所有底层的、重复的交互匹配逻辑，将从 `sampler` 和 `splitter` 中移除，统一收归到 `InteractionStore.query` 方法中。
 
@@ -59,7 +59,7 @@
 - **优点：** 改动范围最小，无需引入新类。
 - **缺点：**
   - **性能低下：** 在 Python 中对大型列表进行逐项循环匹配，效率远低于在 Pandas DataFrame 上执行的向量化操作。
-  - **数据流不清晰：** 交互数据仍然以匿名的 `List[Tuple]`形式在系统中流转，认知负担没有降低。
+  - **数据流不清晰：** 交互数据仍然以匿名的 `list[Tuple]`形式在系统中流转，认知负担没有降低。
   - **治标不治本：** 没有解决“交互”作为“二等公民”的根本问题。
 - **决策理由：** 这是一种战术上的小优化，而非战略上的架构升级，无法从根本上解决逻辑分散和数据流混乱的问题，予以否决。
 
@@ -80,7 +80,7 @@
 - **逻辑的高度内聚：** 所有与“边”相关的查询、过滤、匹配逻辑，现在都内聚在 `InteractionStore` 这一个地方，彻底解决了逻辑分散和代码重复的问题。
 - **下游服务的极致简化：** `sampler` 和 `splitter` 被重构为纯粹的“策略执行引擎”，其内部实现变得极其简单、优雅且易于测试。它们只负责编排对 `InteractionStore` API 的调用。
 - **性能提升：** 将交互数据保留在 Pandas DataFrame 中，使得所有查询和过滤操作都可以利用向量化的优势，性能优于在 Python 原生列表上的循环。
-- **增强的可读性与可维护性：** 在 `main_pipeline` 中传递一个有明确 API 的 `InteractionStore` 对象，比传递一个匿名的 `List[Tuple]`，大大提高了代码的可读性和长期可维护性。
+- **增强的可读性与可维护性：** 在 `main_pipeline` 中传递一个有明确 API 的 `InteractionStore` 对象，比传递一个匿名的 `list[Tuple]`，大大提高了代码的可读性和长期可维护性。
 
 ### 负面影响/风险：
 

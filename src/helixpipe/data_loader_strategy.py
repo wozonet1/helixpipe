@@ -26,21 +26,21 @@ def _run_processor(name: str, config: AppConfig) -> pd.DataFrame:
     它会根据给定的处理器名称，自动在 `helixpipe.data_processing.datasets`
     子模块中查找、导入并运行对应的Processor类。
     """
+
+    # 1. 根据命名约定，动态构建类名和模块路径
+    #    类名: "bindingdb" -> "BindingdbProcessor"
+    class_name = f"{name.capitalize()}Processor"
+
+    #    【核心修改】模块路径现在指向 `datasets` 子模块
+    #    模块名: "bindingdb" -> "bindingdb_processor"
+    module_name = f"{name}_processor"
+    #    完整路径: "helixpipe.data_processing.datasets.bindingdb_processor"
+    module_path = f"helixpipe.data_processing.datasets.{module_name}"
+
+    logger.info(
+        f"\n--- [Strategy] Attempting to run processor '{class_name}' from '{module_path}' ---"
+    )
     try:
-        # 1. 根据命名约定，动态构建类名和模块路径
-        #    类名: "bindingdb" -> "BindingdbProcessor"
-        class_name = f"{name.capitalize()}Processor"
-
-        #    【核心修改】模块路径现在指向 `datasets` 子模块
-        #    模块名: "bindingdb" -> "bindingdb_processor"
-        module_name = f"{name}_processor"
-        #    完整路径: "helixpipe.data_processing.datasets.bindingdb_processor"
-        module_path = f"helixpipe.data_processing.datasets.{module_name}"
-
-        logger.info(
-            f"\n--- [Strategy] Attempting to run processor '{class_name}' from '{module_path}' ---"
-        )
-
         # 2. 动态导入模块并获取类定义
         module = importlib.import_module(module_path)
         ProcessorClass = getattr(module, class_name)

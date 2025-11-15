@@ -3,7 +3,7 @@ import unittest
 
 import pandas as pd
 import torch
-from omegaconf import OmegaConf
+from helper import create_test_config
 
 from helixpipe.configs import register_all_schemas
 from helixpipe.data_processing.services.graph_context import GraphBuildContext
@@ -45,7 +45,7 @@ class MockIDMapper:
 
 
 register_all_schemas()
-MOCK_CONFIG: AppConfig = OmegaConf.create({"runtime": {"verbose": 0}})
+MOCK_CONFIG: AppConfig = create_test_config({"runtime": {"verbose": 0}})
 
 
 class TestGraphBuildContext(unittest.TestCase):

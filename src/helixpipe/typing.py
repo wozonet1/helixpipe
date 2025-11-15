@@ -1,7 +1,7 @@
 # src/helixpipe/typing.py
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Dict, Literal, Set, Tuple, Union
+from typing import TYPE_CHECKING, Callable, Literal, Union
 
 import pandas as pd
 import torch
@@ -38,20 +38,20 @@ ProteinSequence = str
 # --- 交互元组 (Interaction Tuples) ---
 
 # 使用【权威ID】表示的交互元组: (source_auth_id, target_auth_id, relation_type)
-AuthInteractionTuple = Tuple[AuthID, AuthID, RelationType]
+AuthInteractionTuple = tuple[AuthID, AuthID, RelationType]
 
 # 使用【逻辑ID】表示的交互三元组: (source_logic_id, target_logic_id, relation_type)
 # 这是图构建和模型训练中常用的格式。
-LogicInteractionTriple = Tuple[LogicID, LogicID, RelationType]
+LogicInteractionTriple = tuple[LogicID, LogicID, RelationType]
 
 
 # --- 字典类型 (Dictionary Types) ---
 
 # 特征提取器的输出格式: {权威ID: 特征张量}
-FeatureDict = Dict[AuthID, torch.Tensor]
+FeatureDict = dict[AuthID, torch.Tensor]
 
 # 所有 Processor 聚合后的输出格式: {数据集名称: DataFrame}
-ProcessorOutputs = Dict[str, pd.DataFrame]
+ProcessorOutputs = dict[str, pd.DataFrame]
 
 # ==============================================================================
 # 3. 函数签名与复杂组合别名 (Function Signatures & Compositions)
@@ -66,11 +66,11 @@ PathLike = Union[Path, PathFactory]
 
 # `DataSplitter` 的 `__next__` 方法返回的复杂元组类型。
 # 注意: 使用字符串'InteractionStore'来避免循环导入问题。
-SplitResult = Tuple[
+SplitResult = tuple[
     "InteractionStore",  # noqa: F821 # type: ignore
     "InteractionStore",  # noqa: F821 # type: ignore
     "InteractionStore",  # noqa: F821 # type: ignore
-    Set[LogicID],
+    set[LogicID],
 ]
 
 
@@ -83,16 +83,44 @@ SplitResult = Tuple[
 # 每当你在YAML配置中新增或修改一个【路径模板】(包含"{...}")时，
 # 都需要在这里手动更新这个列表。
 # -------------------------------------
-TemplateKey = Literal[
+TemplatePathKey = Literal[
     "processed.specific.graph_template",
     "processed.specific.labels_template",
     "cache.features.template",
+]
+
+StaticPathKey = Literal[
+    # Raw data files
+    "raw.authoritative_dti",
+    "raw.raw_tsv",
+    "raw.raw_json",
+    "raw.dummy_file_to_get_dir",
+    "raw.interactions",
+    "raw.ligands",
+    "raw.protein_links",
+    "raw.protein_aliases",
+    # Processed common files
+    "processed.common.nodes_metadata",
+    "processed.common.node_features",
+    "processed.common.uniprot_whitelist",
+    "processed.common.cid_whitelist",
+    # Processed common directory paths (for similarity matrices)
+    "processed.common.similarity_matrices.molecule_chunks_dir",
+    "processed.common.similarity_matrices.protein_chunks_dir",
+    # Cache ID files
+    "cache.ids.uniprot_whitelist",
+    "cache.ids.cid_whitelist",
+    "cache.ids.brenda_name_to_cid",
+    "cache.ids.enriched_protein_sequences",
+    "cache.ids.enriched_molecule_smiles",
+    # Asset files
+    "assets.uniprot_proteome_tsv",
 ]
 if TYPE_CHECKING:
     # 这个块中的代码只会被 MyPy 等类型检查器执行，
     # Python 解释器在运行时会完全忽略它。
     # 在这里，我们导入所有被前向引用 ("...") 的类型。
-    from helixpipe.data_processing.services.interaction_store import InteractionStore
+    pass
 
 __all__ = [
     "AppConfig",
@@ -112,5 +140,6 @@ __all__ = [
     "PathFactory",
     "PathLike",
     "SplitResult",
-    "TemplateKey",
+    "TemplatePathKey",
+    "StaticPathKey",
 ]
