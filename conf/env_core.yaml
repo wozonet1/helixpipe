@@ -1,0 +1,32 @@
+# env_core_cpu.yaml
+name: helixpipe-gnn
+channels:
+  - pytorch # PyTorch 官方源
+  - conda-forge # 社区源
+  - nodefaults # 禁用 defaults
+
+dependencies:
+  - python=3.9
+  - pip
+
+  # --- PyTorch (CPU Version) ---
+  - pytorch=2.2.1
+  - torchvision=0.17.1
+  - torchaudio=2.2.1
+  - cpuonly # <--- 关键！这会强制安装 CPU 版本
+
+  # --- 科学计算 ---
+  - numpy=1.26.4
+  - pandas
+  - scikit-learn
+  - rdkit
+  - biopython
+  - matplotlib
+  - seaborn
+  - tqdm
+  - joblib
+
+  # --- 工具 ---
+  - hydra-core
+  - hydra-joblib-launcher
+  - mlflow
