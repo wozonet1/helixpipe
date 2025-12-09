@@ -25,3 +25,4 @@ types-networkx
 types-seaborn
 mypy
 ruff
+pre-commit
