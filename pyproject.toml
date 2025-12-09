@@ -141,14 +141,25 @@ warn_unused_ignores = false
 [[tool.mypy.overrides]]
 module = [
     "pandas.*", "numpy.*", "torch.*", "torch_geometric.*", "omegaconf.*", 
-    "hydra.*", "rdkit.*", "tqdm.*", "sklearn.*", "research_template.*", "joblib.*","faiss.*"
+    "hydra.*", "rdkit.*", "tqdm.*", "sklearn.*", "research_template.*", "joblib.*","faiss.*" , "community",
+    "community.*",
+    "umap",
+    "umap.*",
+    "pubchempy",
+    "transformers",
+    "transformers.*"
 ]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = "helixpipe.analysis.scripts.*"
+ignore_errors = true
 
 # --- 规则二：为 tests/ 和 analysis/ 目录应用一套更宽松的规则 ---
 [[tool.mypy.overrides]]
 module = ["tests.*", "analysis.*"]
+
+
 
 # a. 【核心】允许函数没有类型注解
 disallow_untyped_defs = false

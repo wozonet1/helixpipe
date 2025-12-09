@@ -29,7 +29,7 @@ class SupervisionFileManager:
     def __init__(
         self,
         fold_idx: int,
-        config: AppConfig,
+        config: "AppConfig",
         id_mapper: "IDMapper",
         executor: "SelectorExecutor",
         global_positive_set: set[LogicInteractionPair],

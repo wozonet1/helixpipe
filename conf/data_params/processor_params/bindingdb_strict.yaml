@@ -1,7 +1,0 @@
-# 这个文件定义了一个【名为 bindingdb 的块】
-bindingdb:
-  affinity_threshold_nM: 100
-
-defaults:
-  # 它还“导入”了上面那个 filtering 块
-  - /data_params/filtering: strict_strong

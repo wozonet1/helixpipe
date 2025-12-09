@@ -153,7 +153,6 @@ class HeteroGraphBuilder(GraphBuilder):
         k: int,
         analysis_mode: bool = False,  # [NEW] 新增 analysis_mode 参数
     ) -> Union[list[SimilarityResult], None]:
-        # TODO:添加类型别名
         """
         [V3] 使用 Faiss (ANN) 计算 Top-K 相似邻居。
         - 在正常模式下，筛选边并添加到 self._edges。

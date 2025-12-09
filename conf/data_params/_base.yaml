@@ -1,2 +1,5 @@
 defaults:
   - base_data_params
+  - _self_
+
+  

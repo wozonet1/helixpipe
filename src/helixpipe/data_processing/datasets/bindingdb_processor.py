@@ -7,11 +7,11 @@ from typing import cast
 import argcomplete
 import pandas as pd
 from hydra import compose
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import OmegaConf
 from tqdm import tqdm
 
 import helixlib as hx
-from helixpipe.configs import register_all_schemas
+from helixpipe.configs import BindingdbParams, register_all_schemas
 from helixpipe.typing import AppConfig
 from helixpipe.utils import SchemaAccessor, get_path, register_hydra_resolvers
 
@@ -138,8 +138,8 @@ class BindingdbProcessor(BaseProcessor):
         """
         步骤4: 【职责纯化】只执行BindingDB领域专属的“亲和力”过滤。
         """
-        if self.verbose > 0:
-            logger.info("  - Applying domain-specific filter: Affinity Threshold...")
+
+        logger.info("  - Applying domain-specific filter: Affinity Threshold...")
 
         # 1. 计算统一的亲和力值
         for aff_type in [
@@ -160,92 +160,122 @@ class BindingdbProcessor(BaseProcessor):
         )
 
         # 2. 应用亲和力阈值过滤
-        affinity_threshold = self.config.data_params.affinity_threshold_nM
+        affinity_threshold = cast(
+            BindingdbParams, self.config.data_params.bindingdb
+        ).affinity_threshold_nM
 
         # 在过滤前，先丢弃没有计算出 affinity_nM 的行
         df.dropna(subset=["affinity_nM"], inplace=True)
 
         df_filtered = df[df["affinity_nM"] <= affinity_threshold].copy()
 
-        if self.verbose > 0:
-            logger.info(
-                f"    - {len(df_filtered)} / {len(df)} records passed affinity filter."
-            )
+        logger.info(
+            f"    - {len(df_filtered)} / {len(df)} records passed affinity filter."
+        )
 
         return df_filtered
 
 
-# --------------------------------------------------------------------------
-# Config Store模式下的独立运行入口 (最终版)
-# --------------------------------------------------------------------------
 if __name__ == "__main__":
-    # === 阶段 1: 明确定义脚本身份和命令行接口 ===
+    import logging
+    import sys
     from argparse import ArgumentParser
+    from typing import cast
 
+    import argcomplete
     from hydra import compose, initialize_config_dir
 
-    # a. 这个脚本的固有基础配置
-    #    它天生就是用来处理 bindingdb 数据结构的
+    # [修改 3] 导入日志设置工具
+    from helixpipe.utils import setup_logging
+
+    # 获取 Logger (注意：在 setup_logging 调用前，它可能只会输出 warning 以上级别)
+    logger = logging.getLogger(__name__)
+
+    # === 阶段 1: 明确定义脚本身份和命令行接口 ===
+
+    # a. 基础配置覆盖
+    # 我们不仅要指定 data_structure，最好也指定一个默认的 data_params，
+    # 除非 config.yaml 中已经有了 defaults 列表。
+    # 这里我们假设 config.yaml 已经定义了默认行为，或者由用户通过命令行指定。
     BASE_OVERRIDES = ["data_structure=bindingdb"]
 
-    # b. 设置命令行解析器，只接收用户自定义的覆盖参数
+    # b. 设置命令行解析器
     parser = ArgumentParser(
         description="Run the BindingDB processing pipeline with custom Hydra overrides."
     )
-    # 'nargs='*' 会将所有额外的命令行参数都收集到一个列表中
+
+    # 增加一个示例说明，教用户如何利用新的模块化配置
     parser.add_argument(
         "user_overrides",
         nargs="*",
-        help="Hydra overrides (e.g., data_params=strict_strong)",
+        help=(
+            "Hydra overrides. Examples:\n"
+            "  1. Use a specific param set: data_params=strict_strong\n"
+            "  2. Override specific value: data_params.bindingdb.affinity_threshold_nM=100\n"
+            "  3. Change filtering: data_params.filtering=strict"
+        ),
     )
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
 
-    # c. 组合所有覆盖参数
+    # c. 组合覆盖参数
     final_overrides = BASE_OVERRIDES + args.user_overrides
 
-    # === 阶段 2: 注册、加载配置并打印 ===
+    # === 阶段 2: 注册、加载配置 ===
 
-    # a. 在所有Hydra操作之前，确保解析器已注册
-    #    (hx 是 research_template)
+    # a. 注册解析器和 Schema
     register_hydra_resolvers()
     register_all_schemas()
-    # b. 使用 initialize_config_dir 和 compose 来构建最终的配置对象
+
+    # b. 构建配置上下文
     try:
-        # get_project_root 在非Hydra应用下会使用 Path.cwd()
-        # 请确保您是从项目根目录运行此脚本
         project_root = hx.get_project_root()
         config_dir = str(project_root / "conf")
     except Exception as e:
-        logger.error(f"❌ 无法确定项目根目录或配置路径。错误: {e}")
-        sys.exit(1)  # 明确退出
+        # 在 setup_logging 之前，使用 print 确保错误可见
+        print(f"❌ 无法确定项目根目录或配置路径。错误: {e}")
+        sys.exit(1)
 
     with initialize_config_dir(
         config_dir=config_dir, version_base=None, job_name="bindingdb_process"
     ):
-        cfg: DictConfig = compose(config_name="config", overrides=final_overrides)
+        # 加载配置 (此时它是 DictConfig)
+        raw_cfg = compose(config_name="config", overrides=final_overrides)
 
-    # c. 打印最终配置以供调试
+        # [修改 4] 转换为 AppConfig 类型 (仅用于静态检查，运行时仍是 DictConfig)
+        # 这样下面的 setup_logging 和 processor 初始化就不会报类型错误
+        cfg = cast(AppConfig, raw_cfg)
+
+    # c. [关键] 初始化日志系统
+    # 这一步非常重要，否则你看不到 Processor 内部的 logger.info 输出
+    setup_logging(cfg)
+
+    # d. 打印调试信息
     logger.info("\n" + "~" * 80)
     logger.info(" " * 25 + "HYDRA COMPOSED CONFIGURATION")
     logger.info("~" * 80)
+    # OmegaConf.to_yaml 接受 DictConfig，cfg 在运行时本质上还是 DictConfig，所以没问题
     logger.info(OmegaConf.to_yaml(cfg))
     logger.info("~" * 80 + "\n")
 
     # === 阶段 3: 执行核心业务逻辑 ===
-    cfg = cast(AppConfig, cfg)
-    # a. 实例化处理器
-    processor = BindingdbProcessor(config=cfg)
 
-    # b. 运行处理流程
-    #    基类的 .process() 方法会自动处理缓存、调用 _load_raw_data, _transform_data,
-    #    以及最终的保存和验证。
-    final_df = processor.process()
+    try:
+        # a. 实例化处理器
+        # BindingdbProcessor 内部现在使用 SchemaAccessor，它能处理 DictConfig
+        processor = BindingdbProcessor(config=cfg)
 
-    # c. 打印最终总结
-    if final_df is not None and not final_df.empty:
-        logger.info(
-            "\n✅ BindingDB processing complete. Final authoritative file is ready."
-        )
-    else:
-        logger.warning("\n⚠️  BindingDB processing resulted in an empty dataset.")
+        # b. 运行处理流程
+        final_df = processor.process()
+
+        # c. 打印总结
+        if final_df is not None and not final_df.empty:
+            logger.info(
+                f"\n✅ BindingDB processing complete. Generated {len(final_df)} interactions."
+            )
+        else:
+            logger.warning("\n⚠️  BindingDB processing resulted in an empty dataset.")
+
+    except Exception as e:
+        logger.exception(f"❌ An error occurred during execution: {e}")
+        sys.exit(1)

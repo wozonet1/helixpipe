@@ -13,7 +13,7 @@ from omegaconf import OmegaConf
 from tqdm import tqdm
 
 import helixlib as hx
-from helixpipe.configs import register_all_schemas
+from helixpipe.configs import BrendaParams, register_all_schemas
 from helixpipe.typing import AppConfig
 from helixpipe.utils import SchemaAccessor, get_path, register_hydra_resolvers
 
@@ -175,8 +175,12 @@ class BrendaProcessor(BaseProcessor):
             )
 
         # 从配置获取阈值
-        inhibitor_threshold = self.config.data_params.affinity_threshold_nM
-        km_threshold = self.config.data_params.km_threshold_nM
+        inhibitor_threshold = cast(
+            BrendaParams, self.config.data_params.brenda
+        ).affinity_threshold_nM
+        km_threshold = cast(
+            BrendaParams, self.config.data_params.brenda
+        ).km_threshold_nM
 
         # 从配置获取关系类型名称
         rel_types = self.config.knowledge_graph.relation_types
@@ -250,7 +254,9 @@ class BrendaProcessor(BaseProcessor):
 if __name__ == "__main__":
     from argparse import ArgumentParser
 
-    BASE_OVERRIDES = ["data_structure=brenda", "data_params=brenda"]
+    from helixpipe.utils import setup_logging
+
+    BASE_OVERRIDES = ["data_structure=brenda"]
 
     parser = ArgumentParser(description="Run the BRENDA processing pipeline.")
     parser.add_argument("user_overrides", nargs="*", help="Hydra overrides")
@@ -268,7 +274,7 @@ if __name__ == "__main__":
         config_dir=config_dir, version_base=None, job_name="brenda_process"
     ):
         cfg = cast(AppConfig, compose(config_name="config", overrides=final_overrides))
-
+    setup_logging(cfg)
     logger.info("\n" + "~" * 80)
     logger.info(" " * 25 + "HYDRA COMPOSED CONFIGURATION")
     logger.info(OmegaConf.to_yaml(cfg))
@@ -276,7 +282,6 @@ if __name__ == "__main__":
 
     processor = BrendaProcessor(config=cfg)
     final_df = processor.process()
-
     if final_df is not None and not final_df.empty:
         logger.info(
             f"\n✅ BRENDA processing complete. Generated {len(final_df)} final interactions."

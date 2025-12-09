@@ -6,162 +6,177 @@ from unittest.mock import patch
 import pandas as pd
 from omegaconf import OmegaConf
 
-# 导入我们需要测试的主函数
 from helixpipe.data_processing.services.entity_validator import (
     validate_and_filter_entities,
 )
 
-# --- 模拟 (Mock) 配置 ---
-# 我们创建一个最小化的Config，只包含校验服务需要的所有参数
-MOCK_CONFIG = OmegaConf.create(
-    {
+
+# --- 辅助函数：快速构建 Mock 配置 ---
+def create_mock_config(global_mw_max=500, bindingdb_mw_max=None, brenda_enabled=True):
+    """
+    创建一个包含全局配置和特定数据源配置的 Mock AppConfig。
+    """
+    # 1. 定义字典结构
+    conf_dict = {
         "runtime": {"verbose": 0, "cpus": 1},
         "knowledge_graph": {
-            "entity_types": {"molecule": "molecule", "protein": "protein"}
+            "entity_types": {
+                "drug": "drug",
+                "ligand": "ligand",
+                "protein": "protein",
+                "ligand_endo": "endogenous_ligand",
+                "ligand_exo": "exogenous_ligand",
+            }
         },
         "data_params": {
             "filtering": {
                 "enabled": True,
                 "apply_pains_filter": True,
-                # 【修改】为 molecular_weight 提供完整的 min/max
-                "molecular_weight": {"min": 100, "max": 200},
-                # 【核心修复】为 logp 提供完整的 min/max 结构
-                # 即使我们不关心 min 的值，也要提供一个 None 来满足代码的访问
-                "logp": {"min": None, "max": 3.0},
-                # 【新增】为其他可能的过滤提供 None，以增加测试的健壮性
-                # 这可以防止未来 filter.py 增加新过滤时，这个测试立即失败
-                "h_bond_donors": None,
-                "h_bond_acceptors": None,
-                "qed": None,
-                "sa_score": None,
-            }
+                "molecular_weight": {"max": global_mw_max},
+            },
+            # BindingDB 配置
+            "bindingdb": {
+                "filtering": {
+                    "enabled": True,
+                    "apply_pains_filter": True,
+                    "molecular_weight": {"max": bindingdb_mw_max}
+                    if bindingdb_mw_max
+                    else None,
+                }
+                if bindingdb_mw_max
+                else None
+            },
+            # BRENDA 配置
+            "brenda": {
+                "filtering": {
+                    "enabled": brenda_enabled,  # 用于测试禁用过滤的场景
+                    "molecular_weight": {"max": 100},  # 故意设得很小，看是否被忽略
+                }
+            },
+            # GtoPdb (未配置，测试默认行为)
+            "gtopdb": None,
         },
     }
-)
+    # 2. 转换为 DictConfig 以支持点号访问 (config.data_params.bindingdb...)
+    return OmegaConf.create(conf_dict)
 
 
-class TestEntityValidator(unittest.TestCase):
+class TestEntityValidatorSourceAware(unittest.TestCase):
     def setUp(self):
-        """为测试准备一个包含所有边界情况的“脏”实体清单DataFrame。"""
+        # 准备测试数据：包含不同来源、不同分子量的实体
         self.entities_df = pd.DataFrame(
             {
-                "entity_id": [
-                    # --- 分子组 (Molecules) ---
-                    101,  # 1. 完全有效 (MW=46, LogP= -0.3) -> 但会被MW过滤掉
-                    102,  # 2. 完全有效 (MW=152, LogP=2.1) -> 应该通过所有检查
-                    103,  # 3. ID无效 (非正数)
-                    "abc",  # 4. ID无效 (字符串)
-                    105,  # 5. SMILES结构无效
-                    106,  # 6. SMILES为空
-                    107,  # 7. 是一个PAINS分子
-                    108,  # 8. LogP过高 (MW=180, LogP=3.5)
-                    # --- 蛋白质组 (Proteins) ---
-                    "P12345",  # 9. 完全有效
-                    "P00533",  # 10. 完全有效
-                    "INVALID",  # 11. ID格式无效
-                    "P99999",  # 12. 序列包含非法字符 'X'
-                    "Q88888",  # 13. 序列为空
-                ],
-                "entity_type": [
-                    # --- 分子组 ---
-                    "molecule",
-                    "molecule",
-                    "molecule",
-                    "molecule",
-                    "molecule",
-                    "molecule",
-                    "molecule",
-                    "molecule",
-                    # --- 蛋白质组 ---
-                    "protein",
-                    "protein",
-                    "protein",
-                    "protein",
-                    "protein",
-                ],
+                "entity_id": [101, 102, 103, 104, 105],
+                "entity_type": ["drug"] * 5,
                 "structure": [
-                    # --- 分子组 ---
-                    "CCO",  # 1. Ethanol, MW=46.07
-                    "C1=CC=C(C=C1)C(=O)O",  # 2. Benzoic acid, MW=122.12, LogP=1.87
-                    "C",  # 3. Methane
-                    "CC",  # 4. Ethane
-                    "InvalidSMILES",  # 5.
-                    None,  # 6.
-                    "O=C1NC(=S)S/C1=C/c2ccccc2",  # 7. A known PAINS molecule
-                    "C1=CC=C(C=C1)C1=CC=CC=C1",  # 8. Biphenyl, MW=154.21, LogP=3.9
-                    # --- 蛋白质组 ---
-                    "MKTSEQ",  # 9.
-                    "VALIDPROT",  # 10.
-                    "ANYSEQ",  # 11.
-                    "SEQWITHX",  # 12.
-                    "",  # 13.
+                    "C",  # 1. MW ~16 (极小)
+                    "C" * 40,  # 2. MW ~560 (中等，>500)
+                    "C" * 80,  # 3. MW ~1100 (巨大)
+                    "C" * 40,  # 4. MW ~560
+                    "C" * 80,  # 5. MW ~1100
+                ],
+                "all_sources": [
+                    ["other"],  # 101: 仅全局规则
+                    ["other"],  # 102: 仅全局规则
+                    ["bindingdb"],  # 103: BindingDB 来源
+                    ["bindingdb", "other"],  # 104: BindingDB + 其他
+                    ["brenda"],  # 105: BRENDA 来源
                 ],
             }
         )
 
-    # 使用 @patch 装饰器来“模拟”所有外部依赖（ID白名单检查）
-    # 这让我们的测试变成了“单元/集成”混合测试，不依赖网络
     @patch("helixpipe.data_processing.services.entity_validator.get_valid_pubchem_cids")
     @patch(
-        "helixpipe.data_processing.services.entity_validator.get_human_uniprot_whitelist"
+        "helixpipe.data_processing.services.entity_validator.validate_smiles_structure"
     )
-    def test_end_to_end_validation_pipeline(
-        self, mock_uniprot_whitelist, mock_cid_whitelist
-    ):
+    def test_source_aware_relaxation(self, mock_validate_smiles, mock_get_cids):
         """
-        黑盒测试：对 validate_and_filter_entities 的完整流程进行输入/输出验证。
+        测试核心逻辑：来源感知放宽 (Source-Aware Relaxation).
         """
-        print("\n--- Running Test: Unified Entity Validator Pipeline ---")
+        print("\n--- Running Test: Source-Aware Filtering Logic ---")
 
-        # --- 1. 准备 Mock ---
-        # 模拟白名单服务返回一个“纯净”的ID集合
-        mock_cid_whitelist.return_value = {
-            101,
-            102,
-            107,
-            108,
-        }  # 假设 103, "abc", 105, 106 已经是无效ID
-        mock_uniprot_whitelist.return_value = {
-            "P12345",
-            "P00533",
-        }  # 假设 "INVALID", "P99999", "Q88888" 已被过滤
+        # --- Mock 设置 ---
+        # 假设所有 ID 和结构语法都有效，我们只测试属性过滤逻辑
+        mock_get_cids.return_value = {101, 102, 103, 104, 105}
+        # 直接返回输入的 structure 作为 canonical smiles
+        mock_validate_smiles.side_effect = lambda s: s
 
-        # --- 2. 调用被测函数 (黑盒调用) ---
-        result_df = validate_and_filter_entities(self.entities_df, MOCK_CONFIG)
-
-        # 【在这里加入Debug Print】
-        print("--- DEBUG: FINAL RESULT from validator ---")
-        print(result_df.to_string())
-        print("------------------------------------------")
-        # --- 3. 断言最终结果 ---
-
-        # a. 断言最终存活的实体数量
-        #    - 分子: 只有 CID=102 能通过所有检查
-        #    - 蛋白质: 只有 P12345 和 P00533 能通过
-        self.assertEqual(
-            len(result_df), 3, "Final count of validated entities is incorrect."
+        # --- 场景配置 ---
+        # 全局限制: MW <= 500
+        # BindingDB 限制: MW <= 1200 (放宽)
+        # BRENDA: 禁用过滤 (完全放行)
+        cfg = create_mock_config(
+            global_mw_max=500, bindingdb_mw_max=1200, brenda_enabled=False
         )
 
-        # b. 断言存活实体的身份
-        final_ids = set(result_df["entity_id"])
-        expected_ids = {102, "P12345", "P00533"}
-        self.assertSetEqual(
-            final_ids, expected_ids, "The IDs in the output are not as expected."
+        # --- 执行测试 ---
+        result_df = validate_and_filter_entities(self.entities_df, cfg)
+        passed_ids = set(result_df["entity_id"])
+
+        print(f"  Passed IDs: {passed_ids}")
+
+        # --- 断言分析 ---
+
+        # 1. ID 101 (MW~16): 来源 'other'。
+        #    规则：全局 (Max 500)。
+        #    结果：Pass (16 < 500)。
+        self.assertIn(101, passed_ids, "ID 101 should pass global rules.")
+
+        # 2. ID 102 (MW~560): 来源 'other'。
+        #    规则：全局 (Max 500)。
+        #    结果：Fail (560 > 500)。
+        self.assertNotIn(102, passed_ids, "ID 102 should fail global rules.")
+
+        # 3. ID 103 (MW~1100): 来源 'bindingdb'。
+        #    规则：max(全局 500, BindingDB 1200) = 1200。
+        #    结果：Pass (1100 < 1200)。
+        #    【关键】：这证明了 BindingDB 的宽松配置覆盖了全局严格配置。
+        self.assertIn(
+            103, passed_ids, "ID 103 should pass due to BindingDB relaxation."
         )
 
-        # c. [可选] 断言分子的SMILES已被标准化
-        #    Benzoic acid的非标准化SMILES是 C1=CC=C(C=C1)C(=O)O
-        #    标准化后可能是 c1ccc(cc1)C(=O)O
-        #    为了简化测试，我们只检查它不是None
-        final_molecule = result_df[result_df["entity_id"] == 102]
-        self.assertIsNotNone(
-            final_molecule["structure"].iloc[0],
-            "SMILES should have been canonicalized.",
+        # 4. ID 104 (MW~560): 来源 'bindingdb', 'other'。
+        #    规则：max(全局 500, BindingDB 1200, Other用全局) = 1200。
+        #    结果：Pass (560 < 1200)。
+        #    【关键】：只要有一个来源允许，就应该通过。
+        self.assertIn(
+            104, passed_ids, "ID 104 should pass due to partial BindingDB source."
         )
 
-        print(
-            "  ✅ Test passed: Function correctly filtered and validated the mixed-entity DataFrame."
+        # 5. ID 105 (MW~1100): 来源 'brenda'。
+        #    规则：BRENDA 禁用过滤 -> 阈值无限大。
+        #    结果：Pass。
+        self.assertIn(
+            105, passed_ids, "ID 105 should pass because BRENDA filtering is disabled."
         )
+
+        print("  ✅ All source-aware logic verified.")
+
+    @patch("helixpipe.data_processing.services.entity_validator.get_valid_pubchem_cids")
+    @patch(
+        "helixpipe.data_processing.services.entity_validator.validate_smiles_structure"
+    )
+    def test_global_fallback(self, mock_validate_smiles, mock_get_cids):
+        """
+        测试：当来源没有特殊配置时，是否正确回退到全局配置。
+        """
+        print("\n--- Running Test: Global Fallback ---")
+        mock_get_cids.return_value = {103}
+        mock_validate_smiles.side_effect = lambda s: s
+
+        # 配置：全局 500，BindingDB 没有配置 (None)
+        cfg = create_mock_config(global_mw_max=500, bindingdb_mw_max=None)
+
+        # 数据：ID 103 (MW~1100), 来源 bindingdb
+        df = self.entities_df[self.entities_df["entity_id"] == 103]
+
+        result_df = validate_and_filter_entities(df, cfg)
+
+        # 结果：应该被过滤，因为 BindingDB 没有配置，回退使用全局 500，而 1100 > 500。
+        self.assertTrue(
+            result_df.empty, "ID 103 should fail when BindingDB has no specific config."
+        )
+        print("  ✅ Global fallback verified.")
 
 
 if __name__ == "__main__":

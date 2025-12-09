@@ -9,6 +9,8 @@ from helixpipe.data_processing.services.graph_context import GraphBuildContext
 
 # 导入所有需要的真实模块和配置类
 from helixpipe.typing import AppConfig
+
+# FIXME: helper导入
 from tests.helper import create_test_config
 
 # --- 模拟依赖 (Mocks) ---

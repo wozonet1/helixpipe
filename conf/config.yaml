@@ -1,10 +1,9 @@
 defaults:
   - base_app_schema
   - data_structure: bindingdb # 描述文件架构与文件内列的名字,与最终实际内容无关
-  - predictor: rgcn
   - relations: DPL_sim
-  - data_params: colddrug_ligand_1-1_sample-0.1 #数据处理相关,且影响最终数据内容的参数
-  - dataset_collection: gtopdb_brenda_aux # 辅助数据集的集合配置
+  - data_params: exp_cold_start_test
+  - dataset_collection: gtopdb_brenda_aux # 辅助数据集的集合配置#TODO:是否还有必要?
   - validators: default
   - training: cold_drug_protagonist_eval
   - analysis: split_effect # 仅仅在分析时用到

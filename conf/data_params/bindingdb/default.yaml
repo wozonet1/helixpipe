@@ -1,0 +1,4 @@
+# conf/data_params/bindingdb/default.yaml
+
+# 只定义 BindingDB 专属的非过滤参数
+affinity_threshold_nM: 10000

@@ -1,0 +1,29 @@
+# 文件名: conf/data_params/colddrug_ligand_1-1_sample-0.1.yaml
+
+#定义核心的采样策略
+
+enabled:
+  true
+
+  # 阶段一: 分层采样
+stratified_sampling:
+  enabled: true
+  strata:
+    # a. 定义锚点层: 保留所有源实体是'ligand'的交互
+    - name: "ligands_as_anchor"
+      selector:
+        source_selector: { entity_types: [ligand] }
+      fraction: 1.0 # 100% 保留
+
+    # b. 定义目标层: 'drug'交互的数量与锚点层成1:1比例
+    - name: "drugs_by_ratio"
+      selector:
+        source_selector: { entity_types: [drug] }
+      fraction: null # 使用 ratio_to 时，fraction 必须为 null
+      ratio_to: "ligands_as_anchor"
+      ratio: 1.0 # 比例为 1.0
+
+  # 阶段二: 统一采样
+uniform_sampling:
+  enabled: true
+  fraction: 0.1 # 对分层采样后的所有结果，再进行一次全局的10%采样

@@ -2,11 +2,12 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import pandas as pd
 
 import helixlib as hx
+from helixpipe.configs import FilteringConfig
 from helixpipe.typing import AppConfig
 from helixpipe.utils import get_path
 
@@ -24,6 +25,31 @@ class BaseProcessor(ABC):
         self.config = config
         self.verbose = config.runtime.verbose
         self.schema = self.config.data_structure.schema.internal.canonical_interaction
+        # 1. 获取全局默认配置
+        global_filter = config.data_params.filtering
+
+        # 1. 获取类名 (e.g., "BindingdbProcessor")
+        class_name = self.__class__.__name__
+
+        # 2. 推断配置键名 (e.g., "bindingdb")
+        #    移除 "Processor" 后缀并转小写
+        if class_name.endswith("Processor"):
+            param_key = class_name[:-9].lower()
+        else:
+            # 备用逻辑：如果是 TestWorker 等其他命名
+            param_key = class_name.lower()
+
+        # 3. 尝试从 data_params 中获取对应的字段
+        #    config.data_params 是 DataParamsConfig 实例
+        self.specific_params = getattr(config.data_params, param_key, None)
+        local_filter = cast(
+            FilteringConfig, getattr(self.specific_params, "filtering", None)
+        )
+        # 3. 决策：局部优先，全局兜底
+        self.filtering_cfg = local_filter if local_filter is not None else global_filter
+        self.filtering_cfg
+        source = "LOCAL" if local_filter is not None else "GLOBAL"
+        logger.info(f"--- [{class_name}] Initialized. Filtering Strategy: {source}.")
         logger.info(
             f"--- [{self.__class__.__name__}] Initialized (Verbose Level: {self.verbose}). ---"
         )

@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 import helixlib as hx
-from helixpipe.configs import register_all_schemas
+from helixpipe.configs import GtopdbParams, register_all_schemas
 from helixpipe.utils import SchemaAccessor, get_path, register_hydra_resolvers
 
 # 导入基类和所有需要的辅助模块
@@ -144,7 +144,9 @@ class GtopdbProcessor(BaseProcessor):
 
         df_filtered = df.copy()
         # 2. 根据亲和力阈值过滤 (逻辑不变)
-        affinity_threshold = self.config.data_params.affinity_threshold_nM
+        affinity_threshold = cast(
+            GtopdbParams, self.config.data_params.gtopdb
+        ).affinity_threshold_nM
 
         df_filtered["affinity_nM"] = pd.to_numeric(
             df_filtered["affinity_nM"], errors="coerce"
@@ -171,11 +173,11 @@ if __name__ == "__main__":
     from omegaconf import OmegaConf
 
     from helixpipe.typing import AppConfig
+    from helixpipe.utils import setup_logging
 
     BASE_OVERRIDES = [
         "data_structure=gtopdb",
-        "data_params=gtopdb",
-    ]  # gtopdb 使用自己专属的参数集
+    ]
 
     parser = ArgumentParser(description="Run the GtoPdb processing pipeline.")
     parser.add_argument("user_overrides", nargs="*", help="Hydra overrides")
@@ -194,7 +196,7 @@ if __name__ == "__main__":
         cfg: "AppConfig" = cast(
             AppConfig, compose(config_name="config", overrides=final_overrides)
         )
-
+    setup_logging(cfg)
     logger.info("\n" + "~" * 80)
     logger.info(" " * 25 + "HYDRA COMPOSED CONFIGURATION")
     logger.info(OmegaConf.to_yaml(cfg))

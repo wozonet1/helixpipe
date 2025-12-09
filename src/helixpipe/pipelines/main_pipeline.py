@@ -62,7 +62,7 @@ def process_data(config: AppConfig, processor_outputs: ProcessorOutputs) -> None
     enriched_entities_df = _stage3_enrich_entities(raw_entities_df, config, provider)
 
     # === STAGE 4: 中心化校验 ===
-    valid_entities_df = validate_and_filter_entities(enriched_entities_df, config)
+    valid_entities_df = _stage4_validate_entities(enriched_entities_df, config)
     if valid_entities_df.empty:
         logger.warning("\n⚠️  No entities passed validation. Halting pipeline.")
         return
@@ -173,6 +173,37 @@ def _stage3_enrich_entities(
         f"Enrichment complete. {final_with_structure} / {len(enriched_df)} entities now have structures."
     )
     return enriched_df
+
+
+def _stage4_validate_entities(
+    enriched_df: pd.DataFrame, config: AppConfig
+) -> pd.DataFrame:
+    """
+    【Pipeline Stage 4】中心化校验。
+    应用所有过滤规则（全局 + 来源感知）并执行在线一致性检查。
+    """
+    logger.info("\n--- [Pipeline Stage 4] Validating and filtering entities... ---")
+
+    # 直接调用服务层函数
+    # 此时 enriched_df 必须包含 'entity_id', 'structure' 和 'all_sources' 列
+    valid_df = validate_and_filter_entities(enriched_df, config)
+
+    # 打印统计信息
+    total_input = len(enriched_df)
+    total_valid = len(valid_df)
+    removed = total_input - total_valid
+
+    if total_valid == 0:
+        logger.warning("⚠️  Validation resulted in 0 valid entities!")
+    else:
+        logger.info(
+            f"Validation complete.\n"
+            f"    - Input: {total_input}\n"
+            f"    - Valid: {total_valid}\n"
+            f"    - Removed: {removed} ({removed / total_input:.1%} rejection rate)"
+        )
+
+    return valid_df
 
 
 def _stage6_generate_features(

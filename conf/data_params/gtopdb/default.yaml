@@ -1,0 +1,3 @@
+affinity_threshold_nM: 10000
+filtering:
+  enabled: false

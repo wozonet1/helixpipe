@@ -1,0 +1,22 @@
+# conf/data_params/exp_cold_start_test.yaml
+
+defaults:
+  # 1. 选择具体的过滤策略 (指向 conf/data_params/filtering/strict.yaml)
+  - filtering: disabled
+
+  # 2. 选择具体的采样策略 (指向 conf/data_params/sampling/cold_drug_1to1.yaml)
+  # 注意：这里不需要用 @sampling，因为我们在 Dataclass 的 defaults 里定义了组名就叫 sampling
+  # Hydra 会自动映射
+  - sampling: colddrug_ligand_1-1_sample-0.1
+
+  # 3. 选择处理器参数 (如果需要非默认的)
+  - bindingdb: bindingdb_strict
+  - gtopdb: default
+  - brenda: default
+
+  - _self_
+
+# 定义该实验的名称
+name: "experiment_cold_drug_sampling_with_strict_filtering"
+# 其他顶层覆盖
+
