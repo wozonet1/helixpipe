@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 import helixlib as hx
 from helixpipe.configs import BindingdbParams, register_all_schemas
+from helixpipe.data_processing.services import filter_molecules_by_properties
 from helixpipe.typing import AppConfig
 from helixpipe.utils import SchemaAccessor, get_path, register_hydra_resolvers
 
@@ -172,6 +173,24 @@ class BindingdbProcessor(BaseProcessor):
         logger.info(
             f"    - {len(df_filtered)} / {len(df)} records passed affinity filter."
         )
+        smiles_col = "structure_molecule"
+        if smiles_col in df_filtered.columns:
+            # 【核心调用】传入 self.config.runtime.cpus
+            pass_mask = filter_molecules_by_properties(
+                smiles_series=df_filtered[smiles_col],
+                config=self.filtering_cfg,
+                cpus=self.config.runtime.cpus,
+            )
+
+            before_count = len(df_filtered)
+            df_filtered = df_filtered[pass_mask].copy()
+            logger.info(
+                f"      - Property filter removed {before_count - len(df_filtered)} rows."
+            )
+        else:
+            logger.warning(
+                f"      - Column '{smiles_col}' not found, skipping property filter."
+            )
 
         return df_filtered
 
