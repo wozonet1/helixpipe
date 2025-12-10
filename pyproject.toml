@@ -147,7 +147,7 @@ module = [
     "umap.*",
     "pubchempy",
     "transformers",
-    "transformers.*"
+    "transformers.*","faiss","faiss.*"
 ]
 ignore_missing_imports = true
 

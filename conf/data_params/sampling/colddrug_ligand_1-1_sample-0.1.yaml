@@ -18,7 +18,7 @@ stratified_sampling:
     # b. 定义目标层: 'drug'交互的数量与锚点层成1:1比例
     - name: "drugs_by_ratio"
       selector:
-        source_selector: { entity_types: [drug] }
+        source_selector: { entity_types: [molecule], from_sources: [bindingdb] }
       fraction: null # 使用 ratio_to 时，fraction 必须为 null
       ratio_to: "ligands_as_anchor"
       ratio: 1.0 # 比例为 1.0

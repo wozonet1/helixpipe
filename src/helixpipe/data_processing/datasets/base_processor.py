@@ -173,6 +173,49 @@ class BaseProcessor(ABC):
             self.schema.label,
         ]
 
+    def _smart_clean_id_column(self, series: pd.Series) -> pd.Series:
+        """
+        【新增】智能清洗 ID 列。
+        策略：
+        1. 尝试全量转数字。如果成功，转为 Int64。
+        2. 如果失败（说明包含字符串），则仅将混入的 float 转为 int，保留字符串。
+        """
+        if series.empty:
+            return series
+
+        # 尝试将所有值转为数字，无法转换的变成 NaN
+        numeric_series = pd.to_numeric(series, errors="coerce")
+
+        # --- 情况 A: 纯数字 ID (如 PubChem CID) ---
+        # 如果转换后没有新增 NaN (说明原始数据里全是数字，或者已经是数字字符串)
+        # 注意：这里我们要排除原始数据本身就是 NaN 的情况
+        original_notna_mask = series.notna()
+        if numeric_series[original_notna_mask].notna().all():
+            # 安全地转为 Int64 (支持 NaN 的整数)
+            return numeric_series.astype("Int64")
+
+        # --- 情况 B: 字符串 ID (如 UniProt) 或 混合脏数据 ---
+        # 这种情况下，我们不能直接用 numeric_series，因为会丢失字符串 ID。
+        # 我们使用 apply 做逐行清洗，虽然慢一点，但对于 ID 列的规模是可接受的，且最安全。
+        def clean_single_value(val):
+            if pd.isna(val):
+                return val
+            # 如果是浮点数 (123.0)，且是整数值，转为 int (123)
+            if isinstance(val, float) and val.is_integer():
+                return int(val)
+            # 如果是字符串形式的浮点数 ("123.0")，也尝试转一下 (BindingDB 有时会有这种情况)
+            if isinstance(val, str) and val.endswith(".0"):
+                try:
+                    return int(float(val))
+                except ValueError:
+                    return val.strip()
+            # 其他情况 (普通字符串 "P12345")，去除首尾空格
+            if isinstance(val, str):
+                return val.strip()
+            return val
+
+        return series.apply(clean_single_value)
+
     def _finalize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         if self.schema.label not in df.columns:
             df[self.schema.label] = 1
@@ -180,6 +223,8 @@ class BaseProcessor(ABC):
         final_cols = self._get_final_columns()
         cols_to_keep = [col for col in final_cols if col in df.columns]
         final_df = df[cols_to_keep].copy()
+
+        # 去重
         final_df.drop_duplicates(
             subset=[
                 self.schema.source_id,
@@ -191,18 +236,20 @@ class BaseProcessor(ABC):
         )
         final_df = final_df.reset_index(drop=True)
 
-        # --- 【核心修复】在这里进行最终的数据类型强制转换 ---
-        # 只有在DataFrame不为空时才执行
         if not final_df.empty:
-            # ID 列不再强制为 int，因为它们可能是字符串（如UniProt ID）
-            # 我们依赖 Processor 来确保ID类型的正确性
-            final_df[self.schema.source_id] = final_df[
-                self.schema.source_id
-            ]  # 保持原样
-            final_df[self.schema.target_id] = final_df[
-                self.schema.target_id
-            ]  # 保持原样
+            # --- 【核心修复】调用智能清洗逻辑 ---
+            # 对 source_id 和 target_id 应用清洗
+            if self.schema.source_id in final_df.columns:
+                final_df[self.schema.source_id] = self._smart_clean_id_column(
+                    final_df[self.schema.source_id]
+                )
 
+            if self.schema.target_id in final_df.columns:
+                final_df[self.schema.target_id] = self._smart_clean_id_column(
+                    final_df[self.schema.target_id]
+                )
+
+            # 其他列的类型转换保持不变
             final_df[self.schema.source_type] = final_df[
                 self.schema.source_type
             ].astype(str)
@@ -212,8 +259,6 @@ class BaseProcessor(ABC):
             final_df[self.schema.relation_type] = final_df[
                 self.schema.relation_type
             ].astype(str)
-
-            # label 可以是 int (分类) 或 float (回归)，所以我们只做数值转换
             final_df[self.schema.label] = pd.to_numeric(final_df[self.schema.label])
 
         return final_df

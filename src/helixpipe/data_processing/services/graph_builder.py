@@ -3,13 +3,13 @@
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from dataclasses import asdict
 from typing import DefaultDict, Literal, Union, overload
 
 import faiss
 import numpy as np
 import pandas as pd
 import torch
+from omegaconf import OmegaConf
 
 from helixpipe.typing import AppConfig, LogicID, LogicInteractionTriple
 
@@ -171,7 +171,7 @@ class HeteroGraphBuilder(GraphBuilder):
         dim = embeddings_np.shape[1]
         index = faiss.IndexFlatL2(dim)
         faiss.normalize_L2(embeddings_np)
-        index.add(n=num_embeddings, x=embeddings_np)
+        index.add(embeddings_np)  # type: ignore
         distances, indices = index.search(embeddings_np, k + 1)  # type: ignore
         if distances is None or indices is None:
             return [] if analysis_mode else None
@@ -284,9 +284,16 @@ class HeteroGraphBuilder(GraphBuilder):
         )
 
         # a. 识别出所有背景知识边类型
-        interaction_rel_types = set(
-            asdict(self.config.knowledge_graph.relation_types).values()
+        rel_types_dict = OmegaConf.to_container(
+            self.config.knowledge_graph.relation_types, resolve=True
         )
+        # 2. 获取 values 并转为 set
+        # 注意：to_container 返回的是 dict | list | None，这里肯定是 dict
+        if isinstance(rel_types_dict, dict):
+            interaction_rel_types = set(rel_types_dict.values())
+        else:
+            # 防御性编程，理论上不应发生
+            interaction_rel_types = set()
 
         # b. 遍历当前的 _edges 列表，只保留那些应该留下的
         edges_to_keep = []
