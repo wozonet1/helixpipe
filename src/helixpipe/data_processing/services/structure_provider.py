@@ -58,6 +58,7 @@ class StructureProvider:
             calculation_func=self._fetch_sequences_from_uniprot,
             ids_to_process=uniprot_ids,
             force_restart=force_restart,
+            offline_mode=self.config.runtime.strict_offline_mode,
             operation_name="Enriched Protein Sequences",
             verbose=self.config.runtime.verbose,
         )
@@ -71,6 +72,7 @@ class StructureProvider:
             calculation_func=self._fetch_smiles_from_pubchem,
             ids_to_process=cids,
             force_restart=force_restart,
+            offline_mode=self.config.runtime.strict_offline_mode,
             operation_name="Enriched Molecule SMILES",
             verbose=self.config.runtime.verbose,
         )

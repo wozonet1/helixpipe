@@ -51,9 +51,7 @@ class DataSplitter:
         self.num_folds = config.training.k_folds
         self.is_cold_start = self.coldstart_cfg.mode == "cold"
 
-        # 只有在确定是冷启动模式下，才去初始化 scope
-        if self.is_cold_start:
-            self._initialize_cold_start_scopes()
+        self._initialize_cold_start_scopes()
 
         self._evaluable_store, self._background_store = (
             self._presplit_by_evaluation_scope()
@@ -138,6 +136,7 @@ class DataSplitter:
         evaluation_scope = self.coldstart_cfg.evaluation_scope
         if evaluation_scope is None:
             raise RuntimeError("evaluation_scope is not specified")
+        logger.info(f"  - Using evaluation_scope: {evaluation_scope}")
         evaluable_store = self.store.query(evaluation_scope, self.id_mapper)
         background_store = self.store.difference(evaluable_store)
         return evaluable_store, background_store
@@ -181,7 +180,7 @@ class DataSplitter:
                 )
                 self._iterator = iter(skf.split(df, y_stratify))
 
-    def _split_data(self, split_result: SplitResult) -> SplitResult:
+    def _split_data(self, split_result: tuple) -> SplitResult:
         """
         【V2 - 极限调试版】
         执行实际的数据切分，操作InteractionStore对象，并打印详细的日志。

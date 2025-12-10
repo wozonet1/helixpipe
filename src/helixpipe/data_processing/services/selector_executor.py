@@ -49,6 +49,21 @@ class SelectorExecutor:
         # 2. 实体过滤
         if selector.source_selector or selector.target_selector:
             df_to_check = df[final_mask]
+            if self.verbose:
+                sample_s_id = df_to_check[source_col].iloc[0]
+                sample_t_id = df_to_check[target_col].iloc[0]
+                logger.debug(
+                    f"  [DEBUG-PROBE] InteractionStore ID Samples: Source={sample_s_id} (type={type(sample_s_id)}), Target={sample_t_id} (type={type(sample_t_id)})"
+                )
+                # 检查 IDMapper 中是否存在
+                s_meta = self.id_mapper.get_meta_by_auth_id(sample_s_id)
+                logger.debug(
+                    f"  [DEBUG-PROBE] IDMapper lookup for Source ID '{sample_s_id}': {s_meta}"
+                )
+
+                logger.debug(
+                    f"  [DEBUG-PROBE] Current Selector Config: Source={selector.source_selector}, Target={selector.target_selector}"
+                )
 
             # --- 正向匹配掩码 ---
             s_matches_s = self._get_entity_column_match_mask(
@@ -71,7 +86,9 @@ class SelectorExecutor:
             # --- 【核心修正】将结果安全地写回主掩码 ---
             # 只有在子掩码为False的地方，才将主掩码更新为False
             final_mask.loc[match_forward.index] &= match_forward | match_backward
-
+            logger.debug(
+                f"  [DEBUG-PROBE] Forward matches: {match_forward.sum()}, Backward matches: {match_backward.sum()}"
+            )
         return final_mask
 
     def _get_entity_column_match_mask(
@@ -82,10 +99,24 @@ class SelectorExecutor:
             return pd.Series(True, index=entity_id_column.index)
 
         unique_ids = entity_id_column.dropna().unique()
-        meta_cache = {
-            auth_id: self.id_mapper.get_meta_by_auth_id(auth_id)
-            for auth_id in unique_ids
-        }
+        meta_cache = {}
+        for auth_id in unique_ids:
+            # 1. 尝试直接查找
+            meta = self.id_mapper.get_meta_by_auth_id(auth_id)
+
+            # 2. 如果没找到，且是浮点数（例如 123.0），尝试转为 int 查找
+            if meta is None and isinstance(auth_id, float) and auth_id.is_integer():
+                meta = self.id_mapper.get_meta_by_auth_id(int(auth_id))
+
+            # 3. 如果没找到，且是字符串数字（例如 "123"），尝试转为 int 查找
+            if meta is None and isinstance(auth_id, str) and auth_id.isdigit():
+                meta = self.id_mapper.get_meta_by_auth_id(int(auth_id))
+
+            meta_cache[auth_id] = meta
+            if meta is None and self.verbose:
+                logger.debug(
+                    f"Failed to find meta for ID: {auth_id} (type: {type(auth_id)})"
+                )
         match_map = {}
         for uid, meta in meta_cache.items():
             if meta is None:

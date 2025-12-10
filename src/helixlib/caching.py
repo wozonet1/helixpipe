@@ -1,10 +1,13 @@
 # 文件: src/research_template/caching.py (最终升级版)
 
+import logging
 import pickle as pkl
 from pathlib import Path
 from typing import Callable
 
 from .path_manager import ensure_path_exists
+
+logger = logging.getLogger(__name__)
 
 
 def run_cached_operation(
@@ -13,6 +16,7 @@ def run_cached_operation(
     calculation_func: Callable[[list], dict],
     ids_to_process: list,
     force_restart: bool = False,
+    offline_mode: bool = False,
     operation_name: str = "cached operation",
     verbose: int = 1,
 ) -> dict:
@@ -52,7 +56,15 @@ def run_cached_operation(
     else:
         if verbose > 0:
             print(f"\n--> [Cache Miss/Restart] for '{operation_name}'.")
+    if offline_mode:
+        logger.info(
+            f"--> [Offline Mode] Skipping online fetch for '{operation_name}'. Using cache only."
+        )
 
+        # 即使 force_restart=True，offline_mode 的优先级也应该更高（或者互斥）
+        # 这里我们只从缓存中筛选出请求的 ID
+        # 对于缓存中不存在的 ID，它们将被默默丢弃（不返回）
+        return {k: v for k, v in cached_data.items() if k in set(ids_to_process)}
     # 2. 计算需要增量获取的ID
     requested_ids_set: set = set(ids_to_process)
     cached_ids_set: set = set(cached_data.keys())

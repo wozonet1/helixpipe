@@ -85,7 +85,6 @@ def process_data(config: AppConfig, processor_outputs: ProcessorOutputs) -> None
         config=config,
         id_mapper=id_mapper,
         entities_with_structures=valid_entities_df,
-        restart_flag=config.runtime.force_restart,
     )
 
     # === STAGE 7: 最终产物生成 (图 & 标签) ===
@@ -122,7 +121,7 @@ def _stage3_enrich_entities(
         f"Found {len(entities_to_enrich)} entities requiring structure enrichment."
     )
 
-    restart_flag = config.runtime.force_restart
+    refetch_flag = config.runtime.force_refetch_structures
 
     # --- 丰富化分子 (SMILES) ---
     mol_mask = entities_to_enrich["entity_type"].str.contains(
@@ -144,7 +143,7 @@ def _stage3_enrich_entities(
         logger.debug(f"Found {len(cids_to_fetch)} unique, valid integer CIDs to fetch.")
 
         if cids_to_fetch:
-            smiles_map = provider.get_smiles(cids_to_fetch, force_restart=restart_flag)
+            smiles_map = provider.get_smiles(cids_to_fetch, force_restart=refetch_flag)
             if smiles_map:
                 mapped_smiles = enriched_df.loc[to_enrich_mask, "entity_id"].map(
                     smiles_map
@@ -160,7 +159,7 @@ def _stage3_enrich_entities(
         )
         if pids_to_fetch:
             sequence_map = provider.get_sequences(
-                pids_to_fetch, force_restart=restart_flag
+                pids_to_fetch, force_restart=refetch_flag
             )
             if sequence_map:
                 mapped_sequences = enriched_df.loc[to_enrich_mask, "entity_id"].map(
@@ -210,7 +209,6 @@ def _stage6_generate_features(
     config: AppConfig,
     id_mapper: IDMapper,
     entities_with_structures: pd.DataFrame,
-    restart_flag: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     【V2 - 通用亚型版】为所有纯净实体生成或加载特征嵌入。
@@ -222,9 +220,9 @@ def _stage6_generate_features(
     )
 
     final_features_path = get_path(config, "processed.common.node_features")
-
+    feature_flag = config.runtime.force_regenerate_features
     # --- 缓存检查 (逻辑不变) ---
-    if final_features_path.exists() and not restart_flag:
+    if final_features_path.exists() and not feature_flag:
         logger.info(
             f"--> [Cache Hit] Loading final aggregated features from '{final_features_path.name}'."
         )
@@ -278,7 +276,7 @@ def _stage6_generate_features(
             # [修复] 传入有序的 ID 列表
             authoritative_ids=ordered_molecule_ids,
             sequences_or_smiles=ordered_smiles,
-            force_regenerate=restart_flag,
+            force_regenerate=feature_flag,
         )
 
     protein_features_dict = {}
@@ -290,7 +288,7 @@ def _stage6_generate_features(
             # [修复] 传入有序的 ID 列表
             authoritative_ids=ordered_protein_ids,
             sequences_or_smiles=ordered_sequences,
-            force_regenerate=restart_flag,
+            force_regenerate=feature_flag,
         )
 
     # --- 3. 按顺序组装最终的特征矩阵 (您的优秀重构) ---

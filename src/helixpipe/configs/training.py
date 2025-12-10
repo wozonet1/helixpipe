@@ -22,7 +22,6 @@ class ColdstartConfig:
         )
     )
     # 【核心修改】'evaluation_scope' 也是一个结构化的选择器
-    # 它定义了“边”的选择，所以需要两个选择器
     evaluation_scope: Optional[InteractionSelectorConfig] = None
 
     strictness: str = "strict"

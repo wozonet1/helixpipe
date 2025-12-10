@@ -9,6 +9,7 @@ from omegaconf import OmegaConf
 from helixpipe.configs import (
     AppConfig,
     EntitySelectorConfig,
+    InteractionSelectorConfig,
     register_all_schemas,
 )
 from helixpipe.configs.training import ColdstartConfig
@@ -130,7 +131,13 @@ class TestDataSplitter(unittest.TestCase):
             mode="warm",
             pool_scope=EntitySelectorConfig(),  # 空的 pool_scope 触发热启动
             test_fraction=0.5,
-            # evaluation_scope 走默认，只评估主角DTI (d1-p1, d2-p1)
+            # 【核心修复】显式定义 evaluation_scope 为“匹配所有”，
+            # 以覆盖默认的“只匹配主数据集”逻辑，从而满足断言的 5 条数据。
+            evaluation_scope=InteractionSelectorConfig(
+                source_selector=EntitySelectorConfig(),  # 空选择器 = 匹配所有源
+                target_selector=EntitySelectorConfig(),  # 空选择器 = 匹配所有目标
+                relation_types=None,  # 不限关系类型
+            ),
         )
         test_config = MOCK_BASE_CONFIG.copy()
         OmegaConf.update(test_config, "training.coldstart", coldstart_cfg)

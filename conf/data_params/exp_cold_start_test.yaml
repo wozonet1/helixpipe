@@ -17,6 +17,6 @@ defaults:
   - _self_
 
 # 定义该实验的名称
-name: "experiment_cold_drug_sampling_with_strict_filtering"
+name: "exp_cold_start_test"
 # 其他顶层覆盖
 

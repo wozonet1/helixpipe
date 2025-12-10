@@ -232,19 +232,34 @@ def apply_dynamic_filter(props: pd.DataFrame, criteria: pd.DataFrame) -> pd.Seri
     return mask
 
 
+# 文件: src/helixpipe/data_processing/services/filter.py
+
+
 def filter_molecules_by_properties(
-    smiles_series: pd.Series, config: FilteringConfig
+    smiles_series: pd.Series,
+    config: FilteringConfig,
+    cpus: int = 1,  # 【修改】新增参数，默认单核，安全第一
 ) -> pd.Series:
     """
-    (Legacy Wrapper) 一站式计算并应用静态过滤。
-    用于 Processor 的“机会主义过滤”。
+    (Wrapper) 一站式计算并应用静态过滤。
+    用于 Processor 的“机会主义过滤”或快速预处理。
+
+    Args:
+        smiles_series: 包含 SMILES 的 Series
+        config: 静态过滤配置对象
+        cpus: 并行计算的核心数 (由调用者传入，通常来自 runtime 配置)
     """
-    # 假设 cpus 默认为 1 或者从哪里获取，这里简化处理
-    # 实际项目中建议 Processor 直接分别调用 calculate 和 apply
-    props = calculate_molecular_properties(smiles_series, cpus=4)
+    # 1. 调用计算函数，传入动态的 cpus
+    #    calculate_molecular_properties 内部已经处理了 max(1, cpus)
+    props = calculate_molecular_properties(smiles_series, cpus=cpus)
+
+    # 2. 应用静态过滤
     mask = apply_static_filter(props, config)
 
-    # 需要返回与原始 smiles_series 对齐的 mask
+    # 3. 结果对齐 (处理计算失败导致的行丢失)
+    #    创建一个全 False 的掩码，索引与输入对齐
     final_mask = pd.Series(False, index=smiles_series.index)
+    #    将计算成功且通过过滤的行设为 True
     final_mask.loc[mask.index] = mask
+
     return final_mask
