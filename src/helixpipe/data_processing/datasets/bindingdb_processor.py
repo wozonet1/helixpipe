@@ -2,7 +2,8 @@
 
 import logging
 import sys
-from typing import cast
+from pathlib import Path
+from typing import BinaryIO, Union, cast
 
 import argcomplete
 import pandas as pd
@@ -14,7 +15,12 @@ import helixlib as hx
 from helixpipe.configs import BindingdbParams, register_all_schemas
 from helixpipe.data_processing.services import filter_molecules_by_properties
 from helixpipe.typing import AppConfig
-from helixpipe.utils import SchemaAccessor, get_path, register_hydra_resolvers
+from helixpipe.utils import (
+    SchemaAccessor,
+    TVManager,
+    get_path,
+    register_hydra_resolvers,
+)
 
 from .base_processor import BaseProcessor
 
@@ -51,14 +57,53 @@ class BindingdbProcessor(BaseProcessor):
         # 确保读取所有可能需要的列，包括亲和力和结构
         required_cols_for_processing = set(columns_to_read)
 
-        chunk_iterator = pd.read_csv(
-            tsv_path,
-            sep="\t",
-            on_bad_lines="warn",
-            usecols=lambda c: c in required_cols_for_processing,
-            low_memory=False,
-            chunksize=100000,
-        )
+        read_csv_kwargs = {
+            "sep": "\t",
+            "on_bad_lines": "warn",
+            "usecols": lambda c: c in required_cols_for_processing,
+            "low_memory": False,
+            "chunksize": 100000,  # 保持分块读取，节省内存
+        }
+
+        # 2. 决策：源头在哪里？
+        input_source: Union[Path, BinaryIO, None] = None
+        source_desc = ""
+
+        tv_config = self.config.storage.tensorvault
+
+        # [分支 A] TensorVault 模式
+        if tv_config.enabled and "bindingdb" in tv_config.dataset_hashes:
+            file_hash = tv_config.dataset_hashes["bindingdb"]
+            source_desc = f"TensorVault Remote (Hash: {file_hash[:8]}...)"
+
+            try:
+                client = TVManager.get_client(self.config)
+                # client.open 返回一个 file-like object
+                input_source = cast(BinaryIO, client.open(file_hash))
+            except Exception as e:
+                logger.error(f"❌ Failed to open TensorVault stream: {e}")
+                # 如果失败，是否回退到本地？
+                # 对于追求秩序的系统，建议直接报错，或者显式回退。这里演示回退逻辑：
+                logger.warning("⚠️ Falling back to local disk...")
+
+        # [分支 B] 本地磁盘模式 (兜底)
+        if input_source is None:
+            tsv_path = get_path(self.config, "raw.raw_tsv")
+            if not tsv_path.exists():
+                raise FileNotFoundError(f"Raw TSV file not found at '{tsv_path}'")
+            source_desc = f"Local Disk ({tsv_path.name})"
+            input_source = tsv_path
+
+        logger.info(f"--> Loading BindingDB from: {source_desc}")
+
+        # 3. 执行读取 (多态调用)
+        # 无论是路径字符串，还是流对象，pd.read_csv 都能处理
+        try:
+            chunk_iterator = pd.read_csv(input_source, **read_csv_kwargs)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to initiate CSV reading from {source_desc}: {e}"
+            )
 
         loaded_chunks = []
         disable_tqdm = self.verbose == 0
@@ -80,7 +125,9 @@ class BindingdbProcessor(BaseProcessor):
             )
             if not chunk.empty:
                 loaded_chunks.append(chunk)
-
+        closer = getattr(input_source, "close", None)
+        if callable(closer):
+            closer()
         return (
             pd.concat(loaded_chunks, ignore_index=True)
             if loaded_chunks
@@ -115,14 +162,6 @@ class BindingdbProcessor(BaseProcessor):
         final_df[self.schema.relation_type] = (
             self.config.knowledge_graph.relation_types.default
         )
-
-        # 附带所有下游需要的“原材料”
-        final_df["structure_molecule"] = df[
-            self.external_schema.get_col("molecule_sequence")
-        ]
-        final_df["structure_protein"] = df[
-            self.external_schema.get_col("protein_sequence")
-        ]
 
         # 附带亲和力数据以供下一步过滤
         for aff_type in [
@@ -173,8 +212,8 @@ class BindingdbProcessor(BaseProcessor):
         logger.info(
             f"    - {len(df_filtered)} / {len(df)} records passed affinity filter."
         )
-        smiles_col = "structure_molecule"
-        if smiles_col in df_filtered.columns:
+        smiles_col = self.external_schema.get_col("mocule_sequence")
+        if self.filtering_cfg.enabled:
             # 【核心调用】传入 self.config.runtime.cpus
             pass_mask = filter_molecules_by_properties(
                 smiles_series=df_filtered[smiles_col],
@@ -188,9 +227,7 @@ class BindingdbProcessor(BaseProcessor):
                 f"      - Property filter removed {before_count - len(df_filtered)} rows."
             )
         else:
-            logger.warning(
-                f"      - Column '{smiles_col}' not found, skipping property filter."
-            )
+            logger.info("    - No additional property filtering applied.")
 
         return df_filtered
 
