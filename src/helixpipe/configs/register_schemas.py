@@ -21,6 +21,7 @@ from .global_paths import GlobalPathsConfig
 from .knowledge_graph import KnowledgeGraphConfig
 from .relations import RelationsConfig
 from .runtime import RuntimeConfig
+from .storage import StorageConfig
 from .training import TrainingConfig
 from .validators import ValidatorsConfig
 
@@ -54,6 +55,7 @@ class AppConfig(DictConfig):
     global_paths: GlobalPathsConfig = field(default_factory=GlobalPathsConfig)
 
     knowledge_graph: KnowledgeGraphConfig = field(default_factory=KnowledgeGraphConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
 
 
 # --------------------------------------------------------------------------

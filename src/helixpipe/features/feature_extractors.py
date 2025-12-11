@@ -14,7 +14,7 @@ from .base_extractor import BaseFeatureExtractor  # 导入我们的新基类
 class EsmFeatureExtractor(BaseFeatureExtractor):
     def _load_model_and_tokenizer(self) -> tuple:
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        model = EsmModel.from_pretrained(self.model_name)
+        model = EsmModel.from_pretrained(self.model_name, use_safetensors=True)
         return model, tokenizer
 
     def _prepare_batch_input(
@@ -48,7 +48,7 @@ class EsmFeatureExtractor(BaseFeatureExtractor):
 class ChembertaFeatureExtractor(BaseFeatureExtractor):
     def _load_model_and_tokenizer(self) -> tuple:
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        model = AutoModel.from_pretrained(self.model_name)
+        model = AutoModel.from_pretrained(self.model_name, use_safetensors=True)
         return model, tokenizer
 
     def _prepare_batch_input(self, tokenizer: Any, batch_data: list[SMILES]) -> Any:

@@ -71,7 +71,7 @@ def _calculate_chunk(smiles_series: pd.Series) -> pd.DataFrame:
 
         if mol:
             try:
-                row[COL_MW] = Descriptors.MolWt(mol)
+                row[COL_MW] = Descriptors.MolWt(mol)  # type: ignore
                 row[COL_LOGP] = Descriptors.MolLogP(mol)  # type: ignore
                 row[COL_HBD] = Descriptors.NumHDonors(mol)  # type: ignore
                 row[COL_HBA] = Descriptors.NumHAcceptors(mol)  # type: ignore

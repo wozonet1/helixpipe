@@ -1,15 +1,23 @@
-# 文件: src/configs/training.py
+from dataclasses import dataclass, field
 
-from dataclasses import dataclass
+
+@dataclass
+class TensorVaultConfig:
+    """
+    TensorVault 服务的连接与资源映射配置。
+    """
+
+    host: str = "localhost:8080"
+    enabled: bool = False  # 总开关，方便回退到本地模式
+
+    # 资源映射表 (Logical Name -> Merkle Root Hash)
+    dataset_hashes: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class StorageConfig:
     """
-    【结构化配置】定义所有与模型训练和评估相关的参数。
+    顶层存储配置。
     """
 
-    name: str = "default"
-    port: int = 8080
-    host: str = "localhost"
-    enabled: bool = True
+    tensorvault: TensorVaultConfig = field(default_factory=TensorVaultConfig)

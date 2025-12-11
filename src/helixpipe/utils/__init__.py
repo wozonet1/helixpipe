@@ -27,6 +27,7 @@ from .log_setup import setup_logging
 
 # 从 pathing.py 中提升核心路径获取函数
 from .pathing import get_path
+from .tv_manager import TVManager
 
 # --- 使用 __all__ 明确定义公共API ---
 # 这份列表定义了当其他模块执行 `from helixpipe.utils import *` 时，
@@ -44,4 +45,5 @@ __all__ = [
     # log_setup.py
     "setup_logging",
     "SchemaAccessor",
+    "TVManager",
 ]
