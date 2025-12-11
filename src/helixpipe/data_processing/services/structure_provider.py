@@ -2,9 +2,11 @@
 
 import json
 import logging
+import pickle as pkl
 import re
 import time
-from typing import Optional
+from pathlib import Path
+from typing import Optional, cast
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -13,7 +15,7 @@ from tqdm import tqdm
 
 import helixlib as hx
 from helixpipe.typing import CID, PID, SMILES, AppConfig, ProteinSequence
-from helixpipe.utils import get_path
+from helixpipe.utils import TVManager, get_path
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +36,82 @@ class StructureProvider:
         self.config = config
         self.proxies = proxies
         self._session = self._create_session()
+        self._sync_cloud_cache()
         logger.info("--- [StructureProvider] Initialized. ---")
+
+    def _sync_cloud_cache(self):
+        """
+        [云原生特性] 启动时从 TensorVault 拉取共享缓存。
+        策略：Cloud -> Local Merge
+        """
+        tv_cfg = self.config.storage.tensorvault
+        if not tv_cfg.enabled:
+            return
+
+        # 定义我们要同步的缓存项 (Config Key -> Local Filename)
+        sync_targets = {
+            "uniprot_cache": "enriched_protein_sequences",
+            "pubchem_cache": "enriched_molecule_smiles",
+        }
+
+        for cfg_key, filename_key in sync_targets.items():
+            # 1. 检查配置是否有 Hash
+            if cfg_key not in tv_cfg.dataset_hashes:
+                continue
+
+            cloud_hash = tv_cfg.dataset_hashes[cfg_key]
+            # 获取本地缓存路径
+            local_path = cast(Path, get_path(self.config, f"cache.ids.{filename_key}"))
+
+            try:
+                logger.info(
+                    f"☁️ [StructureProvider] Syncing {cfg_key} from TensorVault ({cloud_hash[:8]})..."
+                )
+
+                # 2. 下载云端数据 (内存中)
+                client = TVManager.get_client(self.config)
+                with client.open(cloud_hash) as f:
+                    cloud_data = pkl.load(f)
+
+                if not isinstance(cloud_data, dict):
+                    logger.warning(f"⚠️ Cloud cache {cfg_key} is not a dict. Skipping.")
+                    continue
+
+                # 3. 加载本地数据 (如果存在)
+                local_data = {}
+                if local_path.exists():
+                    try:
+                        with open(local_path, "rb") as f:
+                            local_data = pkl.load(f)
+                    except Exception:
+                        local_data = {}
+
+                # 4. 合并策略：云端数据 补充进 本地数据
+                # (我们假设云端是“基准”，本地可能有更新的增量，所以 local 覆盖 cloud？
+                #  不，通常云端是共享的大全。为了简单，我们做 merge：如果本地没有，就用云端的)
+
+                # 计算增量
+                initial_len = len(local_data)
+                for k, v in cloud_data.items():
+                    if k not in local_data:
+                        local_data[k] = v
+
+                added_count = len(local_data) - initial_len
+
+                # 5. 如果有更新，写回本地磁盘
+                # 这样后续的 run_cached_operation 就能直接利用这些数据了
+                if added_count > 0:
+                    hx.ensure_path_exists(local_path)
+                    with open(local_path, "wb") as f:
+                        pkl.dump(local_data, f)
+                    logger.info(
+                        f"✅ Merged {added_count} items from cloud to local cache."
+                    )
+                else:
+                    logger.info("   Local cache is already up-to-date with cloud.")
+
+            except Exception as e:
+                logger.warning(f"❌ Failed to sync cloud cache {cfg_key}: {e}")
 
     def _create_session(self) -> requests.Session:
         """创建一个带有自动重试机制的requests Session。"""
