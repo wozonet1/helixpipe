@@ -1,1 +1,8 @@
+defaults:
+  # --- 核心魔法 ---
+  # 语法含义: 从 "/data_params/filtering" 组中加载 "strict" 选项，
+  # 并将其挂载到当前配置的 "filtering" 字段下 (@filtering)。
+  - /data_params/filtering@filtering: strict
+  - _self_
+
 affinity_threshold_nM: 100
