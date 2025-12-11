@@ -1,9 +1,10 @@
 # conf/storage/tensorvault.yaml
 
-name: tensorvault
-host: "localhost"
-port: 8080
-enabled: true
-# 默认的数据集 Hash (临时硬编码，未来通过 Metadata 查询)
-dataset_hashes:
-  bindingdb: "YOUR_BINDINGDB_HASH_HERE"
+tensorvault:
+  host: "localhost:8080"
+  enabled: true
+  # 默认的数据集 Hash (临时硬编码，未来通过 Metadata 查询)
+  dataset_hashes:
+    bindingdb: "c95cf824"
+    uniprot_cache: "b266fcbc"
+    pubchem_cache: "d565db0d"

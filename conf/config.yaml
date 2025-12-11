@@ -2,7 +2,7 @@ defaults:
   - base_app_schema
   - data_structure: bindingdb # 描述文件架构与文件内列的名字,与最终实际内容无关
   - relations: DPL_sim
-  - data_params: exp_cold_start_test
+  - data_params: test
   - dataset_collection: baseline # 辅助数据集的集合配置
   - validators: default
   - training: cold_drug_protagonist_eval
