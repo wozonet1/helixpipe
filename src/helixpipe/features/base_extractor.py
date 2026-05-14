@@ -1,7 +1,9 @@
 # 文件: src/helixpipe/features/base_extractor.py (全新)
 
 import logging
+import os
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -60,9 +62,20 @@ class BaseFeatureExtractor(ABC):
 
         # --- 1. 缓存命中阶段 ---
         if not force_regenerate:
+            # 批量读取缓存目录内容，用 1 次 syscall 替代 N 次 path.exists()
+            sample_path: Path = self._cache_path_factory(
+                authoritative_id=authoritative_ids[0]
+            )
+            cache_dir = sample_path.parent
+            cached_filenames: set[str] = set()
+            if cache_dir.is_dir():
+                with os.scandir(cache_dir) as it:
+                    cached_filenames = {entry.name for entry in it if entry.is_file()}
+
             for item_id, data_item in zip(authoritative_ids, sequences_or_smiles):
-                cache_path = self._cache_path_factory(authoritative_id=item_id)
-                if cache_path.exists():
+                expected_name = self._cache_path_factory(authoritative_id=item_id).name
+                if expected_name in cached_filenames:
+                    cache_path = cache_dir / expected_name
                     results_dict[item_id] = torch.load(cache_path, map_location="cpu")
                 else:
                     missed_ids.append(item_id)
@@ -108,6 +121,9 @@ class BaseFeatureExtractor(ABC):
 
                     cache_path = self._cache_path_factory(authoritative_id=item_id)
                     hx.ensure_path_exists(cache_path)
+                    # TODO: torch.save is not atomic — a crash mid-write leaves a corrupt
+                    #       .pt file that passes .exists() on next run. Use write-to-temp +
+                    #       os.replace() for atomic writes.
                     torch.save(embedding, cache_path)
 
         logger.info(

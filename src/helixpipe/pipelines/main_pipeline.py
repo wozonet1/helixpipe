@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Sequence, cast
 
@@ -220,23 +221,50 @@ def _stage6_generate_features(
     )
 
     final_features_path = get_path(config, "processed.common.node_features")
+    metadata_path = (
+        final_features_path.parent / f"{final_features_path.stem}_metadata.json"
+    )
     feature_flag = config.runtime.force_regenerate_features
-    # --- 缓存检查 (逻辑不变) ---
+    # --- 缓存检查 (含元数据校验) ---
     if final_features_path.exists() and not feature_flag:
-        logger.info(
-            f"--> [Cache Hit] Loading final aggregated features from '{final_features_path.name}'."
-        )
         features_np = np.load(final_features_path)
+        valid_cache = True
 
         if len(features_np) != id_mapper.num_total_entities:
             logger.warning(
-                f"    - ⚠️ WARNING: Cached feature file size ({len(features_np)}) does not match IDMapper count ({id_mapper.num_total_entities}). Regenerating."
+                f"    - Cached feature count ({len(features_np)}) != IDMapper count ({id_mapper.num_total_entities}). Regenerating."
             )
+            valid_cache = False
+        elif metadata_path.exists():
+            meta = json.loads(metadata_path.read_text())
+            mol_model = config.data_params.feature_extractors["molecule"].model_name
+            prot_model = config.data_params.feature_extractors["protein"].model_name
+            if (
+                meta.get("molecule_model") != mol_model
+                or meta.get("protein_model") != prot_model
+            ):
+                logger.warning(
+                    "    - Cached feature metadata does not match current config model names. Regenerating."
+                )
+                valid_cache = False
+            elif meta.get("embedding_dim") != features_np.shape[1]:
+                logger.warning(
+                    f"    - Cached embedding dim ({features_np.shape[1]}) != expected ({meta.get('embedding_dim')}). Regenerating."
+                )
+                valid_cache = False
         else:
+            logger.warning(
+                "    - Feature metadata file missing. Cannot verify cache integrity. Regenerating."
+            )
+            valid_cache = False
+
+        if valid_cache:
+            logger.info(
+                f"--> [Cache Hit] Loading features from '{final_features_path.name}'. Shape: {features_np.shape}"
+            )
             num_molecules = id_mapper.num_molecules
             molecule_embeddings = torch.from_numpy(features_np[:num_molecules])
             protein_embeddings = torch.from_numpy(features_np[num_molecules:])
-            logger.info("--> Features loaded successfully.")
             return molecule_embeddings, protein_embeddings
 
     logger.info("--> [Cache Miss/Regenerate] Starting feature calculation process...")
@@ -328,6 +356,10 @@ def _stage6_generate_features(
     )
 
     # --- 4. 维度对齐与保存 (逻辑不变) ---
+    # TODO: Linear projection uses random weights and is not persisted. If the cache
+    #       partially regenerates (e.g. only molecules re-extracted), this branch may
+    #       or may not execute, leading to dimension inconsistency. Consider saving
+    #       the projection weights or enforcing same-dimension models in config.
 
     if (
         molecule_embeddings.numel() > 0
@@ -351,6 +383,21 @@ def _stage6_generate_features(
     )
     hx.ensure_path_exists(final_features_path)
     np.save(final_features_path, all_feature_embeddings)
+
+    # 保存元数据用于下次缓存校验
+    try:
+        feat_cfg = config.data_params.feature_extractors
+        metadata = {
+            "molecule_model": feat_cfg["molecule"].model_name,
+            "protein_model": feat_cfg["protein"].model_name,
+            "embedding_dim": all_feature_embeddings.shape[1],
+        }
+        metadata_path.write_text(json.dumps(metadata, indent=2))
+    except Exception:
+        logger.warning(
+            "    - Failed to write feature metadata file. Cache will be invalidated on next run."
+        )
+
     logger.info(
         f"--> Final aggregated features saved to: '{final_features_path.name}'. Shape: {all_feature_embeddings.shape}"
     )
