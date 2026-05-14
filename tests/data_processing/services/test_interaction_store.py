@@ -386,6 +386,175 @@ class TestInteractionStore(unittest.TestCase):
         self.assertIn("source_dataset", filtered.dataframe.columns)
         self.assertEqual(filtered.dataframe["source_dataset"].iloc[0], "bindingdb")
 
+    def test_concat_merges_source_dataset(self):
+        """
+        验证 concat + dedup 策略 A：
+        同一交互来自多个 store 时，source_dataset 用 "|" 合并，
+        不同交互正常取并集。
+        """
+        # store_a: 两条来自 bindingdb 的交互
+        df_a = pd.DataFrame(
+            {
+                "s_id": [1, 2],
+                "s_type": ["drug", "drug"],
+                "t_id": ["P01", "P02"],
+                "t_type": ["protein", "protein"],
+                "rel_type": ["dti", "dti"],
+                "source_dataset": ["bindingdb", "bindingdb"],
+            }
+        )
+        # store_b: 其中一条与 store_a 重叠，另一条不同
+        df_b = pd.DataFrame(
+            {
+                "s_id": [1, 3],
+                "s_type": ["drug", "drug"],
+                "t_id": ["P01", "P03"],
+                "t_type": ["protein", "protein"],
+                "rel_type": ["dti", "dti"],
+                "source_dataset": ["gtopdb", "gtopdb"],
+            }
+        )
+        store_a = InteractionStore._from_dataframe(df_a, MOCK_CONFIG)
+        store_b = InteractionStore._from_dataframe(df_b, MOCK_CONFIG)
+
+        merged = InteractionStore.concat([store_a, store_b], MOCK_CONFIG)
+
+        # 应去重为 3 条：(1,P01), (2,P02), (3,P03)
+        self.assertEqual(len(merged), 3)
+        result_df = merged.dataframe
+
+        # 重叠的交互 (1, P01) 应合并来源
+        row_overlap = result_df[(result_df["s_id"] == 1) & (result_df["t_id"] == "P01")]
+        self.assertEqual(len(row_overlap), 1)
+        self.assertEqual(row_overlap["source_dataset"].iloc[0], "bindingdb|gtopdb")
+
+        # 非重叠的交互来源不变
+        row_b_only = result_df[(result_df["s_id"] == 2) & (result_df["t_id"] == "P02")]
+        self.assertEqual(row_b_only["source_dataset"].iloc[0], "bindingdb")
+
+        row_c_only = result_df[(result_df["s_id"] == 3) & (result_df["t_id"] == "P03")]
+        self.assertEqual(row_c_only["source_dataset"].iloc[0], "gtopdb")
+
+    def test_init_merges_duplicate_sources(self):
+        """
+        验证 __init__ 阶段的去重：
+        多个 Processor 输出包含同一交互时，source_dataset 被合并。
+        """
+        processor_outputs = {
+            "bindingdb": pd.DataFrame(
+                {
+                    "s_id": [1],
+                    "s_type": ["drug"],
+                    "t_id": ["P01"],
+                    "t_type": ["protein"],
+                    "rel_type": ["dti"],
+                    "source_dataset": ["bindingdb"],
+                }
+            ),
+            "gtopdb": pd.DataFrame(
+                {
+                    "s_id": [1],
+                    "s_type": ["drug"],
+                    "t_id": ["P01"],
+                    "t_type": ["protein"],
+                    "rel_type": ["dti"],
+                    "source_dataset": ["gtopdb"],
+                }
+            ),
+        }
+        store = InteractionStore(processor_outputs, MOCK_CONFIG)
+
+        self.assertEqual(len(store), 1)
+        self.assertEqual(store.dataframe["source_dataset"].iloc[0], "bindingdb|gtopdb")
+
+    def test_from_dataframe_auto_canonicalizes(self):
+        """
+        BUG-02 修复验证：_from_dataframe 默认执行规范化。
+        传入非规范化的 DataFrame（protein 在 source, drug 在 target），
+        应自动交换为规范化顺序。
+        """
+        # 非规范化：protein 在 source, drug 在 target
+        non_canonical_df = pd.DataFrame(
+            {
+                "s_id": ["P01"],
+                "s_type": ["protein"],
+                "t_id": [1],
+                "t_type": ["drug"],
+                "rel_type": ["dti"],
+                "source_dataset": ["test"],
+            }
+        )
+        store = InteractionStore._from_dataframe(non_canonical_df, MOCK_CONFIG)
+
+        # 应自动规范化：drug (priority=0) → source, protein (priority=10) → target
+        df = store.dataframe
+        self.assertEqual(df["s_id"].iloc[0], 1)
+        self.assertEqual(df["t_id"].iloc[0], "P01")
+
+    def test_from_dataframe_skip_canonicalize(self):
+        """
+        BUG-02 修复验证：skip_canonicalize=True 时保留原始顺序。
+        """
+        original_df = pd.DataFrame(
+            {
+                "s_id": ["P01"],
+                "s_type": ["protein"],
+                "t_id": [1],
+                "t_type": ["drug"],
+                "rel_type": ["dti"],
+                "source_dataset": ["test"],
+            }
+        )
+        store = InteractionStore._from_dataframe(
+            original_df, MOCK_CONFIG, skip_canonicalize=True
+        )
+
+        # 应保留原始顺序，不做交换
+        df = store.dataframe
+        self.assertEqual(df["s_id"].iloc[0], "P01")
+        self.assertEqual(df["t_id"].iloc[0], 1)
+
+    def test_concat_auto_canonicalizes(self):
+        """
+        BUG-02 修复验证：concat 合并两个 store 时，结果自动规范化。
+        即使某个 store 内部包含非规范化的行（理论上不应发生，但作为防御性保证）。
+        """
+        # store_a: 已规范化 (drug → source, protein → target)
+        df_a = pd.DataFrame(
+            {
+                "s_id": [1],
+                "s_type": ["drug"],
+                "t_id": ["P01"],
+                "t_type": ["protein"],
+                "rel_type": ["dti"],
+                "source_dataset": ["a"],
+            }
+        )
+        # store_b: 非规范化 (protein → source, drug → target)
+        df_b = pd.DataFrame(
+            {
+                "s_id": ["P02"],
+                "s_type": ["protein"],
+                "t_id": [2],
+                "t_type": ["drug"],
+                "rel_type": ["dti"],
+                "source_dataset": ["b"],
+            }
+        )
+        store_a = InteractionStore._from_dataframe(
+            df_a, MOCK_CONFIG, skip_canonicalize=True
+        )
+        store_b = InteractionStore._from_dataframe(
+            df_b, MOCK_CONFIG, skip_canonicalize=True
+        )
+
+        merged = InteractionStore.concat([store_a, store_b], MOCK_CONFIG)
+
+        df = merged.dataframe
+        # 两条都应规范化：drug → source
+        self.assertEqual(df["s_id"].iloc[0], 1)
+        self.assertEqual(df["s_id"].iloc[1], 2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

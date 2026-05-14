@@ -10,6 +10,7 @@ from .selector_executor import SelectorExecutor
 
 if TYPE_CHECKING:
     from helixpipe.configs import InteractionSelectorConfig
+    from helixpipe.configs.data_structure import CanonicalInteractionSchema
     from helixpipe.typing import AppConfig, AuthID, LogicInteractionTriple
 
     from .id_mapper import IDMapper
@@ -57,6 +58,9 @@ class InteractionStore:
                 "Filling with 'unknown'. Re-run processors with force_restart to fix."
             )
             aggregated_df[src_col] = "unknown"
+
+        # 去重：同一交互来自多个数据源时合并 source_dataset
+        aggregated_df = self._deduplicate_and_merge_source(aggregated_df, self._schema)
 
         aggregated_df[src_col] = aggregated_df[src_col].astype("category")
         logger.info(
@@ -124,14 +128,68 @@ class InteractionStore:
         logger.info("    - Canonicalization complete.")
         return df_swapped
 
+    @staticmethod
+    def _deduplicate_and_merge_source(
+        df: pd.DataFrame, schema: CanonicalInteractionSchema
+    ) -> pd.DataFrame:
+        """
+        (静态私有) 基于 canonical 列去重，并合并 source_dataset。
+        同一条交互来自多个数据源时，source_dataset 用 "|" 拼接（如 "bindingdb|gtopdb"）。
+        """
+        src_col = schema.source_dataset
+        s_col = schema.source_id
+        t_col = schema.target_id
+        r_col = schema.relation_type
+
+        if src_col not in df.columns or df.empty:
+            return df
+
+        dedup_cols = [s_col, t_col, r_col]
+        num_before = len(df)
+
+        def _merge_sources(series: pd.Series) -> str:
+            return "|".join(sorted(set(series.astype(str))))
+
+        deduped_df = df.groupby(dedup_cols, sort=False, as_index=False).agg(
+            {col: "first" for col in df.columns if col not in dedup_cols}
+            | {src_col: _merge_sources}
+        )
+
+        # 恢复列顺序和 category 类型
+        deduped_df = deduped_df[df.columns]
+        deduped_df[src_col] = deduped_df[src_col].astype("category")
+
+        num_after = len(deduped_df)
+        if num_before != num_after:
+            logger.info(
+                f"      - Deduplicated: {num_before} → {num_after} "
+                f"({num_before - num_after} merged rows)."
+            )
+        return deduped_df
+
     @classmethod
-    def _from_dataframe(cls, df: pd.DataFrame, config: AppConfig) -> InteractionStore:
-        """一个私有的工厂方法，用于通过已有的DataFrame创建新实例 (用于查询方法)。"""
+    def _from_dataframe(
+        cls,
+        df: pd.DataFrame,
+        config: AppConfig,
+        *,
+        skip_canonicalize: bool = False,
+    ) -> InteractionStore:
+        """
+        私有工厂方法，通过已有的 DataFrame 创建新实例。
+
+        Args:
+            skip_canonicalize: 为 True 时跳过规范化（调用方保证输入已规范化）。
+                               默认 False，自动执行规范化以维护不变量。
+        """
         store = cls.__new__(cls)
         store._config = config
         store._schema = config.data_structure.schema.internal.canonical_interaction
         store._verbose = config.runtime.verbose
-        store._df = df
+        if skip_canonicalize or df.empty:
+            store._df = df
+        else:
+            store._df = store._canonicalize_interactions(df)
         return store
 
     @classmethod
@@ -149,7 +207,7 @@ class InteractionStore:
             InteractionStore: 一个包含所有输入store中交互的新实例。
         """
         if not stores:
-            return cls._from_dataframe(pd.DataFrame(), config)
+            return cls._from_dataframe(pd.DataFrame(), config, skip_canonicalize=True)
 
         # 提取每个store内部的DataFrame
         dataframes_to_concat = [
@@ -157,10 +215,14 @@ class InteractionStore:
         ]
 
         if not dataframes_to_concat:
-            return cls._from_dataframe(pd.DataFrame(), config)
+            return cls._from_dataframe(pd.DataFrame(), config, skip_canonicalize=True)
 
         # 使用pandas.concat进行高效合并（source_dataset 列自动跟随）
         concatenated_df = pd.concat(dataframes_to_concat, ignore_index=True)
+
+        # 去重：同一交互来自多个 store 时合并 source_dataset
+        schema = config.data_structure.schema.internal.canonical_interaction
+        concatenated_df = cls._deduplicate_and_merge_source(concatenated_df, schema)
 
         return cls._from_dataframe(concatenated_df, config)
 
@@ -185,19 +247,23 @@ class InteractionStore:
         elif fraction is not None:
             if fraction >= 1.0:
                 logger.warning("fraction >=1.0, skipping sampling...")
-                return self._from_dataframe(self._df.copy(), self._config)
+                return self._from_dataframe(
+                    self._df.copy(), self._config, skip_canonicalize=True
+                )
             sampled_df = self._df.sample(
                 frac=fraction, random_state=seed, replace=False, ignore_index=True
             )
         else:
             logger.warning("no parameters was specified to sample")
-            return self._from_dataframe(self._df.copy(), self._config)
+            return self._from_dataframe(
+                self._df.copy(), self._config, skip_canonicalize=True
+            )
 
         logger.info(
             f"    - [InteractionStore.sample] Sampled {len(sampled_df)} interactions from {len(self._df)}."
         )
 
-        return self._from_dataframe(sampled_df, self._config)
+        return self._from_dataframe(sampled_df, self._config, skip_canonicalize=True)
 
     def difference(self, other: InteractionStore) -> InteractionStore:
         """
@@ -217,7 +283,9 @@ class InteractionStore:
         if self._df.empty:
             return self
         if other._df.empty:
-            return self._from_dataframe(self._df.copy(), self._config)
+            return self._from_dataframe(
+                self._df.copy(), self._config, skip_canonicalize=True
+            )
 
         # 只基于 canonical 列构建匹配键，忽略 source_dataset 等元数据列
         s_col, t_col, r_col = (
@@ -245,7 +313,9 @@ class InteractionStore:
 
         if not diff_keys:
             return self._from_dataframe(
-                pd.DataFrame(columns=self._df.columns), self._config
+                pd.DataFrame(columns=self._df.columns),
+                self._config,
+                skip_canonicalize=True,
             )
 
         # 用 canonical 列做布尔索引，保留行的所有列（含 source_dataset）
@@ -260,7 +330,7 @@ class InteractionStore:
 
         difference_df = self._df[diff_mask].reset_index(drop=True)
 
-        return self._from_dataframe(difference_df, self._config)
+        return self._from_dataframe(difference_df, self._config, skip_canonicalize=True)
 
     # --- 核心API ---
 
@@ -293,7 +363,7 @@ class InteractionStore:
             f"    - [InteractionStore] Filtered by entities. {len(pure_df)} / {len(self._df)} interactions remain."
         )
 
-        return self._from_dataframe(pure_df, self._config)
+        return self._from_dataframe(pure_df, self._config, skip_canonicalize=True)
 
     def get_mapped_positive_pairs(
         self, id_mapper: IDMapper
@@ -362,7 +432,7 @@ class InteractionStore:
 
         filtered_df = self._df.loc[final_mask]
 
-        return self._from_dataframe(filtered_df, self._config)
+        return self._from_dataframe(filtered_df, self._config, skip_canonicalize=True)
 
     def __len__(self) -> int:
         return len(self._df)
@@ -535,7 +605,9 @@ class InteractionStore:
             logger.debug(
                 "  No data left after all sampling strata. Returning empty store."
             )
-            return self._from_dataframe(pd.DataFrame(), self._config)
+            return self._from_dataframe(
+                pd.DataFrame(), self._config, skip_canonicalize=True
+            )
 
         final_df = pd.concat(final_sampled_dfs, ignore_index=True)
         logger.debug(f"  Total size after concatenating all strata: {len(final_df)}")
@@ -546,4 +618,6 @@ class InteractionStore:
         )
 
         logger.debug("  --- [_apply_stratified_sampling] END ---")
-        return self._from_dataframe(final_df_shuffled, self._config)
+        return self._from_dataframe(
+            final_df_shuffled, self._config, skip_canonicalize=True
+        )
