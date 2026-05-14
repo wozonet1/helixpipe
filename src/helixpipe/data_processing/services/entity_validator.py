@@ -58,7 +58,9 @@ def _compute_filtering_criteria(
     """
     # 1. 准备配置源
     #    这里假设 config.data_params 已经模块化
-    # TODO: 通过反射自动获取所有 processor 的配置
+    # TODO: ISSUE-13 — use reflection or a registry to auto-discover processor configs
+    #       instead of hard-coding source names here. Currently new processors
+    #       (e.g. StringProcessor) won't benefit from source-aware relaxation.
     source_configs: Dict[str, Optional[FilteringConfig]] = {
         "bindingdb": getattr(config.data_params.bindingdb, "filtering", None)
         if config.data_params.bindingdb
@@ -69,6 +71,9 @@ def _compute_filtering_criteria(
         "gtopdb": getattr(config.data_params.gtopdb, "filtering", None)
         if config.data_params.gtopdb
         else None,
+        # "string": getattr(config.data_params.string, "filtering", None)
+        # if config.data_params.string
+        # else None,
         # 如果有新的 processor，需在此添加映射，或者通过反射自动获取
     }
     global_cfg = config.data_params.filtering
@@ -206,8 +211,10 @@ def _validate_molecules(
         return pd.Series(dtype=bool)
 
     # 1. 基础校验 (ID 格式 & SMILES 语法)
+    #    pd.to_numeric + astype('Int64') 将 2244.0 / "2244" / "2244.0" 统一为 Int64，
+    #    与 get_valid_pubchem_cids 返回的 set[int] 类型一致，解决 BUG-06 的 float 漂移问题。
     valid_cids = get_valid_pubchem_cids(set(id_series), config)
-    id_mask = id_series.isin(valid_cids)
+    id_mask = pd.to_numeric(id_series, errors="coerce").astype("Int64").isin(valid_cids)
 
     canonical_smiles = validate_smiles_structure(structure_series)
     structure_mask = canonical_smiles.notna()
@@ -226,6 +233,11 @@ def _validate_molecules(
     # 注意：calculate_molecular_properties 可能会丢弃计算失败的行
     # 我们需要对齐索引
     valid_calc_indices = props_df.index
+    n_dropped = len(smiles_subset) - len(valid_calc_indices)
+    if n_dropped > 0:
+        logger.warning(
+            f"    - {n_dropped} molecules dropped due to failed property calculation (RDKit parse error or NaN result)."
+        )
 
     # 4. 构建动态策略 (调用本地函数)
     #    只为计算成功的行构建策略
@@ -266,6 +278,11 @@ def _validate_proteins(
 
     # 2. ID 白名单 (本地离线检查)
     valid_pids = get_human_uniprot_whitelist(set(df["id"]), config)
+    if not valid_pids:
+        raise RuntimeError(
+            "UniProt whitelist is empty after loading — the proteome TSV is missing or corrupt. "
+            "Check data/assets/uniprotkb_proteome_UP000005640.tsv."
+        )
     df["id_is_valid"] = df["id"].isin(valid_pids)
 
     # 3. 结构有效性 (字符集检查)
@@ -306,6 +323,10 @@ def validate_and_filter_entities(
     # --- 分子部分 ---
     # 使用正则表达式匹配所有分子类型 (drug, ligand, etc.)
     # 假设 'molecule' 是基类名，或者列出所有分子子类型
+    # TODO: gene/enzyme/receptor entity types fall through both molecule_mask and
+    #       protein_mask and are silently kept without any validation. Currently safe
+    #       because processors only output 'molecule' or 'protein' metatypes, but
+    #       adding gene/disease processors will bypass all validation.
     molecule_mask = entities_df["entity_type"].isin(
         [
             entity_types.drug,

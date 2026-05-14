@@ -102,9 +102,8 @@ def get_valid_pubchem_cids(cids_to_check: set["CID"], config: AppConfig) -> set[
     valid_cids = set()
     for cid in cids_to_check:
         try:
-            # 尝试将CID转换为整数，如果失败则跳过
-            int_cid = int(cid)
-            # 确保CID是正数
+            # int(float(cid)) 处理 2244.0 和 "2244.0" 等 Pandas float 漂移
+            int_cid = int(float(cid))
             if int_cid > 0:
                 valid_cids.add(int_cid)
         except (ValueError, TypeError):

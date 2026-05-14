@@ -63,10 +63,14 @@ def validate_protein_structure(
         return pd.Series(dtype=bool)
 
     # 1. 定义合法的氨基酸字符集 (包括不常见的)
+    # TODO: ISSUE-09 — VALID_SEQ_CHARS currently includes all A-Z, which accepts
+    #       nonsense sequences like "ZZZZZ". Should be restricted to the 20 standard
+    #       amino acids (ACDEFGHIKLMNPQRSTVWY) plus rare ones (U=selenocysteine,
+    #       O=pyrrolysine) and possibly X=unknown.
     VALID_SEQ_CHARS = "ACDEFGHIKLMNOPQRSTUVWXYZ"
     valid_chars_set = set(VALID_SEQ_CHARS)
 
-    def is_valid_sequence(seq) -> None:
+    def is_valid_sequence(seq) -> bool:
         if not isinstance(seq, str) or not seq:
             return False
         # 移除空格并转为大写，然后检查每个字符是否都在合法集合中

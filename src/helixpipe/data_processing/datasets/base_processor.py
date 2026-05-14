@@ -47,7 +47,6 @@ class BaseProcessor(ABC):
         )
         # 3. 决策：局部优先，全局兜底
         self.filtering_cfg = local_filter if local_filter is not None else global_filter
-        self.filtering_cfg
         source = "LOCAL" if local_filter is not None else "GLOBAL"
         logger.info(f"--- [{class_name}] Initialized. Filtering Strategy: {source}.")
         logger.info(

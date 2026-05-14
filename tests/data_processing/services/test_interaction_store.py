@@ -286,6 +286,100 @@ class TestInteractionStore(unittest.TestCase):
 
         print("  ✅ Passed.")
 
+    def test_difference_excludes_source_metadata(self):
+        """
+        BUG-01+ISSUE-07 修复验证：
+        difference() 应只基于 canonical 列 (source_id, target_id, relation_type) 计算差集，
+        不受任何内部元数据列的影响。
+
+        场景：同一个交互 (1, P01, dti) 同时出现在 source1 和 source2 中。
+        旧实现会因为 __source_dataset__ 列不同而将它们视为不同行，
+        导致 difference() 的结果中出现本应被减掉的数据泄漏。
+        """
+        # 构建一个包含来自多个数据源的交互的 store
+        # 注意：(1, P01, dti) 同时存在于 source1 和 source2
+        all_interactions = pd.DataFrame(
+            {
+                "s_id": [1, 2, 3],
+                "s_type": ["drug", "drug", "drug"],
+                "t_id": ["P01", "P02", "P03"],
+                "t_type": ["protein", "protein", "protein"],
+                "rel_type": ["dti", "dti", "dti"],
+            }
+        )
+        all_store = InteractionStore._from_dataframe(all_interactions, MOCK_CONFIG)
+
+        # evaluable store 包含 (1, P01, dti) 和 (2, P02, dti)
+        evaluable_df = pd.DataFrame(
+            {
+                "s_id": [1, 2],
+                "s_type": ["drug", "drug"],
+                "t_id": ["P01", "P02"],
+                "t_type": ["protein", "protein"],
+                "rel_type": ["dti", "dti"],
+            }
+        )
+        evaluable_store = InteractionStore._from_dataframe(evaluable_df, MOCK_CONFIG)
+
+        # 执行差集
+        background_store = all_store.difference(evaluable_store)
+
+        # background 应只包含 (3, P03, dti)
+        # 如果 __source_dataset__ 列泄漏到 difference() 中，
+        # 结果会错误地保留更多行
+        self.assertEqual(len(background_store), 1)
+        self.assertEqual(background_store.dataframe.s_id.iloc[0], 3)
+        self.assertEqual(background_store.dataframe.t_id.iloc[0], "P03")
+
+    def test_source_tags_preserved_through_operations(self):
+        """
+        验证 source_tags 在子集操作中被正确传递：
+
+        1. 初始化时记录每条交互的来源
+        2. filter_by_entities 后保留过滤结果的 source_tags
+        3. difference 后保留差集的 source_tags
+        4. source_tags 不出现在 DataFrame 列中
+        """
+        # 创建来自两个数据源的交互
+        processor_outputs = {
+            "bindingdb": pd.DataFrame(
+                {
+                    "s_id": [1, 2],
+                    "s_type": ["drug", "drug"],
+                    "t_id": ["P01", "P02"],
+                    "t_type": ["protein", "protein"],
+                    "rel_type": ["dti", "dti"],
+                }
+            ),
+            "gtopdb": pd.DataFrame(
+                {
+                    "s_id": [3],
+                    "s_type": ["drug"],
+                    "t_id": ["P03"],
+                    "t_type": ["protein"],
+                    "rel_type": ["dti"],
+                }
+            ),
+        }
+        store = InteractionStore(processor_outputs, MOCK_CONFIG)
+
+        # 断言：DataFrame 中不应该有 __source_dataset__ 列
+        self.assertNotIn("__source_dataset__", store.dataframe.columns)
+
+        # 断言：source_tags 应该记录来源
+        self.assertIsNotNone(store.get_source_for_interaction("1", "P01", "dti"))
+        self.assertEqual(
+            store.get_source_for_interaction("1", "P01", "dti"), "bindingdb"
+        )
+        self.assertEqual(store.get_source_for_interaction("3", "P03", "dti"), "gtopdb")
+
+        # 测试 filter_by_entities 后 source_tags 是否保留
+        # 过滤：只保留 source 1 和 target P01 对应的交互
+        filtered = store.filter_by_entities({1, "P01"})
+        self.assertEqual(len(filtered), 1)  # 只有 (1, P01) 两端都在有效集合中
+        source = filtered.get_source_for_interaction("1", "P01", "dti")
+        self.assertEqual(source, "bindingdb")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
