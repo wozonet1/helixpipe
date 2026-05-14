@@ -121,9 +121,9 @@ class BaseFeatureExtractor(ABC):
 
                     cache_path = self._cache_path_factory(authoritative_id=item_id)
                     hx.ensure_path_exists(cache_path)
-                    # TODO: torch.save is not atomic — a crash mid-write leaves a corrupt
-                    #       .pt file that passes .exists() on next run. Use write-to-temp +
-                    #       os.replace() for atomic writes.
+                    # TODO: torch.save 非原子操作——中途崩溃会留下损坏的 .pt 文件，
+                    #       下次运行时 .exists() 返回 True 但加载失败。
+                    #       应改为写临时文件 + os.replace() 保证原子性。
                     torch.save(embedding, cache_path)
 
         logger.info(

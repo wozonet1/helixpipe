@@ -356,10 +356,9 @@ def _stage6_generate_features(
     )
 
     # --- 4. 维度对齐与保存 (逻辑不变) ---
-    # TODO: Linear projection uses random weights and is not persisted. If the cache
-    #       partially regenerates (e.g. only molecules re-extracted), this branch may
-    #       or may not execute, leading to dimension inconsistency. Consider saving
-    #       the projection weights or enforcing same-dimension models in config.
+    # TODO: Linear 投影使用随机权重且不持久化。如果缓存部分失效（如仅重新提取
+    #       分子嵌入），此分支可能执行也可能不执行，导致维度不一致。
+    #       应保存投影权重或在配置中强制要求相同维度的模型。
 
     if (
         molecule_embeddings.numel() > 0

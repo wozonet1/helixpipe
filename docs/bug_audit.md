@@ -8,7 +8,7 @@
 
 ## 一、逻辑 Bug（会导致错误结果）
 
-### BUG-01: `InteractionStore.difference()` — 去重键包含内部列导致差集泄漏
+### BUG-01: `InteractionStore.difference()` — 去重键包含内部列导致差集泄漏 ✅ 已修复
 
 **文件**: `interaction_store.py:204-236`
 
@@ -19,11 +19,15 @@ other_set = set(other._df.itertuples(index=False, name=None))
 difference_set = current_set - other_set
 ```
 
-**问题**: `itertuples` 将每行的**所有列**纳入元组比较，包括 `__source_dataset__` 内部元数据列。`difference()` 被调用时，`other`（evaluable_store）通过 `query()` → `_from_dataframe()` 创建，其 `_df` 保留了 `__source_dataset__` 列。同一条交互如果来源不同（BindingDB vs GtopDB），元组就不等，差集结果就多出了本应被减掉的行。
+**问题**: `itertuples` 将每行的**所有列**纳入元组比较，包括 `source_dataset` 内部元数据列。`difference()` 被调用时，`other`（evaluable_store）通过 `query()` → `_from_dataframe()` 创建，其 `_df` 保留了 `source_dataset` 列。同一条交互如果来源不同（BindingDB vs GtopDB），元组就不等，差集结果就多出了本应被减掉的行。
 
 **影响**: `_presplit_by_evaluation_scope()` 中 `self.store.difference(evaluable_store)` 计算的 background_store 可能包含本应属于 evaluable 的交互，导致数据泄漏到训练集中。
 
 **严重度**: 高
+
+**修复** (2026-05-11): 将 `source_dataset` 从 DataFrame 中移出，改为独立的 `_source_tags` 字典。`difference()` 改为仅基于 canonical 列 (source_id, target_id, relation_type) 构建匹配键，使用布尔索引而非元组集合运算。
+
+**修订** (2026-05-13): 将 `source_dataset` 改回 DataFrame 列，但作为正式的 schema 字段（`CanonicalInteractionSchema.source_dataset`），由 `BaseProcessor._finalize_columns()` 在输出时盖章。`difference()` 仅基于 canonical 三列比较，不纳入 `source_dataset`，因此列的存在不影响差集正确性。同时删除了 `_source_tags` 字典及其所有维护代码（`_rebuild_source_tags`、`_filter_source_tags`、`get_source_for_interaction`）。
 
 ---
 
@@ -120,20 +124,24 @@ if (source_id, target_id) not in self.global_positive_set and \
 
 ## 二、数据精度 / 静默错误问题
 
-### ISSUE-07: `__source_dataset__` 列泄漏到整个流水线
+### ISSUE-07: `source_dataset` 列泄漏到整个流水线 ✅ 已修复
 
-**文件**: `interaction_store.py:47`
+**文件**: `interaction_store.py:47`, `base_processor.py:218`
 
 **现状**:
 ```python
 df_copy["__source_dataset__"] = source_dataset
 ```
 
-**问题**: `__source_dataset__` 在聚合时被添加到每条交互上，此后再也没有被移除。它会在 `difference()` 的元组比较中造成错误（BUG-01），也会在 `concat()` 中传播。`get_mapped_positive_pairs()` 只取三列所以不受影响，但任何直接操作 `dataframe` 属性的代码都会看到这个多余的列。
+**问题**: `source_dataset` 在聚合时被添加到每条交互上，此后再也没有被移除。它会在 `difference()` 的元组比较中造成错误（BUG-01），也会在 `concat()` 中传播。`get_mapped_positive_pairs()` 只取三列所以不受影响，但任何直接操作 `dataframe` 属性的代码都会看到这个多余的列。
 
 **影响**: 数据泄漏 + BUG-01 的根因。
 
 **严重度**: 中（与 BUG-01 联动则为高）
+
+**修复** (2026-05-11): 不再将 `source_dataset` 作为 DataFrame 列，改为存储在独立的 `_source_tags: dict[tuple, str]` 字典中。关键字为 `(str(source_id), str(target_id), relation_type)` 三元组。`difference()` 改为只基于 canonical 列比较。新增 `_rebuild_source_tags()` 处理规范化后的 key 重建，`_filter_source_tags()` 处理子集操作后的 tags 过滤，`get_source_for_interaction()` 提供公共查询接口。
+
+**修订** (2026-05-13): 将 `source_dataset` 改回 DataFrame 列，升级为 `CanonicalInteractionSchema` 的正式字段。由 `BaseProcessor._finalize_columns()` 在输出阶段自动盖章（`df[schema.source_dataset] = self.source_name`），不再由 `InteractionStore.__init__` 手动添加。`difference()` 仅基于 canonical 三列比较，列的存在不影响正确性。删除了 `_source_tags` 字典及所有维护代码，`InteractionStore.__init__` 简化为纯 `pd.concat`。列名从 `__source_dataset__` 改为 `source_dataset`（去除双下划线）。
 
 ---
 
@@ -292,7 +300,7 @@ other_set = set(other._df.itertuples(index=False, name=None))
 
 ## 优先修复建议
 
-1. **BUG-01 + ISSUE-07** (高): 修复 `difference()` 和清理 `__source_dataset__` 列。应在 `__init__` 聚合完成后立即将 `__source_dataset__` 信息迁移到单独的结构中，从 DataFrame 移除该列。`difference()` 应只基于 canonical interaction 列做比较。
+1. **BUG-01 + ISSUE-07** (高): ✅ 已修复 (2026-05-11, 修订 2026-05-13)。`difference()` 仅基于 canonical 三列比较。`source_dataset` 升级为 `CanonicalInteractionSchema` 正式字段，由 `BaseProcessor` 在输出时盖章，`InteractionStore` 做纯 `pd.concat`。
 
 2. **BUG-06** (高): 在 `Processor` 输出阶段或 `InteractionStore.__init__` 阶段，对 CID 列强制转为 `int` 类型。在 `_canonicalize_interactions` 中也做类型规范化。
 

@@ -42,6 +42,7 @@ class BaseProcessor(ABC):
         # 3. 尝试从 data_params 中获取对应的字段
         #    config.data_params 是 DataParamsConfig 实例
         self.specific_params = getattr(config.data_params, param_key, None)
+        self.source_name = param_key
         local_filter = cast(
             FilteringConfig, getattr(self.specific_params, "filtering", None)
         )
@@ -170,6 +171,7 @@ class BaseProcessor(ABC):
             self.schema.target_type,
             self.schema.relation_type,
             self.schema.label,
+            self.schema.source_dataset,
         ]
 
     def _smart_clean_id_column(self, series: pd.Series) -> pd.Series:
@@ -218,6 +220,9 @@ class BaseProcessor(ABC):
     def _finalize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         if self.schema.label not in df.columns:
             df[self.schema.label] = 1
+
+        # 盖章：标记每条交互的来源数据集
+        df[self.schema.source_dataset] = self.source_name
 
         final_cols = self._get_final_columns()
         cols_to_keep = [col for col in final_cols if col in df.columns]

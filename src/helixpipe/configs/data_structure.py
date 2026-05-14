@@ -206,7 +206,7 @@ class PathsConfig:
 # --- Schema相关的Dataclasses ---
 @dataclass
 class CanonicalInteractionSchema:
-    """定义项目内部“规范化交互DataFrame”的标准列名。"""
+    """定义项目内部规范化交互 DataFrame 的标准列名。"""
 
     source_id: str = "source_id"
     source_type: str = "source_type"
@@ -214,6 +214,7 @@ class CanonicalInteractionSchema:
     target_type: str = "target_type"
     relation_type: str = "relation_type"
     label: str = "label"
+    source_dataset: str = "source_dataset"
 
 
 # @dataclass

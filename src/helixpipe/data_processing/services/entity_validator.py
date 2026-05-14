@@ -58,9 +58,9 @@ def _compute_filtering_criteria(
     """
     # 1. 准备配置源
     #    这里假设 config.data_params 已经模块化
-    # TODO: ISSUE-13 — use reflection or a registry to auto-discover processor configs
-    #       instead of hard-coding source names here. Currently new processors
-    #       (e.g. StringProcessor) won't benefit from source-aware relaxation.
+    # TODO: ISSUE-13 — 应使用反射或注册表自动发现 processor 的过滤配置，
+    #       而非在此硬编码数据源名称。当前新增的 processor（如 StringProcessor）
+    #       无法享受来源感知的放宽策略。
     source_configs: Dict[str, Optional[FilteringConfig]] = {
         "bindingdb": getattr(config.data_params.bindingdb, "filtering", None)
         if config.data_params.bindingdb
@@ -323,10 +323,9 @@ def validate_and_filter_entities(
     # --- 分子部分 ---
     # 使用正则表达式匹配所有分子类型 (drug, ligand, etc.)
     # 假设 'molecule' 是基类名，或者列出所有分子子类型
-    # TODO: gene/enzyme/receptor entity types fall through both molecule_mask and
-    #       protein_mask and are silently kept without any validation. Currently safe
-    #       because processors only output 'molecule' or 'protein' metatypes, but
-    #       adding gene/disease processors will bypass all validation.
+    # TODO: gene/enzyme/receptor 等实体类型会同时穿透 molecule_mask 和 protein_mask，
+    #       不经过任何校验就被保留。当前安全，因为 processor 只输出 'molecule' 或
+    #       'protein' metatype，但新增 gene/disease processor 时会绕过所有校验。
     molecule_mask = entities_df["entity_type"].isin(
         [
             entity_types.drug,

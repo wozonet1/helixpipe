@@ -31,21 +31,16 @@ class InteractionStore:
         self, processor_outputs: dict[str, pd.DataFrame], config: AppConfig
     ) -> None:
         """
-        【V2 - 带规范化排序版】
-        在流水线早期，通过聚合所有Processor的输出来初始化，并立即对交互对进行规范化。
+        通过聚合所有 Processor 的输出来初始化，并立即规范化交互对。
+        来源信息由 BaseProcessor 在输出时盖章为 source_dataset 列，
+        此处只做 concat + 规范化。
         """
         self._config = config
         self._schema = config.data_structure.schema.internal.canonical_interaction
         self._verbose = config.runtime.verbose
 
-        # 1. 聚合所有交互 (逻辑不变)
-        all_dfs = []
-        # ... (聚合 processor_outputs 的代码保持不变)
-        for source_dataset, df in processor_outputs.items():
-            if not df.empty:
-                df_copy = df.copy()
-                df_copy["__source_dataset__"] = source_dataset
-                all_dfs.append(df_copy)
+        # 1. 聚合所有交互（source_dataset 列已由 BaseProcessor 盖章）
+        all_dfs = [df.copy() for df in processor_outputs.values() if not df.empty]
 
         if not all_dfs:
             self._df = pd.DataFrame()
@@ -53,11 +48,22 @@ class InteractionStore:
             return
 
         aggregated_df = pd.concat(all_dfs, ignore_index=True)
+
+        # 防御性检查：兼容旧缓存 CSV 中可能缺少 source_dataset 列的情况
+        src_col = self._schema.source_dataset
+        if src_col not in aggregated_df.columns:
+            logger.warning(
+                f"    - '{src_col}' column missing from aggregated data. "
+                "Filling with 'unknown'. Re-run processors with force_restart to fix."
+            )
+            aggregated_df[src_col] = "unknown"
+
+        aggregated_df[src_col] = aggregated_df[src_col].astype("category")
         logger.info(
             f"--- [InteractionStore] Initialized with {len(aggregated_df)} total raw interactions."
         )
 
-        # 2. 【核心新增】调用规范化方法
+        # 2. 规范化交互对（source/target 交换时，source_dataset 随行一起交换）
         self._df = self._canonicalize_interactions(aggregated_df)
 
     def _canonicalize_interactions(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -143,7 +149,6 @@ class InteractionStore:
             InteractionStore: 一个包含所有输入store中交互的新实例。
         """
         if not stores:
-            # 如果输入列表为空，返回一个空的InteractionStore
             return cls._from_dataframe(pd.DataFrame(), config)
 
         # 提取每个store内部的DataFrame
@@ -154,10 +159,9 @@ class InteractionStore:
         if not dataframes_to_concat:
             return cls._from_dataframe(pd.DataFrame(), config)
 
-        # 使用pandas.concat进行高效合并
+        # 使用pandas.concat进行高效合并（source_dataset 列自动跟随）
         concatenated_df = pd.concat(dataframes_to_concat, ignore_index=True)
 
-        # 使用工厂方法创建并返回新实例
         return cls._from_dataframe(concatenated_df, config)
 
     def sample(
@@ -167,7 +171,6 @@ class InteractionStore:
         seed: int | None = None,
     ) -> InteractionStore:
         """
-        【V2 - 修正版】
         对内部的交互进行随机采样，并返回一个新的、经过采样的InteractionStore实例。
 
         智能处理 n 和 fraction 参数，n 优先。
@@ -175,11 +178,7 @@ class InteractionStore:
         if self._df.empty:
             return self
 
-        # [修复] 不再使用 sample_kwargs 字典
-        sampled_df: pd.DataFrame
-
         if n is not None:
-            # 直接调用，参数明确
             sampled_df = self._df.sample(
                 n=n, random_state=seed, replace=False, ignore_index=True
             )
@@ -187,7 +186,6 @@ class InteractionStore:
             if fraction >= 1.0:
                 logger.warning("fraction >=1.0, skipping sampling...")
                 return self._from_dataframe(self._df.copy(), self._config)
-            # 直接调用，参数明确
             sampled_df = self._df.sample(
                 frac=fraction, random_state=seed, replace=False, ignore_index=True
             )
@@ -207,7 +205,8 @@ class InteractionStore:
         返回一个新的InteractionStore，包含在当前store中但不在other store中的交互。
 
         这对于计算 a - b (例如，(所有交互) - (可评估交互) = 背景知识) 非常有用。
-        匹配基于所有列的完全匹配。
+        匹配仅基于 canonical 交互列 (source_id, target_id, relation_type)，
+        不受 source_dataset 等元数据列影响。
 
         Args:
             other (InteractionStore): 要减去的另一个store。
@@ -220,18 +219,46 @@ class InteractionStore:
         if other._df.empty:
             return self._from_dataframe(self._df.copy(), self._config)
 
-        # 为了高效地计算差集，我们将DataFrame转换为元组集合
-        # 注意：这假设DataFrame的行序不重要
-        current_set = set(self._df.itertuples(index=False, name=None))
-        other_set = set(other._df.itertuples(index=False, name=None))
+        # 只基于 canonical 列构建匹配键，忽略 source_dataset 等元数据列
+        s_col, t_col, r_col = (
+            self._schema.source_id,
+            self._schema.target_id,
+            self._schema.relation_type,
+        )
 
-        difference_set = current_set - other_set
+        self_keys = set(
+            zip(
+                self._df[s_col].astype(str),
+                self._df[t_col].astype(str),
+                self._df[r_col],
+            )
+        )
+        other_keys = set(
+            zip(
+                other._df[s_col].astype(str),
+                other._df[t_col].astype(str),
+                other._df[r_col],
+            )
+        )
 
-        if not difference_set:
-            return self._from_dataframe(pd.DataFrame(), self._config)
+        diff_keys = self_keys - other_keys
 
-        # 将结果转换回DataFrame
-        difference_df = pd.DataFrame(list(difference_set), columns=self._df.columns)
+        if not diff_keys:
+            return self._from_dataframe(
+                pd.DataFrame(columns=self._df.columns), self._config
+            )
+
+        # 用 canonical 列做布尔索引，保留行的所有列（含 source_dataset）
+        key_col = (
+            self._df[s_col].astype(str)
+            + "|"
+            + self._df[t_col].astype(str)
+            + "|"
+            + self._df[r_col].astype(str)
+        )
+        diff_mask = key_col.isin({"|".join(k) for k in diff_keys})
+
+        difference_df = self._df[diff_mask].reset_index(drop=True)
 
         return self._from_dataframe(difference_df, self._config)
 
@@ -252,7 +279,7 @@ class InteractionStore:
     def filter_by_entities(self, valid_entity_ids: set[AuthID]) -> InteractionStore:
         """
         【不可变操作】
-        接收一个纯净的实体ID集合，返回一个只包含“纯净”交互的新InteractionStore实例。
+        接收一个纯净的实体ID集合，返回一个只包含"纯净"交互的新InteractionStore实例。
         """
         if self._df.empty:
             return self
@@ -308,10 +335,9 @@ class InteractionStore:
         self, selector: InteractionSelectorConfig, id_mapper: IDMapper
     ) -> InteractionStore:
         """
-        【V3 - Executor 委托版】
         根据一个复杂的交互选择器，返回一个新的、只包含匹配结果的InteractionStore。
 
-        此方法现在将所有复杂的匹配逻辑完全委托给 SelectorExecutor 服务。
+        此方法将所有复杂的匹配逻辑完全委托给 SelectorExecutor 服务。
         """
         if self._df.empty:
             logger.warning("    - [Store.query] Store is empty, returning self.")
@@ -320,12 +346,8 @@ class InteractionStore:
             logger.warning("    - [Store.query] Selector is None, returning self.")
             return self
 
-        # 1. 实例化执行器
-        #    我们在这里传入一个 verbose 参数，以便于未来需要时进行调试
         executor = SelectorExecutor(id_mapper, verbose=self._verbose > 1)
 
-        # 2. 【核心变化】直接调用 executor 来获取最终的匹配掩码
-        #    executor 内部已经封装了所有逻辑（关系类型过滤、实体过滤、双向匹配）。
         final_mask = executor.get_interaction_match_mask(
             df=self._df,
             selector=selector,
@@ -338,7 +360,6 @@ class InteractionStore:
             f"    - [Store.query] Executed selector, {final_mask.sum()} / {len(self._df)} interactions matched."
         )
 
-        # 3. 使用最终掩码筛选 DataFrame，并创建新实例
         filtered_df = self._df.loc[final_mask]
 
         return self._from_dataframe(filtered_df, self._config)
@@ -355,7 +376,6 @@ class InteractionStore:
         self, config: AppConfig, executor: SelectorExecutor, seed: int
     ) -> InteractionStore:
         """
-        【便利层API - 极限调试版】
         根据配置，以流水线方式对Store中的交互执行一个完整的采样策略，
         并返回一个新的、经过采样的InteractionStore实例。
 
@@ -524,5 +544,6 @@ class InteractionStore:
         final_df_shuffled = final_df.sample(frac=1, random_state=rng).reset_index(
             drop=True
         )
+
         logger.debug("  --- [_apply_stratified_sampling] END ---")
         return self._from_dataframe(final_df_shuffled, self._config)
