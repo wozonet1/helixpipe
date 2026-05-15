@@ -5,7 +5,7 @@ import pandas as pd
 from helper import create_test_config
 
 from helixpipe.configs import register_all_schemas
-from helixpipe.data_processing.services.label_generator import SupervisionFileManager
+from helixpipe.data_processing.services.label_generator import LabelGenerator
 
 # 导入所有需要的模块
 from helixpipe.typing import AppConfig
@@ -82,7 +82,7 @@ MOCK_CONFIG: AppConfig = create_test_config(
 )
 
 
-class TestSupervisionFileManager(unittest.TestCase):
+class TestLabelGenerator(unittest.TestCase):
     @patch("helixpipe.data_processing.services.label_generator.get_path")
     def setUp(self, mock_get_path):
         """为所有测试准备一个通用的 manager 实例。"""
@@ -94,7 +94,7 @@ class TestSupervisionFileManager(unittest.TestCase):
         mock_path_factory.return_value = MagicMock(name="fake_path_object")
         mock_get_path.return_value = mock_path_factory
         # 创建一个 manager 实例，它将在多个测试中被使用
-        self.manager = SupervisionFileManager(
+        self.manager = LabelGenerator(
             fold_idx=1,
             config=MOCK_CONFIG,
             id_mapper=self.mock_id_mapper,

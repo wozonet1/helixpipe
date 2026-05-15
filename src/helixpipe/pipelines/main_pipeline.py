@@ -12,9 +12,9 @@ from helixpipe.data_processing import (
     HeteroGraphBuilder,
     IDMapper,
     InteractionStore,
+    LabelGenerator,
     SelectorExecutor,
     StructureProvider,
-    SupervisionFileManager,
     validate_and_filter_entities,
 )
 from helixpipe.data_processing.services.graph_context import (
@@ -471,7 +471,7 @@ def _stage7_split_and_build_graphs(
         )
 
         # a. 实例化 LabelGenerator
-        label_manager = SupervisionFileManager(
+        label_manager = LabelGenerator(
             fold_idx=fold_idx,
             config=config,
             id_mapper=id_mapper,

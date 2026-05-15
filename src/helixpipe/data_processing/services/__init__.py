@@ -7,7 +7,7 @@ from .id_mapper import IDMapper
 # --- 3. [可选] 提升最常用的"轻量级"工具函数 ---
 from .id_validation_service import get_human_uniprot_whitelist, get_valid_pubchem_cids
 from .interaction_store import InteractionStore
-from .label_generator import SupervisionFileManager
+from .label_generator import LabelGenerator
 from .purifiers import validate_protein_structure, validate_smiles_structure
 from .selector_executor import SelectorExecutor
 from .splitter import DataSplitter
@@ -23,7 +23,7 @@ __all__ = [
     "DataSplitter",
     "HeteroGraphBuilder",
     "GraphBuilder",
-    "SupervisionFileManager",
+    "LabelGenerator",
     # 重量级函数
     "filter_molecules_by_properties",
     "validate_and_filter_entities",

@@ -19,7 +19,7 @@ LogicInteractionPair = tuple["LogicID", "LogicID"]
 AuthInteractionPair = tuple["AuthID", "AuthID"]
 
 
-class SupervisionFileManager:
+class LabelGenerator:
     """
     【V4 - 逻辑与I/O分离版】
     为一个Fold生成并持久化所有模型监督文件的服务。
@@ -60,7 +60,7 @@ class SupervisionFileManager:
         """
         if self.verbose > 0:
             logger.info(
-                f"--- [SupervisionManager Fold {self.fold_idx}] Generating label files... ---"
+                f"--- [LabelGenerator Fold {self.fold_idx}] Generating label files... ---"
             )
 
         # 1. 调用逻辑方法生成DataFrame

@@ -12,9 +12,9 @@ from .services import (
     HeteroGraphBuilder,
     IDMapper,
     InteractionStore,
+    LabelGenerator,
     SelectorExecutor,
     StructureProvider,
-    SupervisionFileManager,
     filter_molecules_by_properties,
     validate_and_filter_entities,
 )
@@ -27,7 +27,7 @@ __all__ = [
     "DataSplitter",
     "HeteroGraphBuilder",
     "StructureProvider",
-    "SupervisionFileManager",
+    "LabelGenerator",
     # 顶层函数
     "filter_molecules_by_properties",
     "validate_and_filter_entities",

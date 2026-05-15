@@ -213,6 +213,13 @@ class HeteroGraphBuilder(GraphBuilder):
 
         edge_counts: DefaultDict[str, int] = defaultdict(int)
 
+        logger.debug(
+            f"\n    --- [DEBUG] Inside _add_similarity_edges_ann for '{entity_type}' ---"
+        )
+        logger.debug(
+            f"    - Thresholds dictionary being used: {self.config.data_params.similarity_thresholds}"
+        )
+
         if analysis_mode:
             candidate_pairs_for_analysis = []
 
