@@ -319,9 +319,9 @@ class HeteroGraphBuilder(GraphBuilder):
         )
 
         # 按 edge_type 分组归一化，然后将 raw_score 列重命名为输出 schema 的 score 列
-        if not df.empty and raw_score_col in df.columns:
+        if not df.empty:
             df = self._normalize_scores_by_edge_type(df)
-            df.rename(columns={raw_score_col: self._graph_schema.score}, inplace=True)
+        df.rename(columns={raw_score_col: self._graph_schema.score}, inplace=True)
 
         return df
 
