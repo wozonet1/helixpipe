@@ -75,6 +75,8 @@ MOCK_BASE_CONFIG: AppConfig = cast(
                             "target_id": "t_id",
                             "target_type": "t_type",
                             "relation_type": "rel_type",
+                            "source_dataset": "source_dataset",
+                            "raw_score": "raw_score",
                         }
                     }
                 },

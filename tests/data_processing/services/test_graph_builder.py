@@ -200,6 +200,86 @@ class TestHeteroGraphBuilder(unittest.TestCase):
 
         print("  ✅ Test Passed: 'strict' mode correctly filtered the graph.")
 
+    def test_score_normalization_by_edge_type(self):
+        """
+        测试点3: 按 edge_type 分组的 min-max 归一化。
+        - 同类型多条边：raw_score 被归一化到 [0, 1]
+        - 不同 edge_type 独立归一化
+        - 输出列名为 'score'（不是 'raw_score'）
+        """
+        print("\n--- Running Test: Score Normalization by Edge Type ---")
+
+        cfg = self._get_base_config()
+
+        builder = HeteroGraphBuilder(
+            config=cfg,
+            molecule_embeddings=self.mol_embeddings,
+            protein_embeddings=self.prot_embeddings,
+            local_id_to_type=self.local_id_to_type,
+            protein_id_offset=self.protein_id_offset,
+        )
+
+        # 手动添加多条不同 edge_type 的边，raw_score 不同
+        builder._edges = [
+            [0, 3, "interacts_with", "bindingdb", 10.0],
+            [1, 4, "interacts_with", "gtopdb", 100.0],
+            [0, 1, "drug_drug_similarity", "computed", 0.6],
+            [1, 2, "drug_drug_similarity", "computed", 0.9],
+        ]
+
+        graph_df = builder.get_graph()
+
+        # 验证列名是 'score' 而不是 'raw_score'
+        self.assertIn("score", graph_df.columns)
+        self.assertNotIn("raw_score", graph_df.columns)
+
+        # 验证 interacts_with 组归一化: min=10, max=100
+        # (10-10)/(100-10) = 0.0, (100-10)/(100-10) = 1.0
+        dti_rows = graph_df[graph_df["edge_type"] == "interacts_with"].sort_values(
+            "source"
+        )
+        self.assertAlmostEqual(dti_rows["score"].iloc[0], 0.0, places=5)
+        self.assertAlmostEqual(dti_rows["score"].iloc[1], 1.0, places=5)
+
+        # 验证 drug_drug_similarity 组独立归一化: min=0.6, max=0.9
+        # (0.6-0.6)/(0.9-0.6) = 0.0, (0.9-0.6)/(0.9-0.6) = 1.0
+        sim_rows = graph_df[
+            graph_df["edge_type"] == "drug_drug_similarity"
+        ].sort_values("source")
+        self.assertAlmostEqual(sim_rows["score"].iloc[0], 0.0, places=5)
+        self.assertAlmostEqual(sim_rows["score"].iloc[1], 1.0, places=5)
+
+        # 验证 source_dataset 列保留
+        self.assertIn("source_dataset", graph_df.columns)
+
+        print("  ✅ Test Passed: Scores normalized independently by edge_type.")
+
+    def test_single_edge_gets_score_one(self):
+        """
+        测试点4: 单条边（某 edge_type 只有一条）归一化后 score 为 1.0。
+        """
+        print("\n--- Running Test: Single Edge Score ---")
+
+        cfg = self._get_base_config()
+
+        builder = HeteroGraphBuilder(
+            config=cfg,
+            molecule_embeddings=self.mol_embeddings,
+            protein_embeddings=self.prot_embeddings,
+            local_id_to_type=self.local_id_to_type,
+            protein_id_offset=self.protein_id_offset,
+        )
+
+        builder._edges = [
+            [0, 3, "interacts_with", "bindingdb", 42.0],
+        ]
+
+        graph_df = builder.get_graph()
+        self.assertEqual(len(graph_df), 1)
+        self.assertAlmostEqual(graph_df["score"].iloc[0], 1.0, places=5)
+
+        print("  ✅ Test Passed: Single edge normalized to 1.0.")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
