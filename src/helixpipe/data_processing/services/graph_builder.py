@@ -11,7 +11,11 @@ import pandas as pd
 import torch
 from omegaconf import OmegaConf
 
-from helixpipe.typing import AppConfig, LogicID, LogicInteractionTriple
+from helixpipe.typing import (
+    AppConfig,
+    LogicID,
+    LogicInteractionQuintuple,
+)
 
 from .relation_utils import get_similarity_relation_type
 
@@ -28,12 +32,14 @@ class GraphBuilder(ABC):
     """【Builder接口】定义了构建一个异构图所需的所有步骤的抽象方法。"""
 
     @abstractmethod
-    def build(self, train_pairs: list[LogicInteractionTriple]) -> None:
+    def build(self, train_pairs: list[LogicInteractionQuintuple]) -> None:
         """执行完整的图构建流程。"""
         raise NotImplementedError
 
     @abstractmethod
-    def add_interaction_edges(self, train_pairs: list[LogicInteractionTriple]) -> None:
+    def add_interaction_edges(
+        self, train_pairs: list[LogicInteractionQuintuple]
+    ) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -82,6 +88,9 @@ class HeteroGraphBuilder(GraphBuilder):
         self.protein_id_offset = protein_id_offset
 
         self._edges: list[list] = []
+        self._canonical_schema = (
+            self.config.data_structure.schema.internal.canonical_interaction
+        )
         self._graph_schema = self.config.data_structure.schema.internal.graph_output
         self._cold_start_entity_ids = cold_start_entity_ids_local
 
@@ -89,7 +98,7 @@ class HeteroGraphBuilder(GraphBuilder):
             "--- [HeteroGraphBuilder] Initialized for on-the-fly similarity computation. ---"
         )
 
-    def build(self, train_pairs: list[LogicInteractionTriple]) -> None:
+    def build(self, train_pairs: list[LogicInteractionQuintuple]) -> None:
         """根据配置的 flags，按预设顺序执行完整的图构建流程。"""
         if self.config.runtime.verbose > 0:
             logger.info(
@@ -130,14 +139,16 @@ class HeteroGraphBuilder(GraphBuilder):
                 "--- [HeteroGraphBuilder] Graph construction process finished. ---"
             )
 
-    def add_interaction_edges(self, train_pairs: list[LogicInteractionTriple]) -> None:
-        """根据 final_edge_type 和 relations.flags 添加交互边。"""
+    def add_interaction_edges(
+        self, train_pairs: list[LogicInteractionQuintuple]
+    ) -> None:
+        """根据 final_edge_type 和 relations.flags 添加交互边（含 source_dataset 和 score）。"""
         flags = self.config.relations.flags
         counts: DefaultDict[str, int] = defaultdict(int)
 
-        for u, v, final_edge_type in train_pairs:
+        for u, v, final_edge_type, source_dataset, raw_score in train_pairs:
             if flags.get(final_edge_type, False):
-                self._edges.append([u, v, final_edge_type])
+                self._edges.append([u, v, final_edge_type, source_dataset, raw_score])
                 counts[final_edge_type] += 1
 
         if counts:
@@ -262,7 +273,15 @@ class HeteroGraphBuilder(GraphBuilder):
                             1.1,
                         )
                         if similarity > threshold:
-                            self._edges.append([source_id, target_id, final_edge_type])
+                            self._edges.append(
+                                [
+                                    source_id,
+                                    target_id,
+                                    final_edge_type,
+                                    "computed",
+                                    float(similarity),
+                                ]
+                            )
                             edge_counts[final_edge_type] += 1
                         if similarity > 0.5:
                             logger.debug(
@@ -283,18 +302,53 @@ class HeteroGraphBuilder(GraphBuilder):
             return candidate_pairs_for_analysis
 
     def get_graph(self) -> pd.DataFrame:
-        """返回构建完成的图 DataFrame。"""
+        """返回构建完成的图 DataFrame，并对 raw_score 列统一归一化。"""
         logger.info(
             f"--- [HeteroGraphBuilder] Finalizing graph with {len(self._edges)} total edges. ---"
         )
-        return pd.DataFrame(
+        raw_score_col = self._canonical_schema.raw_score  # "raw_score"
+        df = pd.DataFrame(
             self._edges,
             columns=[
                 self._graph_schema.source_node,
                 self._graph_schema.target_node,
                 self._graph_schema.edge_type,
+                self._graph_schema.source_dataset,
+                raw_score_col,
             ],
         )
+
+        # 按 edge_type 分组归一化，然后将 raw_score 列重命名为输出 schema 的 score 列
+        if not df.empty and raw_score_col in df.columns:
+            df = self._normalize_scores_by_edge_type(df)
+            df.rename(columns={raw_score_col: self._graph_schema.score}, inplace=True)
+
+        return df
+
+    def _normalize_scores_by_edge_type(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        按 edge_type 分组，对 raw_score 列做 min-max 归一化。
+        归一化后 score 范围为 [0, 1]。
+        """
+        score_col = self._canonical_schema.raw_score  # "raw_score"
+        edge_type_col = self._graph_schema.edge_type
+
+        # 确保 score 列是数值类型
+        df[score_col] = pd.to_numeric(df[score_col], errors="coerce").fillna(1.0)
+
+        # 按 edge_type 分组归一化
+        normalized_scores = pd.Series(1.0, index=df.index)
+        for edge_type, group_idx in df.groupby(edge_type_col).groups.items():
+            group_vals = df.loc[group_idx, score_col]
+            vmin, vmax = group_vals.min(), group_vals.max()
+            if vmax > vmin:
+                normalized_scores.loc[group_idx] = (group_vals - vmin) / (vmax - vmin)
+            else:
+                normalized_scores.loc[group_idx] = 1.0
+
+        df[score_col] = normalized_scores
+        logger.info("    - Scores normalized by edge_type (min-max to [0, 1]).")
+        return df
 
     def filter_background_edges_for_strict_mode(self) -> None:
         """
@@ -315,7 +369,7 @@ class HeteroGraphBuilder(GraphBuilder):
         edges_to_keep = []
         num_removed = 0
         for edge in self._edges:
-            source, target, edge_type = edge
+            source, target, edge_type = edge[0], edge[1], edge[2]
             is_background = edge_type not in interaction_rel_types
             is_touching_cold = (source in self._cold_start_entity_ids) or (
                 target in self._cold_start_entity_ids

@@ -172,6 +172,7 @@ class BaseProcessor(ABC):
             self.schema.relation_type,
             self.schema.label,
             self.schema.source_dataset,
+            self.schema.raw_score,
         ]
 
     def _smart_clean_id_column(self, series: pd.Series) -> pd.Series:

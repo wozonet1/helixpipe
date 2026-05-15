@@ -37,7 +37,7 @@ class BrendaProcessor(BaseProcessor):
         self.external_schema = SchemaAccessor(
             self.config.data_structure.schema.external["brenda"]
         )
-        # 在初始化时，加载并准备好作为内部状态的“名称->CID”映射字典
+        # 在初始化时，加载并准备好作为内部状态的"名称->CID"映射字典
 
     def _load_name_cid_map(self) -> dict[str, int]:
         """一个私有辅助方法，用于构建并返回 Name -> CID 的映射字典。"""
@@ -130,7 +130,7 @@ class BrendaProcessor(BaseProcessor):
 
     def _standardize_ids(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        步骤3: 将配体名称映射为CID，并重塑为“规范化格式+辅助列”。
+        步骤3: 将配体名称映射为CID，并重塑为"规范化格式+辅助列"。
         """
         if df.empty:
             return pd.DataFrame()
@@ -157,8 +157,8 @@ class BrendaProcessor(BaseProcessor):
         # BRENDA的 relation_type 来自其字段名，更加精细
         final_df[self.schema.relation_type] = df["relation_type"]
 
-        # 附带下游需要的“原材料” (BRENDA不提供分子或蛋白质结构)
-        final_df["value"] = df["value"]  # 用于下一步过滤
+        # 附带下游需要的"原材料" (BRENDA不提供分子或蛋白质结构)
+        final_df[self.schema.raw_score] = df["value"]  # 用于下一步过滤
 
         return final_df
 
@@ -166,7 +166,7 @@ class BrendaProcessor(BaseProcessor):
         """
         步骤4: 应用特定于BRENDA的、基于关系类型的阈值过滤。
         """
-        if df.empty or "value" not in df.columns:
+        if df.empty or self.schema.raw_score not in df.columns:
             return df
 
         if self.verbose > 0:
@@ -192,13 +192,13 @@ class BrendaProcessor(BaseProcessor):
         inhibitor_mask = df[self.schema.relation_type].isin([rel_types.inhibits])
         if inhibitor_mask.any():
             pass_mask[inhibitor_mask] = (
-                df.loc[inhibitor_mask, "value"] <= inhibitor_threshold
+                df.loc[inhibitor_mask, self.schema.raw_score] <= inhibitor_threshold
             )
 
         # 对 km_value 类型的交互应用Km值阈值
         km_mask = df[self.schema.relation_type] == "km_value"  # 假设配置中定义了
         if km_mask.any():
-            pass_mask[km_mask] = df.loc[km_mask, "value"] <= km_threshold
+            pass_mask[km_mask] = df.loc[km_mask, self.schema.raw_score] <= km_threshold
 
         df_filtered = df[pass_mask]
 

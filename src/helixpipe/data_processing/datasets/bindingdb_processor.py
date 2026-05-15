@@ -154,7 +154,7 @@ class BindingdbProcessor(BaseProcessor):
                     errors="coerce",
                 )
 
-        df["affinity_nM"] = (
+        df[self.schema.raw_score] = (
             df[self.external_schema.get_col("ki")]
             .fillna(df[self.external_schema.get_col("kd")])
             .fillna(df[self.external_schema.get_col("ic50")])
@@ -165,14 +165,15 @@ class BindingdbProcessor(BaseProcessor):
             BindingdbParams, self.config.data_params.bindingdb
         ).affinity_threshold_nM
 
-        # 在过滤前，先丢弃没有计算出 affinity_nM 的行
-        df.dropna(subset=["affinity_nM"], inplace=True)
+        # 在过滤前，先丢弃没有计算出 raw_score 的行
+        df.dropna(subset=[self.schema.raw_score], inplace=True)
 
-        df_filtered = df[df["affinity_nM"] <= affinity_threshold].copy()
+        df_filtered = df[df[self.schema.raw_score] <= affinity_threshold].copy()
 
         logger.info(
             f"    - {len(df_filtered)} / {len(df)} records passed affinity filter."
         )
+
         smiles_col = "structure_molecule"
         if smiles_col in df_filtered.columns:
             # 【核心调用】传入 self.config.runtime.cpus

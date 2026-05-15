@@ -33,8 +33,10 @@ class TestHeteroGraphBuilder(unittest.TestCase):
         self.mol_embeddings = torch.empty(3, 8)
         self.prot_embeddings = torch.empty(3, 8)
 
-        # 模拟训练集交互对（使用局部ID）
-        self.train_pairs = [(0, 3, "interacts_with")]  # mol 0 - prot 3
+        # 模拟训练集交互对（使用局部ID，五元组格式）
+        self.train_pairs = [
+            (0, 3, "interacts_with", "bindingdb", 0.85)
+        ]  # mol 0 - prot 3
 
     def _get_base_config(self):
         """创建一个包含了所有必要依赖的基础配置。"""
@@ -57,11 +59,22 @@ class TestHeteroGraphBuilder(unittest.TestCase):
                 "data_structure": {
                     "schema": {
                         "internal": {
+                            "canonical_interaction": {
+                                "source_id": "source_id",
+                                "source_type": "source_type",
+                                "target_id": "target_id",
+                                "target_type": "target_type",
+                                "relation_type": "relation_type",
+                                "source_dataset": "source_dataset",
+                                "raw_score": "raw_score",
+                            },
                             "graph_output": {
                                 "source_node": "source",
                                 "target_node": "target",
                                 "edge_type": "edge_type",
-                            }
+                                "source_dataset": "source_dataset",
+                                "score": "score",
+                            },
                         }
                     }
                 },
@@ -81,10 +94,14 @@ class TestHeteroGraphBuilder(unittest.TestCase):
         def add_fake_edges(self_builder, entity_type, **kwargs):
             if entity_type == "molecule":
                 # 添加一条训练集内部的 drug-drug 边
-                self_builder._edges.append([0, 1, "drug_drug_similarity"])
+                self_builder._edges.append(
+                    [0, 1, "drug_drug_similarity", "computed", 0.92]
+                )
             elif entity_type == "protein":
                 # 添加一条跨界的 protein-protein 边 (train <-> cold)
-                self_builder._edges.append([3, 5, "protein_protein_similarity"])
+                self_builder._edges.append(
+                    [3, 5, "protein_protein_similarity", "computed", 0.88]
+                )
 
         mock_add_similarity_edges.side_effect = add_fake_edges
 
@@ -104,9 +121,9 @@ class TestHeteroGraphBuilder(unittest.TestCase):
         graph_df = builder.get_graph()
 
         # 预期边:
-        # 1. (0, 3, 'interacts_with') - 来自 build
-        # 2. [0, 1, 'drug_drug_similarity'] - 来自 mock
-        # 3. [3, 5, 'protein_protein_similarity'] - 来自 mock (泄露边)
+        # 1. (0, 3, 'interacts_with', 'bindingdb', 0.85) - 来自 build
+        # 2. [0, 1, 'drug_drug_similarity', 'computed', 0.92] - 来自 mock
+        # 3. [3, 5, 'protein_protein_similarity', 'computed', 0.88] - 来自 mock (泄露边)
         self.assertEqual(
             len(graph_df),
             3,
@@ -119,6 +136,9 @@ class TestHeteroGraphBuilder(unittest.TestCase):
             edge_types,
             "Leaky P-P edge should exist in informed mode.",
         )
+        # 验证 source_dataset 和 score 列存在
+        self.assertIn("source_dataset", graph_df.columns)
+        self.assertIn("score", graph_df.columns)
 
         print("  ✅ Test Passed: 'informed' mode correctly constructed the graph.")
 
@@ -135,9 +155,13 @@ class TestHeteroGraphBuilder(unittest.TestCase):
         # 模拟方法的行为与上面完全相同
         def add_fake_edges(self_builder, entity_type, **kwargs):
             if entity_type == "molecule":
-                self_builder._edges.append([0, 1, "drug_drug_similarity"])
+                self_builder._edges.append(
+                    [0, 1, "drug_drug_similarity", "computed", 0.92]
+                )
             elif entity_type == "protein":
-                self_builder._edges.append([3, 5, "protein_protein_similarity"])
+                self_builder._edges.append(
+                    [3, 5, "protein_protein_similarity", "computed", 0.88]
+                )
 
         mock_add_similarity_edges.side_effect = add_fake_edges
 

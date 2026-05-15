@@ -30,6 +30,12 @@ RelationType = str
 SMILES = str
 
 ProteinSequence = str
+
+# 数据来源 (Source Dataset)，表示交互来自哪个数据集。
+SourceDataset = str
+
+# 边置信度分数 (Edge Score)，归一化到 [0, 1] 的浮点数。
+EdgeScore = float
 # ==============================================================================
 # 2. 核心数据结构别名 (Core Data Structure Aliases)
 # ==============================================================================
@@ -40,9 +46,12 @@ ProteinSequence = str
 # 使用【权威ID】表示的交互元组: (source_auth_id, target_auth_id, relation_type)
 AuthInteractionTuple = tuple[AuthID, AuthID, RelationType]
 
-# 使用【逻辑ID】表示的交互三元组: (source_logic_id, target_logic_id, relation_type)
-# 这是图构建和模型训练中常用的格式。
-LogicInteractionTriple = tuple[LogicID, LogicID, RelationType]
+
+# 使用【逻辑ID】表示的交互五元组: (source, target, relation_type, source_dataset, score)
+# 用于图构建时携带完整的来源和置信度信息。
+LogicInteractionQuintuple = tuple[
+    LogicID, LogicID, RelationType, SourceDataset, EdgeScore
+]
 
 
 # --- 字典类型 (Dictionary Types) ---
@@ -133,8 +142,10 @@ __all__ = [
     "RelationType",
     "SMILES",
     "ProteinSequence",
+    "SourceDataset",
+    "EdgeScore",
     "AuthInteractionTuple",
-    "LogicInteractionTriple",
+    "LogicInteractionQuintuple",
     "FeatureDict",
     "ProcessorOutputs",
     "PathFactory",

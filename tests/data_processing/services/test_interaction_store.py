@@ -71,6 +71,7 @@ MOCK_CONFIG: AppConfig = cast(
                             "target_type": "t_type",
                             "relation_type": "rel_type",
                             "source_dataset": "source_dataset",
+                            "raw_score": "raw_score",
                         }
                     }
                 }
@@ -554,6 +555,91 @@ class TestInteractionStore(unittest.TestCase):
         # 两条都应规范化：drug → source
         self.assertEqual(df["s_id"].iloc[0], 1)
         self.assertEqual(df["s_id"].iloc[1], 2)
+
+    def test_get_mapped_positive_pairs_with_metadata(self):
+        """测试 get_mapped_positive_pairs_with_metadata 返回正确的五元组。"""
+        print("\n--- Running Test: get_mapped_positive_pairs_with_metadata ---")
+
+        # 创建带 score 列的数据
+        processor_outputs = {
+            "test": pd.DataFrame(
+                {
+                    "s_id": [1, 2],
+                    "s_type": ["drug", "drug"],
+                    "t_id": ["P01", "P02"],
+                    "t_type": ["protein", "protein"],
+                    "rel_type": ["dti", "dti"],
+                    "source_dataset": ["bindingdb", "gtopdb"],
+                    "raw_score": [10.0, 100.0],
+                }
+            )
+        }
+        store = InteractionStore(processor_outputs, MOCK_CONFIG)
+
+        # 创建一个带 auth_id_to_logic_id_map 的 mock
+        class MockIDMapperWithMap:
+            auth_id_to_logic_id_map = {1: 0, 2: 1, "P01": 10, "P02": 11}
+
+        result = store.get_mapped_positive_pairs_with_metadata(MockIDMapperWithMap())
+
+        self.assertEqual(len(result), 2)
+        # 验证五元组结构
+        for item in result:
+            self.assertEqual(len(item), 5)
+            self.assertIsInstance(item[0], int)  # source logic id
+            self.assertIsInstance(item[1], int)  # target logic id
+            self.assertIsInstance(item[2], str)  # relation_type
+            self.assertIsInstance(item[3], str)  # source_dataset
+            self.assertIsInstance(item[4], float)  # score
+
+        # 验证 source_dataset 值
+        sources = {item[3] for item in result}
+        self.assertEqual(sources, {"bindingdb", "gtopdb"})
+
+        # 验证返回原始 score（不做归一化）
+        scores = {item[0]: item[4] for item in result}
+        self.assertAlmostEqual(scores[0], 10.0)  # 原始值 10.0
+        self.assertAlmostEqual(scores[1], 100.0)  # 原始值 100.0
+
+    def test_get_mapped_positive_pairs_with_metadata_no_score(self):
+        """测试无原始 score 列时，默认 score 为 1.0。"""
+        print("\n--- Running Test: metadata with no score column ---")
+
+        processor_outputs = {
+            "test": pd.DataFrame(
+                {
+                    "s_id": [1],
+                    "s_type": ["drug"],
+                    "t_id": ["P01"],
+                    "t_type": ["protein"],
+                    "rel_type": ["dti"],
+                    "source_dataset": ["bindingdb"],
+                }
+            )
+        }
+        store = InteractionStore(processor_outputs, MOCK_CONFIG)
+
+        class MockIDMapperWithMap:
+            auth_id_to_logic_id_map = {1: 0, "P01": 10}
+
+        result = store.get_mapped_positive_pairs_with_metadata(MockIDMapperWithMap())
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][4], 1.0)  # 默认 score
+
+    def test_get_mapped_positive_pairs_with_metadata_empty(self):
+        """测试空 store 返回空列表。"""
+        print("\n--- Running Test: metadata with empty store ---")
+
+        store = InteractionStore._from_dataframe(
+            pd.DataFrame(), MOCK_CONFIG, skip_canonicalize=True
+        )
+
+        class MockIDMapperWithMap:
+            auth_id_to_logic_id_map = {}
+
+        result = store.get_mapped_positive_pairs_with_metadata(MockIDMapperWithMap())
+        self.assertEqual(result, [])
 
 
 if __name__ == "__main__":

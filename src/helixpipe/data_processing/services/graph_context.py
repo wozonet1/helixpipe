@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 import torch
 
-from helixpipe.typing import LogicID, LogicInteractionTriple
+from helixpipe.typing import LogicID, LogicInteractionQuintuple
 
 if TYPE_CHECKING:
     from .id_mapper import IDMapper
@@ -103,12 +103,16 @@ def build_local_id_to_type(
     return result
 
 
-def convert_pairs_to_local(
-    global_pairs: list[LogicInteractionTriple],
+def convert_quintuples_to_local(
+    global_quintuples: list[LogicInteractionQuintuple],
     g2l: dict[int, int],
-) -> list[LogicInteractionTriple]:
-    """将使用全局ID的交互对列表转换为使用局部ID。只保留两端都在映射中的对。"""
-    return [(g2l[u], g2l[v], r) for u, v, r in global_pairs if u in g2l and v in g2l]
+) -> list[LogicInteractionQuintuple]:
+    """将使用全局ID的五元组列表转换为使用局部ID。只保留两端都在映射中的对。"""
+    return [
+        (g2l[u], g2l[v], r, src, raw_score)
+        for u, v, r, src, raw_score in global_quintuples
+        if u in g2l and v in g2l
+    ]
 
 
 def convert_ids_to_local(

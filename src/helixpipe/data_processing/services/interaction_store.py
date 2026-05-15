@@ -11,7 +11,11 @@ from .selector_executor import SelectorExecutor
 if TYPE_CHECKING:
     from helixpipe.configs import InteractionSelectorConfig
     from helixpipe.configs.data_structure import CanonicalInteractionSchema
-    from helixpipe.typing import AppConfig, AuthID, LogicInteractionTriple
+    from helixpipe.typing import (
+        AppConfig,
+        AuthID,
+        LogicInteractionQuintuple,
+    )
 
     from .id_mapper import IDMapper
 import logging
@@ -365,18 +369,17 @@ class InteractionStore:
 
         return self._from_dataframe(pure_df, self._config, skip_canonicalize=True)
 
-    def get_mapped_positive_pairs(
-        self, id_mapper: IDMapper
-    ) -> list[LogicInteractionTriple]:
+    def get_mapped_positive_pairs_with_metadata(
+        self, id_mapper: "IDMapper"
+    ) -> list["LogicInteractionQuintuple"]:
         """
-        【提供给下游】
-        将内部的、纯净的交互DataFrame，映射为使用【逻辑ID】的元组列表。
-        这个方法应该在 self 和 id_mapper 都被最终化之后调用。
+        【提供给图构建】
+        返回带 source_dataset 和原始 score 的五元组列表。
+        score 直接从 DataFrame 的 raw_score 列读取，无该列时默认 1.0。
         """
         if self._df.empty:
             return []
 
-        # 使用IDMapper的映射字典进行高效的批量转换
         source_logic_ids = self._df[self._schema.source_id].map(
             id_mapper.auth_id_to_logic_id_map
         )
@@ -384,20 +387,42 @@ class InteractionStore:
             id_mapper.auth_id_to_logic_id_map
         )
 
-        # 健壮性检查：检查是否有映射失败的情况
         if source_logic_ids.isna().any() or target_logic_ids.isna().any():
             num_failed = source_logic_ids.isna().sum() + target_logic_ids.isna().sum()
             raise ValueError(
-                f"InteractionStore contains {num_failed} IDs that are not in the finalized IDMapper. This indicates a logic error in the pipeline."
+                f"InteractionStore contains {num_failed} IDs that are not in the finalized IDMapper."
             )
 
-        return list(
-            zip(
-                source_logic_ids.astype(int),
-                target_logic_ids.astype(int),
-                self._df[self._schema.relation_type],
+        # source_dataset 列
+        src_col = self._schema.source_dataset
+        if src_col in self._df.columns:
+            source_datasets = self._df[src_col].astype(str)
+        else:
+            source_datasets = pd.Series(
+                ["unknown"] * len(self._df), index=self._df.index
             )
-        )
+
+        # raw_score 列（直接读取，不做归一化）
+        raw_score_col = self._schema.raw_score
+        if raw_score_col in self._df.columns:
+            raw_scores = pd.to_numeric(self._df[raw_score_col], errors="coerce").fillna(
+                1.0
+            )
+        else:
+            raw_scores = pd.Series(1.0, index=self._df.index)
+
+        result: list["LogicInteractionQuintuple"] = []
+        for i in range(len(self._df)):
+            result.append(
+                (
+                    int(source_logic_ids.iloc[i]),
+                    int(target_logic_ids.iloc[i]),
+                    self._df[self._schema.relation_type].iloc[i],
+                    source_datasets.iloc[i],
+                    raw_scores.iloc[i],
+                )
+            )
+        return result
 
     # --- 查询API (为Sampler和Splitter准备) ---
 

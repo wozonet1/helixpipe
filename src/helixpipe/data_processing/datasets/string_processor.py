@@ -21,7 +21,7 @@ class StringProcessor(BaseProcessor):
     它的职责被纯化为：
     1. 从原始 .gz 文件加载 links 和 aliases 数据。
     2. 将 STRING ID 映射为 UniProt ID。
-    3. 将数据“翻译”成内部的规范化交互格式。
+    3. 将数据"翻译"成内部的规范化交互格式。
     """
 
     def __init__(self, config: AppConfig) -> None:
@@ -117,7 +117,7 @@ class StringProcessor(BaseProcessor):
 
     def _standardize_ids(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        步骤3: 将DataFrame重塑为“规范化交互格式”。
+        步骤3: 将DataFrame重塑为"规范化交互格式"。
         """
         if self.verbose > 0:
             logger.info("  - Reshaping DataFrame to canonical interaction format...")
@@ -134,7 +134,10 @@ class StringProcessor(BaseProcessor):
             self.config.knowledge_graph.relation_types.ppi
         )
 
-        # STRING数据不包含结构信息，所以我们不附带 structure_* 列
+        # 保留置信度分数用于下游过滤和图构建
+        score_col = self.external_schema.get_col("combined_score")
+        if score_col in df.columns:
+            final_df[self.schema.raw_score] = df[score_col]
 
         return final_df
 

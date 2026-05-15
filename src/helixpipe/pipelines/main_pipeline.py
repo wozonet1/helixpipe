@@ -22,7 +22,7 @@ from helixpipe.data_processing.services.graph_context import (
     build_local_id_to_type,
     convert_dataframe_to_global,
     convert_ids_to_local,
-    convert_pairs_to_local,
+    convert_quintuples_to_local,
     slice_embeddings,
 )
 from helixpipe.features import extract_features
@@ -514,9 +514,13 @@ def _stage7_split_and_build_graphs(
         )
         local_id_to_type = build_local_id_to_type(l2g, id_mapper)
 
-        # d. 将逻辑ID的训练图交互转换为局部ID
-        train_graph_pairs_logic = train_graph_store.get_mapped_positive_pairs(id_mapper)
-        local_train_pairs = convert_pairs_to_local(train_graph_pairs_logic, g2l)
+        # d. 将逻辑ID的训练图交互转换为局部ID（含 source_dataset 和 score）
+        train_graph_quintuples_logic = (
+            train_graph_store.get_mapped_positive_pairs_with_metadata(id_mapper)
+        )
+        local_train_quintuples = convert_quintuples_to_local(
+            train_graph_quintuples_logic, g2l
+        )
 
         # e. 实例化Builder并构建图
         builder = HeteroGraphBuilder(
@@ -529,7 +533,7 @@ def _stage7_split_and_build_graphs(
                 cold_start_entity_ids_logic, g2l
             ),
         )
-        builder.build(local_train_pairs)
+        builder.build(local_train_quintuples)
         local_graph_df = builder.get_graph()
 
         # f. 将图转换回全局ID空间并保存

@@ -10,7 +10,7 @@ from helixpipe.data_processing.services.graph_context import (
     build_local_id_to_type,
     convert_dataframe_to_global,
     convert_ids_to_local,
-    convert_pairs_to_local,
+    convert_quintuples_to_local,
     slice_embeddings,
 )
 
@@ -153,16 +153,16 @@ class TestGraphContext(unittest.TestCase):
         """测试点4: ID空间转换工具函数是否工作正常。"""
         print("--- Running Test: ID Conversion Functions ---")
 
-        # a. 测试 convert_pairs_to_local
-        global_pairs = [
-            (1, 10, "rel1"),  # 应该被保留并转换为 (0, 4)
-            (8, 12, "rel2"),  # 应该被保留并转换为 (2, 5)
-            (1, 99, "rel3"),  # 应该被丢弃，因为99不在相关集合中
+        # a. 测试 convert_quintuples_to_local
+        global_quintuples = [
+            (1, 10, "rel1", "bindingdb", 0.8),  # 应该被保留并转换为 (0, 4)
+            (8, 12, "rel2", "gtopdb", 0.5),  # 应该被保留并转换为 (2, 5)
+            (1, 99, "rel3", "unknown", 1.0),  # 应该被丢弃，因为99不在相关集合中
         ]
-        local_pairs = convert_pairs_to_local(global_pairs, self.g2l)
-        self.assertEqual(len(local_pairs), 2)
-        self.assertIn((0, 4, "rel1"), local_pairs)
-        self.assertIn((2, 5, "rel2"), local_pairs)
+        local_quintuples = convert_quintuples_to_local(global_quintuples, self.g2l)
+        self.assertEqual(len(local_quintuples), 2)
+        self.assertIn((0, 4, "rel1", "bindingdb", 0.8), local_quintuples)
+        self.assertIn((2, 5, "rel2", "gtopdb", 0.5), local_quintuples)
 
         # b. 测试 convert_dataframe_to_global
         local_df = pd.DataFrame({"source": [0, 2], "target": [4, 5]})
@@ -175,6 +175,18 @@ class TestGraphContext(unittest.TestCase):
         local_id_set = convert_ids_to_local(global_id_set, self.g2l)
         self.assertSetEqual(local_id_set, {0, 5})
         print("  ✅ Passed (4): All ID conversion functions work correctly.")
+
+        # d. 测试 convert_quintuples_to_local
+        global_quintuples = [
+            (1, 10, "rel1", "bindingdb", 0.8),
+            (8, 12, "rel2", "gtopdb", 0.5),
+            (1, 99, "rel3", "unknown", 1.0),  # 应该被丢弃，因为99不在映射中
+        ]
+        local_quintuples = convert_quintuples_to_local(global_quintuples, self.g2l)
+        self.assertEqual(len(local_quintuples), 2)
+        self.assertEqual(local_quintuples[0], (0, 4, "rel1", "bindingdb", 0.8))
+        self.assertEqual(local_quintuples[1], (2, 5, "rel2", "gtopdb", 0.5))
+        print("  ✅ Passed (4b): convert_quintuples_to_local works correctly.")
 
 
 if __name__ == "__main__":

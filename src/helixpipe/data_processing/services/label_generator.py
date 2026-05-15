@@ -104,13 +104,13 @@ class LabelGenerator:
                 columns=[self.labels_schema.source_node, self.labels_schema.target_node]
             )
 
-        train_pairs_logic = train_labels_store.get_mapped_positive_pairs(self.id_mapper)
-        logger.debug(
-            f"Mapped to {len(train_pairs_logic)} logic ID pairs: {train_pairs_logic}"
+        train_pairs_logic = train_labels_store.get_mapped_positive_pairs_with_metadata(
+            self.id_mapper
         )
+        logger.debug(f"Mapped to {len(train_pairs_logic)} logic ID pairs.")
 
         train_df = pd.DataFrame(
-            [(u, v) for u, v, _ in train_pairs_logic],
+            [(u, v) for u, v, _, _, _ in train_pairs_logic],
             columns=[self.labels_schema.source_node, self.labels_schema.target_node],
         )
         logger.debug(f"Prepared train DataFrame with shape: {train_df.shape}")

@@ -215,6 +215,7 @@ class CanonicalInteractionSchema:
     relation_type: str = "relation_type"
     label: str = "label"
     source_dataset: str = "source_dataset"
+    raw_score: str = "raw_score"
 
 
 # @dataclass
@@ -231,11 +232,13 @@ class CanonicalInteractionSchema:
 
 @dataclass
 class GraphOutputSchema:
-    """【新增】定义图结构CSV文件的列名。"""
+    """定义图结构CSV文件的列名。"""
 
     source_node: str = "source"
     target_node: str = "target"
     edge_type: str = "edge_type"
+    source_dataset: str = "source_dataset"
+    score: str = "score"
 
 
 @dataclass

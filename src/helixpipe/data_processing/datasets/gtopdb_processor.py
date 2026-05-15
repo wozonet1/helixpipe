@@ -123,7 +123,7 @@ class GtopdbProcessor(BaseProcessor):
         # GtoPdb不提供蛋白质序列，所以我们不创建 structure_protein 列
 
         # 5. 用于下一步过滤的领域特定信息
-        final_df["affinity_nM"] = df[
+        final_df[self.schema.raw_score] = df[
             self.external_schema.get_col("interactions.affinity")
         ]
         final_df["endogenous_flag"] = df[
@@ -148,14 +148,14 @@ class GtopdbProcessor(BaseProcessor):
             GtopdbParams, self.config.data_params.gtopdb
         ).affinity_threshold_nM
 
-        df_filtered["affinity_nM"] = pd.to_numeric(
-            df_filtered["affinity_nM"], errors="coerce"
+        df_filtered[self.schema.raw_score] = pd.to_numeric(
+            df_filtered[self.schema.raw_score], errors="coerce"
         )
-        df_filtered.dropna(subset=["affinity_nM"], inplace=True)
+        df_filtered.dropna(subset=[self.schema.raw_score], inplace=True)
 
         initial_count_after_endo = len(df_filtered)
         df_filtered = df_filtered[
-            df_filtered["affinity_nM"] <= affinity_threshold
+            df_filtered[self.schema.raw_score] <= affinity_threshold
         ].copy()
 
         if self.verbose > 0:
