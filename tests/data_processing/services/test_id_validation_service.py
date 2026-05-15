@@ -141,6 +141,78 @@ class TestIDValidationServiceOffline(unittest.TestCase):
         self.assertEqual(valid_cids, {123, 456, 789})
         print("  ✅ PubChem CID local validator test passed.")
 
+    def test_empty_proteome_file(self):
+        """测试场景5: 空蛋白质组文件（只有表头）应返回空集合。"""
+        print("\n--- Running Test: Empty proteome file ---")
+        fake_tsv_content = "Entry\tReviewed\tOrganism (ID)\n"
+        self._create_fake_proteome_tsv(fake_tsv_content)
+
+        valid_ids = get_human_uniprot_whitelist({"P05067"}, self.cfg)
+        self.assertEqual(valid_ids, set())
+        print("  ✅ Empty proteome file test passed.")
+
+    def test_only_unreviewed_entries(self):
+        """测试场景6: 只有 unreviewed 条目时应返回空集合。"""
+        print("\n--- Running Test: Only unreviewed entries ---")
+        fake_tsv_content = (
+            "Entry\tReviewed\tOrganism (ID)\n"
+            "P05067\tunreviewed\t9606\n"
+            "P12345\tunreviewed\t9606\n"
+        )
+        self._create_fake_proteome_tsv(fake_tsv_content)
+
+        valid_ids = get_human_uniprot_whitelist({"P05067"}, self.cfg)
+        self.assertEqual(valid_ids, set())
+        print("  ✅ Only unreviewed entries test passed.")
+
+    def test_only_non_human_entries(self):
+        """测试场景7: 只有非人类条目时应返回空集合。"""
+        print("\n--- Running Test: Only non-human entries ---")
+        fake_tsv_content = (
+            "Entry\tReviewed\tOrganism (ID)\n"
+            "P05067\treviewed\t10090\n"
+            "P12345\treviewed\t7227\n"
+        )
+        self._create_fake_proteome_tsv(fake_tsv_content)
+
+        valid_ids = get_human_uniprot_whitelist({"P05067"}, self.cfg)
+        self.assertEqual(valid_ids, set())
+        print("  ✅ Only non-human entries test passed.")
+
+    def test_whitelist_caching(self):
+        """测试场景8: 第二次调用应使用缓存，返回相同结果。"""
+        print("\n--- Running Test: Whitelist caching ---")
+        fake_tsv_content = (
+            "Entry\tReviewed\tOrganism (ID)\n"
+            "P05067\treviewed\t9606\n"
+            "P99999\treviewed\t9606\n"
+        )
+        self._create_fake_proteome_tsv(fake_tsv_content)
+
+        # 第一次调用
+        result1 = get_human_uniprot_whitelist({"P05067"}, self.cfg)
+        # 第二次调用（应使用缓存）
+        result2 = get_human_uniprot_whitelist({"P99999"}, self.cfg)
+
+        self.assertEqual(result1, result2)
+        self.assertEqual(result1, {"P05067", "P99999"})
+        print("  ✅ Caching test passed.")
+
+    def test_pubchem_cid_empty_input(self):
+        """测试场景9: 空 CID 集合应返回空集合。"""
+        print("\n--- Running Test: Empty CID input ---")
+        valid_cids = get_valid_pubchem_cids(set(), self.cfg)
+        self.assertEqual(valid_cids, set())
+        print("  ✅ Empty CID input test passed.")
+
+    def test_pubchem_cid_all_invalid(self):
+        """测试场景10: 全部无效 CID 应返回空集合。"""
+        print("\n--- Running Test: All invalid CIDs ---")
+        cids_to_check = {"abc", None, "", -1, 0}
+        valid_cids = get_valid_pubchem_cids(cids_to_check, self.cfg)
+        self.assertEqual(valid_cids, set())
+        print("  ✅ All invalid CIDs test passed.")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
