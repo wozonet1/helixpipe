@@ -1,4 +1,5 @@
-# 文件: src/helixpipe/data_processing/services/graph_context.py (最终版)
+# 文件: src/helixpipe/data_processing/services/graph_context.py
+# 图构建上下文工具函数（原 GraphBuildContext 类拆解为纯函数）
 
 import logging
 from typing import TYPE_CHECKING
@@ -6,153 +7,129 @@ from typing import TYPE_CHECKING
 import pandas as pd
 import torch
 
-from helixpipe.typing import AppConfig, LogicID, LogicInteractionTriple
+from helixpipe.typing import LogicID, LogicInteractionTriple
 
 if TYPE_CHECKING:
     from .id_mapper import IDMapper
 
-# 在模块顶部获取 logger 实例
 logger = logging.getLogger(__name__)
 
 
-class GraphBuildContext:
+def build_local_id_mapping(
+    relevant_mol_ids: set[LogicID],
+    relevant_prot_ids: set[LogicID],
+) -> tuple[dict[int, int], list[int], int]:
     """
-    一个封装了图构建所需“局部上下文”的服务类。
+    构建全局逻辑ID → 局部0-based ID 的映射。
+
+    排序规则：分子在前，蛋白质在后，各自按 ID 升序。
+
+    Returns:
+        (global_to_local, local_to_global, num_local_mols)
     """
+    g2l: dict[int, int] = {}
+    l2g: list[int] = []
+    current = 0
 
-    def __init__(
-        self,
-        fold_idx: int,
-        global_id_mapper: "IDMapper",
-        global_mol_embeddings: torch.Tensor,
-        global_prot_embeddings: torch.Tensor,
-        relevant_mol_ids: set[LogicID],
-        relevant_prot_ids: set[LogicID],
-        config: AppConfig,
-    ):
-        logger.debug("\n--- [GraphBuildContext] Initializing local context... ---")
-        logger.debug(
-            f"    - Received {len(relevant_mol_ids)} relevant molecule IDs: {sorted(list(relevant_mol_ids))}"
-        )
-        logger.debug(
-            f"    - Received {len(relevant_prot_ids)} relevant protein IDs: {sorted(list(relevant_prot_ids))}"
-        )
+    for gid in sorted(relevant_mol_ids):
+        g2l[gid] = current
+        l2g.append(gid)
+        current += 1
+    num_mols = current
 
-        # --- 1. 构建ID映射 ---
-        logger.debug("  --- Step 1: Building ID Mappings ---")
+    for gid in sorted(relevant_prot_ids):
+        g2l[gid] = current
+        l2g.append(gid)
+        current += 1
 
-        sorted_relevant_mols = sorted(list(relevant_mol_ids))
-        sorted_relevant_prots = sorted(list(relevant_prot_ids))
+    logger.debug(
+        f"  [build_local_id_mapping] Molecules: {num_mols}, "
+        f"Proteins: {current - num_mols}, Total: {current}"
+    )
+    return g2l, l2g, num_mols
 
-        self.global_to_local_id_map: dict[int, int] = {}
-        self.local_to_global_id_list: list[int] = []
 
-        current_local_id = 0
-        logger.debug("    - Mapping molecules:")
-        for global_id in sorted_relevant_mols:
-            self.global_to_local_id_map[global_id] = current_local_id
-            self.local_to_global_id_list.append(global_id)
-            logger.debug(
-                f"      - Global ID {global_id} -> Local ID {current_local_id}"
-            )
-            current_local_id += 1
-
-        self.num_local_mols = len(sorted_relevant_mols)
-
-        logger.debug("    - Mapping proteins:")
-        for global_id in sorted_relevant_prots:
-            self.global_to_local_id_map[global_id] = current_local_id
-            self.local_to_global_id_list.append(global_id)
-            logger.debug(
-                f"      - Global ID {global_id} -> Local ID {current_local_id}"
-            )
-            current_local_id += 1
-
-        self.num_local_prots = len(sorted_relevant_prots)
-
-        # --- 2. 筛选局部特征嵌入 ---
-        if self.num_local_mols > 0:
-            mol_indices = torch.tensor(sorted_relevant_mols, dtype=torch.long)
-            self.local_mol_embeddings = global_mol_embeddings[mol_indices]
-        else:
-            self.local_mol_embeddings = torch.empty(
-                0,
-                global_mol_embeddings.shape[1]
-                if global_mol_embeddings.numel() > 0
-                else 0,
-            )
-
-        if self.num_local_prots > 0:
-            prot_indices_0_based = torch.tensor(
-                [gid - global_id_mapper.num_molecules for gid in sorted_relevant_prots],
-                dtype=torch.long,
-            )
-            self.local_prot_embeddings = global_prot_embeddings[prot_indices_0_based]
-        else:
-            self.local_prot_embeddings = torch.empty(
-                0,
-                global_prot_embeddings.shape[1]
-                if global_prot_embeddings.numel() > 0
-                else 0,
-            )
-
-        logger.debug(
-            f"  --- Step 2: Sliced local embeddings. Molecules shape: {self.local_mol_embeddings.shape}, Proteins shape: {self.local_prot_embeddings.shape}"
+def slice_embeddings(
+    local_to_global: list[int],
+    num_mols: int,
+    global_mol_embeddings: torch.Tensor,
+    global_prot_embeddings: torch.Tensor,
+    num_total_molecules: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    根据局部ID映射，从全局 embedding 矩阵中切片出当前 fold 的局部 embedding。
+    """
+    if num_mols > 0:
+        mol_indices = torch.tensor(local_to_global[:num_mols], dtype=torch.long)
+        local_mol = global_mol_embeddings[mol_indices]
+    else:
+        local_mol = torch.empty(
+            0,
+            global_mol_embeddings.shape[1] if global_mol_embeddings.numel() > 0 else 0,
         )
 
-        # --- 3. 构建局部ID到类型的映射 ---
-        logger.debug("  --- Step 3: Building Local ID to Type Map ---")
-        self.local_id_to_type_map: dict[int, str] = {}
-        for local_id, global_id in enumerate(self.local_to_global_id_list):
-            meta = global_id_mapper.get_meta_by_logic_id(global_id)
-            if meta is None:
-                raise RuntimeError(f"Failed to get entity meta, id: {global_id}")
-            node_type = meta["type"]
-            self.local_id_to_type_map[local_id] = node_type
-            logger.debug(
-                f"      - Local ID {local_id} (Global {global_id}) -> Type '{node_type}'"
-            )
-
-        logger.info(
-            f"[GraphBuildContext] Initialization complete for fold {fold_idx}. Local molecules: {self.num_local_mols}, Local proteins: {self.num_local_prots}."
+    num_prots = len(local_to_global) - num_mols
+    if num_prots > 0:
+        prot_indices = torch.tensor(
+            [gid - num_total_molecules for gid in local_to_global[num_mols:]],
+            dtype=torch.long,
+        )
+        local_prot = global_prot_embeddings[prot_indices]
+    else:
+        local_prot = torch.empty(
+            0,
+            global_prot_embeddings.shape[1]
+            if global_prot_embeddings.numel() > 0
+            else 0,
         )
 
-    def convert_pairs_to_local(
-        self, global_pairs: list[LogicInteractionTriple]
-    ) -> list[LogicInteractionTriple]:
-        """将使用全局ID的交互对列表，转换为使用局部ID。"""
-        local_pairs = []
-        for u_global, v_global, rel_type in global_pairs:
-            u_local = self.global_to_local_id_map.get(u_global)
-            v_local = self.global_to_local_id_map.get(v_global)
-            if u_local is not None and v_local is not None:
-                local_pairs.append((u_local, v_local, rel_type))
-        return local_pairs
+    logger.debug(
+        f"  [slice_embeddings] Molecules: {local_mol.shape}, Proteins: {local_prot.shape}"
+    )
+    return local_mol, local_prot
 
-    def convert_dataframe_to_global(
-        self, local_df: pd.DataFrame, source_col: str, target_col: str
-    ) -> pd.DataFrame:
-        """将一个使用局部ID的DataFrame转换回使用全局ID。"""
-        if local_df.empty:
-            return local_df
-        global_df = local_df.copy()
-        reverse_map = pd.Series(self.local_to_global_id_list)
-        global_df[source_col] = global_df[source_col].map(reverse_map)
-        global_df[target_col] = global_df[target_col].map(reverse_map)
-        return global_df
 
-    def convert_ids_to_local(self, global_ids: set[LogicID]) -> set[LogicID]:
-        """将一个全局逻辑ID的集合，转换为局部ID的集合。"""
-        return {
-            self.global_to_local_id_map[gid]
-            for gid in global_ids
-            if gid in self.global_to_local_id_map
-        }
+def build_local_id_to_type(
+    local_to_global: list[int],
+    id_mapper: "IDMapper",
+) -> dict[int, str]:
+    """根据局部→全局映射，查询 IDMapper 构建局部 ID→类型的字典。"""
+    result: dict[int, str] = {}
+    for local_id, global_id in enumerate(local_to_global):
+        meta = id_mapper.get_meta_by_logic_id(global_id)
+        if meta is None:
+            raise RuntimeError(f"Failed to get entity meta for logic ID: {global_id}")
+        result[local_id] = meta["type"]
+    return result
 
-    def get_local_node_type(self, local_id: LogicID) -> str:
-        """根据局部ID，返回其节点类型。"""
-        return self.local_id_to_type_map[local_id]
 
-    def get_local_protein_id_offset(self) -> LogicID:
-        """返回在局部ID空间中，蛋白质ID的起始编号。"""
-        return self.num_local_mols
+def convert_pairs_to_local(
+    global_pairs: list[LogicInteractionTriple],
+    g2l: dict[int, int],
+) -> list[LogicInteractionTriple]:
+    """将使用全局ID的交互对列表转换为使用局部ID。只保留两端都在映射中的对。"""
+    return [(g2l[u], g2l[v], r) for u, v, r in global_pairs if u in g2l and v in g2l]
+
+
+def convert_ids_to_local(
+    global_ids: set[LogicID],
+    g2l: dict[int, int],
+) -> set[LogicID]:
+    """将全局逻辑ID集合转换为局部ID集合。"""
+    return {g2l[gid] for gid in global_ids if gid in g2l}
+
+
+def convert_dataframe_to_global(
+    local_df: pd.DataFrame,
+    source_col: str,
+    target_col: str,
+    local_to_global: list[int],
+) -> pd.DataFrame:
+    """将使用局部ID的 DataFrame 转换回使用全局ID。"""
+    if local_df.empty:
+        return local_df
+    global_df = local_df.copy()
+    reverse_map = pd.Series(local_to_global)
+    global_df[source_col] = global_df[source_col].map(reverse_map)
+    global_df[target_col] = global_df[target_col].map(reverse_map)
+    return global_df

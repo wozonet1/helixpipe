@@ -9,8 +9,6 @@ import torch
 import helixlib as hx
 from helixpipe.data_processing import (
     DataSplitter,
-    GraphBuildContext,
-    GraphDirector,
     HeteroGraphBuilder,
     IDMapper,
     InteractionStore,
@@ -18,6 +16,14 @@ from helixpipe.data_processing import (
     StructureProvider,
     SupervisionFileManager,
     validate_and_filter_entities,
+)
+from helixpipe.data_processing.services.graph_context import (
+    build_local_id_mapping,
+    build_local_id_to_type,
+    convert_dataframe_to_global,
+    convert_ids_to_local,
+    convert_pairs_to_local,
+    slice_embeddings,
 )
 from helixpipe.features import extract_features
 
@@ -443,8 +449,7 @@ def _stage7_split_and_build_graphs(
         seed=int(stage7_rng.integers(1_000_000)),
     )
 
-    # 4. 准备 Director 和文件路径工厂
-    director = GraphDirector(config)
+    # 4. 准备文件路径工厂
     graph_output_path_factory = get_path(config, "processed.specific.graph_template")
 
     # 5. 获取【采样后】的全局正样本集合，用于所有fold的负采样碰撞检查
@@ -465,24 +470,22 @@ def _stage7_split_and_build_graphs(
             f"\n{'=' * 30} PROCESSING FOLD {fold_idx} / {config.training.k_folds} {'=' * 30}"
         )
 
-        # a. 实例化 SupervisionFileManager
+        # a. 实例化 LabelGenerator
         label_manager = SupervisionFileManager(
             fold_idx=fold_idx,
             config=config,
             id_mapper=id_mapper,
             executor=executor,
-            global_positive_set=global_positive_pairs_auth,  # <--- 传入权威ID集合
+            global_positive_set=global_positive_pairs_auth,
         )
 
         # b. 【先行】生成标签文件
-        #    这一步现在非常干净，只负责I/O
         label_manager.generate_and_save(
             train_labels_store=train_labels_store,
             test_store=test_store,
         )
 
-        # c. 为图构建准备上下文 (GraphBuildContext)
-        #    从 train_graph_store 中提取所有相关的实体ID（权威ID）
+        # c. 构建局部 ID 映射和 embedding 切片
         relevant_auth_ids = train_graph_store.get_all_entity_auth_ids()
         relevant_logic_ids = {
             id_mapper.auth_id_to_logic_id_map[auth_id] for auth_id in relevant_auth_ids
@@ -490,50 +493,52 @@ def _stage7_split_and_build_graphs(
 
         # 将逻辑ID按分子/蛋白质分类
         relevant_mol_ids_logic = set()
-        for lid in relevant_logic_ids:
-            node_type = id_mapper.logic_id_to_type_map.get(lid)
-            if node_type is not None and id_mapper.is_molecule(node_type):
-                relevant_mol_ids_logic.add(lid)
-
         relevant_prot_ids_logic = set()
         for lid in relevant_logic_ids:
             node_type = id_mapper.logic_id_to_type_map.get(lid)
-            if node_type is not None and id_mapper.is_protein(node_type):
-                relevant_prot_ids_logic.add(lid)
+            if node_type is not None:
+                if id_mapper.is_molecule(node_type):
+                    relevant_mol_ids_logic.add(lid)
+                elif id_mapper.is_protein(node_type):
+                    relevant_prot_ids_logic.add(lid)
 
-        context = GraphBuildContext(
-            fold_idx=fold_idx,
-            global_id_mapper=id_mapper,
-            global_mol_embeddings=molecule_embeddings,
-            global_prot_embeddings=protein_embeddings,
-            relevant_mol_ids=relevant_mol_ids_logic,
-            relevant_prot_ids=relevant_prot_ids_logic,
-            config=config,
+        g2l, l2g, num_local_mols = build_local_id_mapping(
+            relevant_mol_ids_logic, relevant_prot_ids_logic
         )
+        local_mol_emb, local_prot_emb = slice_embeddings(
+            l2g,
+            num_local_mols,
+            molecule_embeddings,
+            protein_embeddings,
+            id_mapper.num_molecules,
+        )
+        local_id_to_type = build_local_id_to_type(l2g, id_mapper)
 
-        # d. 将权威ID的训练图交互，转换为局部ID
+        # d. 将逻辑ID的训练图交互转换为局部ID
         train_graph_pairs_logic = train_graph_store.get_mapped_positive_pairs(id_mapper)
-        local_train_pairs = context.convert_pairs_to_local(train_graph_pairs_logic)
+        local_train_pairs = convert_pairs_to_local(train_graph_pairs_logic, g2l)
 
         # e. 实例化Builder并构建图
         builder = HeteroGraphBuilder(
             config=config,
-            context=context,
-            molecule_embeddings=context.local_mol_embeddings,
-            protein_embeddings=context.local_prot_embeddings,
-            cold_start_entity_ids_local=context.convert_ids_to_local(
-                cold_start_entity_ids_logic
+            molecule_embeddings=local_mol_emb,
+            protein_embeddings=local_prot_emb,
+            local_id_to_type=local_id_to_type,
+            protein_id_offset=num_local_mols,
+            cold_start_entity_ids_local=convert_ids_to_local(
+                cold_start_entity_ids_logic, g2l
             ),
         )
-        director.construct(builder, local_train_pairs)
+        builder.build(local_train_pairs)
         local_graph_df = builder.get_graph()
 
         # f. 将图转换回全局ID空间并保存
         graph_schema = config.data_structure.schema.internal.graph_output
-        global_graph_df = context.convert_dataframe_to_global(
+        global_graph_df = convert_dataframe_to_global(
             local_graph_df,
             source_col=graph_schema.source_node,
             target_col=graph_schema.target_node,
+            local_to_global=l2g,
         )
 
         graph_output_path = graph_output_path_factory(

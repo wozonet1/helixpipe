@@ -6,50 +6,8 @@ from omegaconf import OmegaConf
 
 # 导入我们需要测试的类
 from helixpipe.data_processing.services.graph_builder import HeteroGraphBuilder
-from helixpipe.data_processing.services.graph_director import GraphDirector
 
 # --- 模拟(Mock)对象 ---
-
-
-class MockGraphBuildContext:
-    """
-    一个模拟的GraphBuildContext，用于精确控制测试场景。
-    """
-
-    def __init__(
-        self,
-        num_mols_train: int,
-        num_prots_train: int,
-        num_mols_cold: int,
-        num_prots_cold: int,
-    ):
-        self.num_local_mols = num_mols_train + num_mols_cold
-        self.num_local_prots = num_prots_train + num_prots_cold
-
-        self.mol_train_ids = set(range(num_mols_train))
-        self.prot_train_ids = set(
-            range(self.num_local_mols, self.num_local_mols + num_prots_train)
-        )
-        self.mol_cold_ids = set(range(num_mols_train, self.num_local_mols))
-        self.prot_cold_ids = set(
-            range(
-                self.num_local_mols + num_prots_train,
-                self.num_local_mols + self.num_local_prots,
-            )
-        )
-
-        self.local_id_to_type_map: dict[int, str] = {}
-        # 为了简化，我们假设所有分子都是'drug'类型
-        for i in range(self.num_local_mols):
-            self.local_id_to_type_map[i] = "drug"
-        for i in range(self.num_local_mols, self.num_local_mols + self.num_local_prots):
-            self.local_id_to_type_map[i] = "protein"
-
-    def get_local_node_type(self, local_id: int) -> str:
-        return self.local_id_to_type_map[local_id]
-
-    def get_local_protein_id_offset(self) -> int:
-        return self.num_local_mols
 
 
 class TestHeteroGraphBuilder(unittest.TestCase):
@@ -60,12 +18,18 @@ class TestHeteroGraphBuilder(unittest.TestCase):
         print("\n" + "=" * 80)
 
         # 场景: 2个训练分子, 1个冷启动分子, 2个训练蛋白, 1个冷启动蛋白
-        self.context = MockGraphBuildContext(
-            num_mols_train=2, num_prots_train=2, num_mols_cold=1, num_prots_cold=1
-        )
         # 局部ID: mols=[0,1 (train), 2 (cold)], prots=[3,4 (train), 5 (cold)]
+        self.local_id_to_type = {
+            0: "drug",
+            1: "drug",
+            2: "drug",  # 分子
+            3: "protein",
+            4: "protein",
+            5: "protein",  # 蛋白质
+        }
+        self.protein_id_offset = 3  # 分子数量
 
-        # 模拟嵌入（在新的测试策略下，这些不再直接使用，但保留以备将来）
+        # 模拟嵌入
         self.mol_embeddings = torch.empty(3, 8)
         self.prot_embeddings = torch.empty(3, 8)
 
@@ -126,21 +90,21 @@ class TestHeteroGraphBuilder(unittest.TestCase):
 
         builder = HeteroGraphBuilder(
             config=cfg,
-            context=self.context,
             molecule_embeddings=self.mol_embeddings,
             protein_embeddings=self.prot_embeddings,
+            local_id_to_type=self.local_id_to_type,
+            protein_id_offset=self.protein_id_offset,
             cold_start_entity_ids_local={2, 5},  # mol 2, prot 5
         )
-        director = GraphDirector(cfg)
 
-        # Director 会调用我们模拟的 _add_similarity_edges_ann
-        director.construct(builder, self.train_pairs)
+        # build 会调用我们模拟的 _add_similarity_edges_ann
+        builder.build(self.train_pairs)
 
-        # Director 在 informed 模式下不会调用过滤方法
+        # informed 模式下不会调用过滤方法
         graph_df = builder.get_graph()
 
         # 预期边:
-        # 1. (0, 3, 'interacts_with') - 来自 construct
+        # 1. (0, 3, 'interacts_with') - 来自 build
         # 2. [0, 1, 'drug_drug_similarity'] - 来自 mock
         # 3. [3, 5, 'protein_protein_similarity'] - 来自 mock (泄露边)
         self.assertEqual(
@@ -179,15 +143,15 @@ class TestHeteroGraphBuilder(unittest.TestCase):
 
         builder = HeteroGraphBuilder(
             config=cfg,
-            context=self.context,
             molecule_embeddings=self.mol_embeddings,
             protein_embeddings=self.prot_embeddings,
+            local_id_to_type=self.local_id_to_type,
+            protein_id_offset=self.protein_id_offset,
             cold_start_entity_ids_local={2, 5},  # 冷启动实体是 mol 2 和 prot 5
         )
-        director = GraphDirector(cfg)
 
-        # Director 现在应该会调用 builder.filter_background_edges_for_strict_mode
-        director.construct(builder, self.train_pairs)
+        # build 现在会调用 filter_background_edges_for_strict_mode
+        builder.build(self.train_pairs)
 
         graph_df = builder.get_graph()
 

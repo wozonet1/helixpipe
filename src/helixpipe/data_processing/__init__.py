@@ -9,8 +9,6 @@ from .datasets import (
 # 从下一层的 'services' 模块中，导入最常用、最高阶的服务
 from .services import (
     DataSplitter,
-    GraphBuildContext,
-    GraphDirector,
     HeteroGraphBuilder,
     IDMapper,
     InteractionStore,
@@ -29,8 +27,6 @@ __all__ = [
     "DataSplitter",
     "HeteroGraphBuilder",
     "StructureProvider",
-    "GraphDirector",
-    "GraphBuildContext",
     "SupervisionFileManager",
     # 顶层函数
     "filter_molecules_by_properties",

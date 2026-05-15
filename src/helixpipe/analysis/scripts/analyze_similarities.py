@@ -6,10 +6,14 @@ import torch
 import helixlib as hx
 from helixpipe.configs import register_all_schemas
 from helixpipe.data_processing import (
-    GraphBuildContext,
     IDMapper,
 )
 from helixpipe.data_processing.services.graph_builder import HeteroGraphBuilder
+from helixpipe.data_processing.services.graph_context import (
+    build_local_id_mapping,
+    build_local_id_to_type,
+    slice_embeddings,
+)
 
 # 导入所有需要的项目内部模块
 from helixpipe.typing import AppConfig
@@ -98,7 +102,7 @@ def main(cfg: AppConfig) -> None:
         print("--- [Step 1/4] Loading data and simulating pre-splitting stage...")
 
         # [MODIFIED] 使用 nodes.csv 来正确地初始化 IDMapper
-        # a. 加载 nodes.csv，这是我们所有实体信息的“户籍簿”
+        # a. 加载 nodes.csv，这是我们所有实体信息的"户籍簿"
         nodes_df = pd.read_csv(get_path(cfg, "processed.common.nodes_metadata"))
 
         # b. 准备一个最小化的、只包含ID的DataFrame，以符合IDMapper的初始化契约
@@ -118,7 +122,7 @@ def main(cfg: AppConfig) -> None:
         # c. 使用这个模拟的DataFrame来正确初始化IDMapper
         id_mapper = IDMapper([simulated_df], cfg)
 
-        # d. 注入“drug”的身份定义
+        # d. 注入"drug"的身份定义
         drug_cids = set(
             nodes_df[nodes_df["node_type"] == "drug"]["authoritative_id"].astype(int)
         )
@@ -137,7 +141,7 @@ def main(cfg: AppConfig) -> None:
         protein_embeddings = features_tensor[num_molecules:]
 
         # h. 加载一个有代表性的交互对样本
-        # 我们加载 Fold 1 的训练标签作为代表，来定义本次分析的“相关实体”范围
+        # 我们加载 Fold 1 的训练标签作为代表，来定义本次分析的"相关实体"范围
         train_labels_df = pd.read_csv(
             get_path(
                 cfg,
@@ -152,29 +156,32 @@ def main(cfg: AppConfig) -> None:
             for row in train_labels_df.itertuples()
         ]
 
-        # --- 步骤 2: 创建全局分析上下文 ---
-        print("\n--- [Step 2/4] Creating global analysis context...")
+        # --- 步骤 2: 创建局部 ID 映射 ---
+        print("\n--- [Step 2/4] Building local ID mapping...")
         # 注意：这里的ID已经是全局逻辑ID了
         relevant_mol_ids = {u for u, v, _ in sampled_pairs_with_type}
         relevant_prot_ids = {v for u, v, _ in sampled_pairs_with_type}
 
-        context = GraphBuildContext(
-            fold_idx=0,  # 0 在这里表示这是一个“全局”分析上下文
-            global_id_mapper=id_mapper,
-            global_mol_embeddings=molecule_embeddings,
-            global_prot_embeddings=protein_embeddings,
-            relevant_mol_ids=relevant_mol_ids,
-            relevant_prot_ids=relevant_prot_ids,
-            config=cfg,
+        g2l, l2g, num_local_mols = build_local_id_mapping(
+            relevant_mol_ids, relevant_prot_ids
         )
+        local_mol_emb, local_prot_emb = slice_embeddings(
+            l2g,
+            num_local_mols,
+            molecule_embeddings,
+            protein_embeddings,
+            id_mapper.num_molecules,
+        )
+        local_id_to_type = build_local_id_to_type(l2g, id_mapper)
 
         # --- 步骤 3: 调用 Builder 的分析方法 ---
         print("\n--- [Step 3/4] Running builder in analysis-only mode...")
         builder = HeteroGraphBuilder(
             config=cfg,
-            context=context,
-            molecule_embeddings=context.local_mol_embeddings,
-            protein_embeddings=context.local_prot_embeddings,
+            molecule_embeddings=local_mol_emb,
+            protein_embeddings=local_prot_emb,
+            local_id_to_type=local_id_to_type,
+            protein_id_offset=num_local_mols,
         )
 
         all_similarities_df = builder.analyze_similarities()
